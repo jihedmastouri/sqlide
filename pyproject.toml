@@ -1,0 +1,25 @@
+[project]
+name = "sqlide"
+version = "0.1.0"
+description = "A minimal SQL IDE for SQLite, MySQL, and PostgreSQL (GTK4 + libadwaita)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "PyGObject>=3.46",
+]
+
+[project.optional-dependencies]
+mysql = ["PyMySQL>=1.1"]
+postgres = ["psycopg[binary]>=3.1"]
+jdbc = ["JayDeBeApi>=1.2"]
+all = ["PyMySQL>=1.1", "psycopg[binary]>=3.1", "JayDeBeApi>=1.2"]
+
+[project.scripts]
+sqlide = "sqlide.frontend.application:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["sqlide*"]

@@ -1,0 +1,16 @@
+/* Application stylesheet, loaded at startup by application.py. */
+
+/* Sidebar: compact table rows nested under each connection expander. */
+row.sidebar-table-row {
+  min-height: 26px;
+  padding-top: 1px;
+  padding-bottom: 1px;
+  font-size: 0.92em;
+}
+
+/* Data grid: breathing room inside cells (separator lines come from
+   the ColumnView show-*-separators properties). Extra left padding
+   widens each column so the grid stretches to fill the window. */
+columnview.data-table > listview > row > cell {
+  padding: 4px 8px 4px 16px;
+}

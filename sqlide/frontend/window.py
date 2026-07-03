@@ -25,6 +25,8 @@ from datetime import datetime
 
 from gi.repository import Adw, GObject, Gtk
 
+from sqlide.frontend.util import main_menu_button
+
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import registry
 from sqlide.backend.db.base import Connector, ConnectorError
@@ -114,6 +116,8 @@ class MainWindow(Adw.ApplicationWindow):
             "clicked", lambda *_: self.new_query(self._default_query_profile())
         )
         content_header.pack_start(new_query_button)
+
+        content_header.pack_end(main_menu_button())
 
         overview_button = Adw.TabButton(view=self._tab_view)
         overview_button.set_tooltip_text("View open tabs")

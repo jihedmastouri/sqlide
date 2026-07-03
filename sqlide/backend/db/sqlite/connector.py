@@ -44,9 +44,14 @@ class SqliteConnector(Connector):
             self._conn = None
 
     def _run(
-        self, sql: str, params: tuple = ()
+        self, sql: str, params: tuple = (), expect_rowcount: int | None = None
     ) -> tuple[list[str], list[tuple], int]:
-        """Execute one statement; returns (columns, rows, rowcount)."""
+        """Execute one statement; returns (columns, rows, rowcount).
+
+        With expect_rowcount set, a mismatch rolls the statement back
+        instead of committing it — the check must happen before commit
+        or an over-broad UPDATE is already durable when it fails.
+        """
         if self._conn is None:
             raise ConnectorError("Not connected")
         try:
@@ -57,6 +62,12 @@ class SqliteConnector(Connector):
                     rows = cur.fetchall()
                 else:
                     columns, rows = [], []
+                if expect_rowcount is not None and cur.rowcount != expect_rowcount:
+                    self._conn.rollback()
+                    raise ConnectorError(
+                        f"Expected to modify {expect_rowcount} row(s), "
+                        f"matched {cur.rowcount}; rolled back"
+                    )
                 self._conn.commit()
                 return columns, rows, cur.rowcount
         except sqlite3.Error as exc:
@@ -83,9 +94,10 @@ class SqliteConnector(Connector):
         ]
 
     def fetch_rows(self, table: str, offset: int = 0, limit: int = 500) -> ResultSet:
+        self._assert_known_table(table)
         columns, rows, _ = self._run(
             f"SELECT * FROM {self.quote_ident(table)} LIMIT ? OFFSET ?",
-            (limit, offset),
+            (max(limit, 0), max(offset, 0)),
         )
         return ResultSet(columns=columns, rows=rows)
 
@@ -98,14 +110,31 @@ class SqliteConnector(Connector):
     def update_cell(
         self, table: str, pk_values: dict[str, Any], column: str, value: Any
     ) -> None:
+        if not pk_values:
+            raise ConnectorError("Refusing to update without a primary-key filter")
+        # Only identifiers the catalog vouches for reach the SQL text.
+        known = {c.name for c in self.list_columns(table)}
+        if not known:
+            raise ConnectorError(f"No such table: {table}")
+        unknown = ({column} | set(pk_values)) - known
+        if unknown:
+            raise ConnectorError(
+                f"Unknown column(s) for {table}: {', '.join(sorted(unknown))}"
+            )
         where = " AND ".join(f"{self.quote_ident(k)} = ?" for k in pk_values)
         sql = (
             f"UPDATE {self.quote_ident(table)} "
             f"SET {self.quote_ident(column)} = ? WHERE {where}"
         )
-        _, _, rowcount = self._run(sql, (value, *pk_values.values()))
-        if rowcount != 1:
-            raise ConnectorError(f"Expected to update 1 row, matched {rowcount}")
+        self._run(sql, (value, *pk_values.values()), expect_rowcount=1)
+
+    def _assert_known_table(self, table: str) -> None:
+        if table not in {t.name for t in self.list_tables()}:
+            raise ConnectorError(f"No such table or view: {table}")
 
     def quote_ident(self, name: str) -> str:
+        if not name:
+            raise ConnectorError("Empty identifier")
+        if "\x00" in name:
+            raise ConnectorError("Identifier contains a NUL byte")
         return '"' + name.replace('"', '""') + '"'

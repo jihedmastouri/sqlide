@@ -6,12 +6,18 @@ called on the main thread when the console's connection/database/LSP
 dropdowns change; complete() runs on a worker thread and may block on
 server startup or I/O. LSP failures degrade to no suggestions — the
 keyword provider still runs alongside.
+
+Application settings are consulted per request: the master switch
+(lsp_enabled) silences everything, and a console left on "auto" first
+resolves through the per-kind default in settings.lsp_defaults before
+falling back to the built-in resolution in sqlide.lsp.servers.
 """
 
 from __future__ import annotations
 
 import re
 
+from sqlide.backend import settings as app_settings
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.frontend.completion import (
     Completion,
@@ -49,6 +55,13 @@ class LspCompletionProvider(CompletionProvider):
         profile, choice = self._profile, self._choice
         if profile is None or choice == servers.NONE:
             return []
+        config = app_settings.store.settings
+        if not config.lsp_enabled:
+            return []
+        if choice == servers.AUTO:
+            choice = config.lsp_defaults.get(profile.kind, servers.AUTO)
+            if choice == servers.NONE:
+                return []
         server = servers.manager.server_for(profile, choice)
         if server is None:
             return []

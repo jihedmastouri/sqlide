@@ -6,7 +6,20 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from gi.repository import GLib
+from gi.repository import Gio, GLib, Gtk
+
+
+def main_menu_button() -> Gtk.MenuButton:
+    """Hamburger button for a header bar: Preferences and About, both
+    backed by application-level actions (see application.py)."""
+    menu = Gio.Menu()
+    menu.append("Preferences", "app.preferences")
+    menu.append("About sqlide", "app.about")
+    button = Gtk.MenuButton(
+        icon_name="open-menu-symbolic", menu_model=menu
+    )
+    button.set_tooltip_text("Main menu")
+    return button
 
 
 def run_async(

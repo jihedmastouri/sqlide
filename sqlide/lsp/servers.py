@@ -14,7 +14,10 @@ Which server runs for a connection, in order:
 
 The query console can also pin a server for its session: NONE turns
 completion off, any name from available_servers() (a plugin executable
-or a known PATH binary) overrides the resolution above.
+or a known PATH binary) overrides the resolution above. Application
+settings sit in between (applied by lsp_completion.py): a global
+enable switch, and a per-kind default that an "auto" console resolves
+through before reaching steps 1–2.
 
 One server per (connection profile, choice), started lazily on the
 first completion request, reused across consoles, and shut down at exit.

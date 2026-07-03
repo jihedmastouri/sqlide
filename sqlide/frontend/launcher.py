@@ -12,6 +12,7 @@ from __future__ import annotations
 from gi.repository import Adw, Gtk
 
 from sqlide.backend.workspaces import Workspace
+from sqlide.frontend.util import main_menu_button
 
 
 class WorkspaceLauncher(Adw.ApplicationWindow):
@@ -27,6 +28,7 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
         new_button.set_tooltip_text("New workspace")
         new_button.connect("clicked", lambda *_: self._new_workspace())
         header.pack_start(new_button)
+        header.pack_end(main_menu_button())
 
         self._list = Gtk.ListBox()
         self._list.set_selection_mode(Gtk.SelectionMode.NONE)

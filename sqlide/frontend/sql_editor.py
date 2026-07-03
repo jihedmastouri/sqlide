@@ -89,6 +89,9 @@ class SqlEditor(Gtk.ScrolledWindow):
             self.view = Gtk.TextView(buffer=self._buffer)
         style_manager.connect("notify::dark", self._on_dark_changed)
         self._on_dark_changed(style_manager)
+        # Font size comes from the settings-driven provider in
+        # application.py, keyed on this class.
+        self.view.add_css_class("sqlide-editor")
         self.view.set_monospace(True)
         self.view.set_left_margin(8)
         self.view.set_top_margin(8)

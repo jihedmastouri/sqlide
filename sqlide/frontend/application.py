@@ -4,6 +4,10 @@ Owns the WorkspaceStore. Startup presents the small workspace
 launcher; picking a workspace opens (or focuses) that workspace's main
 window. The launcher can be reopened from any main window's sidebar
 to switch or create workspaces.
+
+Also owns the presentation side of the settings store: it applies the
+theme and editor font at startup and on every change, and provides the
+app.preferences / app.about actions that windows put in their menus.
 """
 
 import sys
@@ -17,9 +21,17 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, Gtk  # noqa: E402
 
 from sqlide import APP_ID
+from sqlide.backend import settings as app_settings
 from sqlide.backend.workspaces import Workspace, WorkspaceStore
 from sqlide.frontend.launcher import WorkspaceLauncher
+from sqlide.frontend.preferences import PreferencesDialog, about_dialog
 from sqlide.frontend.window import MainWindow
+
+_COLOR_SCHEMES = {
+    "system": Adw.ColorScheme.DEFAULT,
+    "light": Adw.ColorScheme.FORCE_LIGHT,
+    "dark": Adw.ColorScheme.FORCE_DARK,
+}
 
 
 class SqlideApplication(Adw.Application):
@@ -46,6 +58,45 @@ class SqlideApplication(Adw.Application):
             self.workspace_store.load()
         except Exception as exc:
             self.store_error = f"Could not load workspaces: {exc}"
+        try:
+            app_settings.store.load()
+        except Exception as exc:
+            self.store_error = f"Could not load settings: {exc}"
+
+        # Settings that restyle the app; re-applied on every change.
+        self._font_provider = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(),
+            self._font_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+        self._apply_settings(app_settings.store.settings)
+        app_settings.store.subscribe(self._apply_settings)
+
+        for name, callback, accels in (
+            ("preferences", self._show_preferences, ["<primary>comma"]),
+            ("about", self._show_about, []),
+        ):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", callback)
+            self.add_action(action)
+            if accels:
+                self.set_accels_for_action(f"app.{name}", accels)
+
+    def _apply_settings(self, settings: app_settings.Settings) -> None:
+        Adw.StyleManager.get_default().set_color_scheme(
+            _COLOR_SCHEMES.get(settings.theme, Adw.ColorScheme.DEFAULT)
+        )
+        self._font_provider.load_from_string(
+            "textview.sqlide-editor {"
+            f" font-size: {settings.editor_font_size}pt; }}"
+        )
+
+    def _show_preferences(self, *_args) -> None:
+        PreferencesDialog().present(self.get_active_window())
+
+    def _show_about(self, *_args) -> None:
+        about_dialog().present(self.get_active_window())
 
     def do_activate(self) -> None:
         window = self.get_active_window()

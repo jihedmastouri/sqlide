@@ -15,8 +15,12 @@ Two more session-scoped dropdowns (not persisted in TabState):
 - LSP: pins the completion language server for this console — auto
   (plugin, then defaults), off, or a specific plugin/PATH server.
 
-Run button or Ctrl+Enter executes the buffer through Connector.execute()
-on a worker thread. One statement at a time (SQLite limitation for now).
+The editor holds a script of any number of statements. Run (Ctrl+Enter)
+executes the selection if there is one, otherwise the statement under
+the cursor; Run All (Ctrl+Shift+Enter) executes the whole buffer.
+Statements run sequentially through Connector.execute() on a worker
+thread, stopping at the first failure. Each statement gets its own tab
+in the bottom result panel (the tab bar is hidden for a single result).
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from gi.repository import Gdk, Gtk
 
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import Connector, ResultSet
+from sqlide.backend.sql_split import split_statements, statement_at
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend.data_grid import ResultGrid
 from sqlide.frontend.lsp_completion import LspCompletionProvider
@@ -66,7 +71,17 @@ class QueryConsole(Gtk.Box):
         )
         self._run_button = Gtk.Button(label="Run")
         self._run_button.add_css_class("suggested-action")
+        self._run_button.set_tooltip_text(
+            "Run the selection or the statement at the cursor (Ctrl+Enter)"
+        )
         self._run_button.connect("clicked", lambda *_: self._run())
+        self._run_all_button = Gtk.Button(label="Run All")
+        self._run_all_button.set_tooltip_text(
+            "Run every statement in the editor (Ctrl+Shift+Enter)"
+        )
+        self._run_all_button.connect(
+            "clicked", lambda *_: self._run(run_all=True)
+        )
         self._dropdown = Gtk.DropDown(model=connection_names)
         self._dropdown.set_tooltip_text("Connection to run against")
         self._db_dropdown = Gtk.DropDown(visible=False)
@@ -86,6 +101,7 @@ class QueryConsole(Gtk.Box):
         hint = Gtk.Label(label="Ctrl+Enter")
         hint.add_css_class("dim-label")
         toolbar.append(self._run_button)
+        toolbar.append(self._run_all_button)
         toolbar.append(self._dropdown)
         toolbar.append(self._db_dropdown)
         toolbar.append(self._lsp_dropdown)
@@ -114,11 +130,15 @@ class QueryConsole(Gtk.Box):
         keys.connect("key-pressed", self._on_key_pressed)
         self._editor.view.add_controller(keys)
 
-        self._grid = ResultGrid()
+        self._results = Gtk.Notebook(vexpand=True)
+        self._results.set_show_tabs(False)
+        self._results.set_show_border(False)
+        self._results.set_scrollable(True)
+        self._append_result_page(ResultGrid(), "Result")
 
         paned = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL, vexpand=True)
         paned.set_start_child(self._editor)
-        paned.set_end_child(self._grid)
+        paned.set_end_child(self._results)
         paned.set_shrink_start_child(False)
         paned.set_shrink_end_child(False)
         paned.set_position(160)
@@ -224,13 +244,29 @@ class QueryConsole(Gtk.Box):
     def _on_key_pressed(self, _controller, keyval, _keycode, state) -> bool:
         is_enter = keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter)
         if is_enter and state & Gdk.ModifierType.CONTROL_MASK:
-            self._run()
+            self._run(run_all=bool(state & Gdk.ModifierType.SHIFT_MASK))
             return True
         return False
 
-    def _run(self) -> None:
-        sql = self._editor.get_text().strip()
-        if not sql:
+    def _statements_to_run(self, run_all: bool) -> list[str]:
+        """What Run should execute: the selection when there is one,
+        the statement under the cursor otherwise; Run All takes the
+        whole buffer."""
+        if run_all:
+            source = self._editor.get_text()
+        else:
+            source = self._editor.get_selection()
+            if not source:
+                statement = statement_at(
+                    split_statements(self._editor.get_text()),
+                    self._editor.get_cursor_offset(),
+                )
+                return [statement.text] if statement else []
+        return [s.text for s in split_statements(source)]
+
+    def _run(self, run_all: bool = False) -> None:
+        statements = self._statements_to_run(run_all)
+        if not statements:
             return
         name = self.selected_connection()
         if not name:
@@ -241,29 +277,87 @@ class QueryConsole(Gtk.Box):
             self._set_status(f"Unknown connection: {name}", error=True)
             return
         self._run_button.set_sensitive(False)
+        self._run_all_button.set_sensitive(False)
         self._set_status("Running…", error=False)
 
         def work():
-            return self._ensure(profile).execute(sql)
+            connector = self._ensure(profile)
+            outcomes: list[tuple[str, ResultSet | int | Exception]] = []
+            for sql in statements:
+                try:
+                    outcomes.append((sql, connector.execute(sql)))
+                except Exception as exc:  # shown in the statement's tab
+                    outcomes.append((sql, exc))
+                    break
+            return outcomes
 
-        def done(result):
+        def done(outcomes):
             self._run_button.set_sensitive(True)
-            if isinstance(result, ResultSet):
-                self._grid.set_result(result.columns, result.rows)
-                self._set_status(f"{len(result)} row(s)", error=False)
-            else:
-                self._grid.clear()
-                self._set_status(f"{result} row(s) affected", error=False)
+            self._run_all_button.set_sensitive(True)
+            self._show_outcomes(outcomes, planned=len(statements))
             if self._on_ran is not None:
-                self._on_ran(sql, name, True)
+                for sql, result in outcomes:
+                    self._on_ran(sql, name, not isinstance(result, Exception))
 
         def failed(exc):
+            # Connecting failed before any statement ran.
             self._run_button.set_sensitive(True)
+            self._run_all_button.set_sensitive(True)
             self._set_status(str(exc), error=True)
             if self._on_ran is not None:
-                self._on_ran(sql, name, False)
+                self._on_ran(statements[0], name, False)
 
         run_async(work, done, failed)
+
+    # Result panel
+
+    def _append_result_page(self, child: Gtk.Widget, title: str) -> None:
+        label = Gtk.Label(label=title)
+        label.set_max_width_chars(24)
+        self._results.append_page(child, label)
+
+    def _show_outcomes(
+        self,
+        outcomes: list[tuple[str, ResultSet | int | Exception]],
+        planned: int,
+    ) -> None:
+        while self._results.get_n_pages():
+            self._results.remove_page(-1)
+
+        counts = []
+        error: Exception | None = None
+        for i, (sql, result) in enumerate(outcomes):
+            title = _tab_title(i, sql) if len(outcomes) > 1 else "Result"
+            if isinstance(result, ResultSet):
+                grid = ResultGrid()
+                grid.set_result(result.columns, result.rows)
+                page: Gtk.Widget = grid
+                counts.append(f"{len(result)} row(s)")
+            elif isinstance(result, Exception):
+                page = _message_page(str(result), error=True)
+                error = result
+            else:
+                page = _message_page(f"{result} row(s) affected", error=False)
+                counts.append(f"{result} row(s) affected")
+            page.set_tooltip_text(sql)
+            self._append_result_page(page, title)
+
+        self._results.set_show_tabs(len(outcomes) > 1)
+        if error is not None:
+            skipped = planned - len(outcomes)
+            suffix = f" ({skipped} statement(s) skipped)" if skipped else ""
+            self._results.set_current_page(len(outcomes) - 1)
+            self._set_status(
+                f"Statement {len(outcomes)} failed: {error}{suffix}",
+                error=True,
+            )
+        elif len(outcomes) == 1:
+            self._set_status(counts[0], error=False)
+        else:
+            self._set_status(
+                f"{len(outcomes)} statements · " + " · ".join(counts),
+                error=False,
+            )
 
     def _set_status(self, text: str, error: bool) -> None:
         self._status.set_text(text)
@@ -273,3 +367,24 @@ class QueryConsole(Gtk.Box):
         else:
             self._status.remove_css_class("error")
             self._status.add_css_class("dim-label")
+
+
+def _tab_title(index: int, sql: str, max_chars: int = 20) -> str:
+    snippet = " ".join(sql.split())
+    if len(snippet) > max_chars:
+        snippet = snippet[: max_chars - 1] + "…"
+    return f"{index + 1}: {snippet}"
+
+
+def _message_page(text: str, error: bool) -> Gtk.Widget:
+    label = Gtk.Label(
+        label=text,
+        xalign=0,
+        margin_top=8,
+        margin_start=8,
+        selectable=True,
+        wrap=True,
+        valign=Gtk.Align.START,
+    )
+    label.add_css_class("error" if error else "dim-label")
+    return label

@@ -108,6 +108,18 @@ class SqlEditor(Gtk.ScrolledWindow):
     def set_text(self, sql: str) -> None:
         self._buffer.set_text(sql)
 
+    def get_selection(self) -> str:
+        """Selected text, or "" when nothing is selected."""
+        bounds = self._buffer.get_selection_bounds()
+        if not bounds:
+            return ""
+        start, end = bounds
+        return self._buffer.get_text(start, end, False)
+
+    def get_cursor_offset(self) -> int:
+        insert = self._buffer.get_iter_at_mark(self._buffer.get_insert())
+        return insert.get_offset()
+
     def _on_dark_changed(self, style_manager, *_args) -> None:
         dark = style_manager.get_dark()
         if GtkSource is not None:

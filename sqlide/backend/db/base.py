@@ -21,6 +21,11 @@ class ColumnInfo:
     nullable: bool = True
 
 
+@dataclass(frozen=True)
+class FunctionInfo:
+    name: str
+
+
 @dataclass
 class ResultSet:
     columns: list[str]
@@ -54,6 +59,14 @@ class Connector(ABC):
 
     @abstractmethod
     def list_columns(self, table: str) -> list[ColumnInfo]: ...
+
+    def list_functions(self) -> list[FunctionInfo]:
+        """Stored functions in the connected database, sorted by name.
+
+        Concrete default (not abstract) so adapters without a function
+        catalog — SQLite, the unimplemented stubs — need no override.
+        """
+        return []
 
     @abstractmethod
     def fetch_rows(self, table: str, offset: int = 0, limit: int = 500) -> ResultSet: ...

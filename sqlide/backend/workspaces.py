@@ -3,7 +3,8 @@
 A workspace groups 0..n connection profiles and remembers the tabs
 that were open in it (table tabs and query consoles, including the
 console SQL text), so reopening a workspace restores it as it was
-left. Each workspace persists as its own JSON file in
+left. It also keeps a capped history of executed queries (successes
+and failures). Each workspace persists as its own JSON file in
 $XDG_CONFIG_HOME/sqlide/workspaces/<id>.json.
 """
 
@@ -23,6 +24,9 @@ def _config_dir() -> Path:
     return Path(base) / "sqlide"
 
 
+MAX_HISTORY = 200
+
+
 @dataclass
 class TabState:
     kind: str  # "table" | "query"
@@ -32,12 +36,25 @@ class TabState:
 
 
 @dataclass
+class HistoryEntry:
+    sql: str
+    connection: str  # ConnectionProfile.name at run time
+    timestamp: str  # local time, ISO format
+    ok: bool = True  # failed runs are recorded too
+
+
+@dataclass
 class Workspace:
     name: str
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     connections: list[ConnectionProfile] = field(default_factory=list)
     tabs: list[TabState] = field(default_factory=list)
     selected_tab: int = -1
+    history: list[HistoryEntry] = field(default_factory=list)
+
+    def add_history(self, entry: HistoryEntry) -> None:
+        self.history.append(entry)
+        del self.history[:-MAX_HISTORY]
 
     def add_connection(self, profile: ConnectionProfile) -> None:
         # Names key the open-connector cache and saved tab states; keep
@@ -63,6 +80,7 @@ class Workspace:
             "connections": [asdict(p) for p in self.connections],
             "tabs": [asdict(t) for t in self.tabs],
             "selected_tab": self.selected_tab,
+            "history": [asdict(h) for h in self.history],
         }
 
     @classmethod
@@ -75,6 +93,7 @@ class Workspace:
             ],
             tabs=[TabState(**t) for t in data.get("tabs", [])],
             selected_tab=data.get("selected_tab", -1),
+            history=[HistoryEntry(**h) for h in data.get("history", [])],
         )
 
 

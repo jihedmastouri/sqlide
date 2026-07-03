@@ -18,7 +18,8 @@ anything else with a JDBC driver.
 
 - No visual query builder, ER diagrams, or DDL editors.
 - No SSH tunnels, SSL config UIs, or exotic auth.
-- No autocomplete/intellisense in v1 (maybe keyword highlighting later).
+- No LSP-grade intellisense (keyword completion and SQL highlighting exist;
+  nothing smarter).
 - No multi-statement script tooling beyond "run what's in the console".
 
 ## Stack
@@ -58,6 +59,7 @@ class Connector(ABC):
     def close(self) -> None
     def list_tables(self) -> list[TableInfo]          # tables + views
     def list_columns(self, table) -> list[ColumnInfo] # name, type, pk, nullable
+    def list_functions(self) -> list[FunctionInfo]    # concrete default: []
     def fetch_rows(self, table, offset, limit) -> ResultSet
     def execute(self, sql) -> ResultSet | int         # rows or affected count
     def update_cell(self, table, pk_values, column, value) -> None
@@ -65,8 +67,12 @@ class Connector(ABC):
 ```
 
 Shared dataclasses: `TableInfo(name, kind)`, `ColumnInfo(name, type, is_pk,
-nullable)`, `ResultSet(columns, rows)`. All driver errors are re-raised as
-`ConnectorError` with a readable message.
+nullable)`, `FunctionInfo(name)`, `ResultSet(columns, rows)`. All driver
+errors are re-raised as `ConnectorError` with a readable message.
+`list_functions()` has a concrete default returning `[]` so adapters without
+a function catalog (SQLite, the unimplemented stubs) need no override;
+Postgres (`pg_proc`) and MySQL (`information_schema.routines`) fill it in
+when milestone 7 lands.
 
 Each database is a **folder** under `backend/db/`, exposing its `Connector`
 implementation from `connector.py`. Dialect differences (identifier quoting,
@@ -85,12 +91,16 @@ JVM and the driver jar path in the profile.
 A **workspace** is the unit you open: it owns 0..n connection profiles and
 remembers its open tabs (table tabs and query consoles, including console
 SQL text and the selected tab), so reopening a workspace restores it as it
-was left. Each workspace persists as its own JSON file in
+was left. It also keeps a query history capped at 200 entries. Each
+workspace persists as its own JSON file in
 `~/.config/sqlide/workspaces/<id>.json`.
 
-- `Workspace` dataclass: `id, name, connections, tabs, selected_tab`.
-  Connection names are deduplicated per workspace.
+- `Workspace` dataclass: `id, name, connections, tabs, selected_tab,
+  history`. Connection names are deduplicated per workspace.
 - `TabState` dataclass: `kind` ("table"/"query"), `connection`, `table`, `sql`.
+- `HistoryEntry` dataclass: `sql, connection, timestamp` (ISO), `ok` —
+  failed runs are recorded too; a missing `history` key defaults to `[]`
+  so old files load fine.
 - `WorkspaceStore`: one file per workspace; on first run it migrates the
   legacy flat `connections.json` (one workspace per old profile).
 
@@ -102,18 +112,18 @@ stored plainly for v1 — known limitation).
 ### UI layout (`frontend/`)
 
 ```
-┌──────────────────────────────────────────────────┐
-│ HeaderBar   [+ Connection]                       │
-├───────────────┬──────────────────────────────────┤
-│ Sidebar       │  Adw.TabView + TabBar            │
-│  ▸ conn A     │   ┌ Tab: "users" ──────────────┐ │
-│    users      │   │ Gtk.ColumnView data grid   │ │
-│    orders     │   │ [◀ 1–500 ▶]     [refresh]  │ │
-│  ▸ conn B     │   └────────────────────────────┘ │
-│               │   ┌ Tab: "Query — conn A" ─────┐ │
-│               │   │ SQL TextView   [Run ⏎]     │ │
-│               │   │ results grid / status line │ │
-└───────────────┴──────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│ HeaderBar   [+ Connection] [new query]        [history] [tabs] │
+├───────────────┬───────────────────────────────┬────────────────┤
+│ Schema tree   │  Adw.TabView + TabBar         │ History        │
+│  ▸ conn A     │   ┌ Tab: "users" ───────────┐ │  (right panel, │
+│    ▸ Tables   │   │ Gtk.ColumnView grid     │ │   hidden by    │
+│      ▸ users  │   │ [◀ 1–500 ▶]  [refresh]  │ │   default)     │
+│        id  PK │   └─────────────────────────┘ │  SELECT …      │
+│    ▸ Views    │   ┌ Tab: "query · conn A" ──┐ │   conn A · 9:14│
+│    ▸ Functions│   │ SQL editor [Run][conn ▾]│ │  SELECT …      │
+│  ▸ conn B     │   │ results grid / status   │ │   conn B · 9:02│
+└───────────────┴───────────────────────────────┴────────────────┘
 ```
 
 - **`application.py`**: owns the `WorkspaceStore`; startup shows the
@@ -121,21 +131,41 @@ stored plainly for v1 — known limitation).
 - **`launcher.py`**: small startup window listing workspaces; create a new
   one by name. Reopened from a main window's Workspaces button — this is
   the only place other workspaces are visible.
-- **`window.py`**: `Adw.ApplicationWindow` + `Adw.OverlaySplitView` for one
-  workspace. Sidebar shows only that workspace's connections. Restores the
-  workspace's saved tabs on open and saves them back on change/close. Owns
-  a lock-guarded cache of open connectors (`ensure_connector()` — blocking,
-  called only from worker threads). With no tabs open, the content area
-  shows a plain "Nothing Open" status message.
-- **`sidebar.py`**: `Gtk.ListBox` of `Adw.ExpanderRow`s, one per connection.
-  Expanding connects and lists tables; activating a table opens a data tab;
-  a per-connection button opens a query console.
+- **`window.py`**: `Adw.ApplicationWindow` for one workspace; a right
+  `Adw.OverlaySplitView` (query history, hidden by default) wraps the left
+  one (schema sidebar). Restores the workspace's saved tabs on open and
+  saves them back on change/close. Owns a lock-guarded cache of open
+  connectors (`ensure_connector()` — blocking, called only from worker
+  threads), the shared `Gtk.StringList` of connection names that all query
+  consoles' dropdowns observe, and the workspace history (records each
+  console run, loads activated entries back into a console). With no tabs
+  open, the content area shows a plain "Nothing Open" status message.
+- **`sidebar.py`**: IDE-like schema tree — `Gtk.TreeListModel` +
+  `Gtk.ListView` + `Gtk.TreeExpander`, shaped connection → Tables / Views /
+  Functions → object → columns (columns show `name  type` + PK marker and
+  are informational). Nodes load lazily on expansion via `run_async`;
+  activating a table/view opens a data tab; a per-connection button opens
+  a query console.
 - **`data_grid.py`**: `ResultGrid` (a `Gtk.ColumnView` with columns built at
   runtime — reused everywhere results are shown) and `TableTab` (paged
   loading, refresh, PK-based cell editing via `Gtk.EditableLabel`). Tables
   without a primary key are read-only and say so.
-- **`query_console.py`**: monospace `Gtk.TextView` over a `ResultGrid`,
-  Run button + Ctrl+Enter, status line for row counts and errors.
+- **`query_console.py`**: `SqlEditor` over a `ResultGrid`, Run button +
+  Ctrl+Enter, status line for row counts and errors. Not tied to one
+  connection: a toolbar dropdown picks the target from the workspace's
+  connection names, resolved to a profile at run time (a console can exist
+  with zero connections); every run is reported through `on_ran` for the
+  history.
+- **`sql_editor.py`**: editor widget behind a tiny interface
+  (`get_text`/`set_text`); GtkSourceView 5 (SQL highlighting, line numbers,
+  dark-aware scheme) when installed, otherwise a monospace `Gtk.TextView`
+  with a small regex highlighter.
+- **`completion.py`**: pluggable completion popup over any text view;
+  keyword provider built in.
+- **`history_panel.py`**: right-panel `Gtk.ListBox` over the workspace
+  history, newest first — first SQL line as title, `connection · time` as
+  subtitle, error marker on failed runs, clear button; activating a row
+  loads it into a console.
 - **`connection_dialog.py`**: kind dropdown; field group switches between
   SQLite (file chooser), server (host/port/…), and JDBC (url/driver/jar).
   Includes "Test connection".
@@ -178,9 +208,13 @@ sqlide/
         ├── launcher.py        # workspace picker at startup
         ├── window.py          # one workspace: split view, tabs, connector cache
         ├── util.py            # run_async worker-thread helper
-        ├── sidebar.py
+        ├── sidebar.py         # lazy schema tree (TreeListModel)
         ├── data_grid.py       # ResultGrid + TableTab
         ├── query_console.py
+        ├── sql_editor.py      # GtkSourceView 5 with TextView fallback
+        ├── completion.py      # completion popup + keyword provider
+        ├── history_panel.py   # query history (right panel)
+        ├── style.css
         └── connection_dialog.py
 ```
 
@@ -194,8 +228,19 @@ sqlide/
 6. **Editing** — editable cells, PK-based updates, error feedback. — **done (unverified)**
 6b. **Workspaces** — workspace store (file per workspace), launcher,
    per-workspace connections, tab save/restore. — **done (unverified)**
-7. **MySQL + PostgreSQL adapters** — stubs in place, to implement. JDBC
-   adapter written but experimental/untested (needs JVM + jaydebeapi).
+6c. **Editor** — SqlEditor widget (GtkSourceView 5 + fallback), keyword
+   completion. — **done**
+6d. **Console/connection decoupling** — per-console connection dropdown
+   over a shared name list, global "New query", consoles without
+   connections. — **done**
+6e. **Query history** — per-workspace capped history (failures included),
+   right-side panel, activate-to-load. — **done**
+6f. **Schema tree** — lazy TreeListModel sidebar (connection → Tables /
+   Views / Functions → object → columns), `list_functions()` on the
+   connector ABC. — **done**
+7. **MySQL + PostgreSQL adapters** — stubs in place, to implement
+   (including their `list_functions()`). JDBC adapter written but
+   experimental/untested (needs JVM + jaydebeapi).
 8. **Polish** — connection edit/remove in the sidebar, empty-string vs NULL
    handling when editing, keyboard shortcuts, about dialog, close
    connectors on exit.

@@ -60,6 +60,15 @@ class Connector(ABC):
     @abstractmethod
     def list_columns(self, table: str) -> list[ColumnInfo]: ...
 
+    def list_databases(self) -> list[str]:
+        """Databases reachable through this connection, sorted by name,
+        for the query console's database switcher.
+
+        Concrete default (not abstract): single-database connectors —
+        SQLite, where one file is one database — need no override.
+        """
+        return []
+
     def list_functions(self) -> list[FunctionInfo]:
         """Stored functions in the connected database, sorted by name.
 

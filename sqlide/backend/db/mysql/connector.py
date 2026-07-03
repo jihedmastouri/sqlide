@@ -32,6 +32,9 @@ class MysqlConnector(Connector):
     def close(self) -> None:
         raise NotImplementedError
 
+    def list_databases(self) -> list[str]:
+        raise NotImplementedError  # TODO: SHOW DATABASES
+
     def list_tables(self) -> list[TableInfo]:
         raise NotImplementedError
 

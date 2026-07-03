@@ -32,6 +32,9 @@ class PostgresConnector(Connector):
     def close(self) -> None:
         raise NotImplementedError
 
+    def list_databases(self) -> list[str]:
+        raise NotImplementedError  # TODO: pg_database, skip templates
+
     def list_tables(self) -> list[TableInfo]:
         raise NotImplementedError
 

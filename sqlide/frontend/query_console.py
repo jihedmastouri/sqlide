@@ -7,12 +7,21 @@ its own selection). Run resolves the selected name to a profile at
 execution time and reports every run — success or failure — through
 the on_ran callback so the window can record history.
 
+Two more session-scoped dropdowns (not persisted in TabState):
+- Database: for server connections (mysql/postgres) whose one server
+  hosts many databases; hidden for sqlite, where one file is one
+  database. Queries and completions run against the chosen database
+  via a profile copy with `database` overridden.
+- LSP: pins the completion language server for this console — auto
+  (plugin, then defaults), off, or a specific plugin/PATH server.
+
 Run button or Ctrl+Enter executes the buffer through Connector.execute()
 on a worker thread. One statement at a time (SQLite limitation for now).
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Callable
 
 from gi.repository import Gdk, Gtk
@@ -21,8 +30,13 @@ from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import Connector, ResultSet
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend.data_grid import ResultGrid
+from sqlide.frontend.lsp_completion import LspCompletionProvider
 from sqlide.frontend.sql_editor import SqlEditor
 from sqlide.frontend.util import run_async
+from sqlide.lsp import servers as lsp_servers
+
+# Connection kinds where one server hosts multiple databases.
+_MULTI_DB_KINDS = ("mysql", "postgres")
 
 
 class QueryConsole(Gtk.Box):
@@ -55,10 +69,26 @@ class QueryConsole(Gtk.Box):
         self._run_button.connect("clicked", lambda *_: self._run())
         self._dropdown = Gtk.DropDown(model=connection_names)
         self._dropdown.set_tooltip_text("Connection to run against")
+        self._db_dropdown = Gtk.DropDown(visible=False)
+        self._db_dropdown.set_tooltip_text("Database on the server")
+        self._db_seq = 0  # discards stale list_databases results
+        self._lsp_choices = [
+            lsp_servers.AUTO,
+            lsp_servers.NONE,
+            *lsp_servers.available_servers(),
+        ]
+        self._lsp_dropdown = Gtk.DropDown(
+            model=Gtk.StringList.new(
+                ["LSP: auto", "LSP: off", *self._lsp_choices[2:]]
+            )
+        )
+        self._lsp_dropdown.set_tooltip_text("Completion language server")
         hint = Gtk.Label(label="Ctrl+Enter")
         hint.add_css_class("dim-label")
         toolbar.append(self._run_button)
         toolbar.append(self._dropdown)
+        toolbar.append(self._db_dropdown)
+        toolbar.append(self._lsp_dropdown)
         toolbar.append(hint)
         self.append(toolbar)
 
@@ -70,6 +100,16 @@ class QueryConsole(Gtk.Box):
 
         self._editor = SqlEditor(sql=sql)
         self._editor.set_min_content_height(120)
+        self._lsp_provider = LspCompletionProvider()
+        self._editor.add_completion_provider(self._lsp_provider)
+        self._db_dropdown.connect(
+            "notify::selected-item", self._database_selected
+        )
+        self._lsp_dropdown.connect(
+            "notify::selected-item", self._lsp_selected
+        )
+        self._refresh_databases()
+        self._lsp_provider.set_profile(self._active_profile())
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self._on_key_pressed)
         self._editor.view.add_controller(keys)
@@ -116,9 +156,70 @@ class QueryConsole(Gtk.Box):
             sql=self._editor.get_text(),
         )
 
+    def _selected_database(self) -> str:
+        item = self._db_dropdown.get_selected_item()
+        return item.get_string() if item is not None else ""
+
+    def _active_profile(self) -> ConnectionProfile | None:
+        """The selected connection, with the database dropdown's choice
+        applied (as a profile copy — the workspace's profile and the
+        window's connector for it are untouched)."""
+        profile = self._find_connection(self.selected_connection())
+        if profile is None:
+            return None
+        database = self._selected_database()
+        if database and database != profile.database:
+            profile = replace(
+                profile,
+                name=f"{profile.name} · {database}",
+                database=database,
+            )
+        return profile
+
     def _connection_selected(self, *_args) -> None:
+        name = self.selected_connection()
+        self._refresh_databases()
+        self._lsp_provider.set_profile(self._active_profile())
         if self.on_connection_changed is not None:
-            self.on_connection_changed(self.selected_connection())
+            self.on_connection_changed(name)
+
+    def _database_selected(self, *_args) -> None:
+        self._lsp_provider.set_profile(self._active_profile())
+
+    def _lsp_selected(self, *_args) -> None:
+        index = self._lsp_dropdown.get_selected()
+        if 0 <= index < len(self._lsp_choices):
+            self._lsp_provider.set_choice(self._lsp_choices[index])
+
+    def _refresh_databases(self) -> None:
+        """Rebuild the database dropdown for the selected connection:
+        immediately from the profile, then from the server's catalog
+        (async; drivers that can't list — stubs, sqlite — leave it)."""
+        self._db_seq += 1
+        seq = self._db_seq
+        profile = self._find_connection(self.selected_connection())
+        multi = profile is not None and profile.kind in _MULTI_DB_KINDS
+        names = [profile.database] if multi and profile.database else []
+        self._set_databases(names, select=names[0] if names else "")
+        if not multi:
+            return
+
+        def work():
+            return self._ensure(profile).list_databases()
+
+        def done(databases):
+            if seq != self._db_seq or not databases:
+                return
+            selected = self._selected_database() or profile.database
+            self._set_databases(databases, select=selected)
+
+        run_async(work, done, lambda _exc: None)
+
+    def _set_databases(self, names: list[str], select: str) -> None:
+        self._db_dropdown.set_model(Gtk.StringList.new(names))
+        if select in names:
+            self._db_dropdown.set_selected(names.index(select))
+        self._db_dropdown.set_visible(bool(names))
 
     def _on_key_pressed(self, _controller, keyval, _keycode, state) -> bool:
         is_enter = keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter)
@@ -135,7 +236,7 @@ class QueryConsole(Gtk.Box):
         if not name:
             self._set_status("No connection selected", error=True)
             return
-        profile = self._find_connection(name)
+        profile = self._active_profile()
         if profile is None:
             self._set_status(f"Unknown connection: {name}", error=True)
             return

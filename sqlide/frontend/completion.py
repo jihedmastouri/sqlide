@@ -2,9 +2,9 @@
 
 CompletionController drives a suggestion popup over any Gtk.TextView.
 Suggestions come from registered CompletionProvider implementations —
-today the built-in keyword provider; later maybe a schema provider or
-an LSP client. Providers run on a worker thread (via run_async), so
-complete() may block on I/O.
+the built-in keyword provider and the language-server provider (see
+lsp_completion.py). Providers run on a worker thread (via run_async),
+so complete() may block on I/O.
 
 Triggers: automatically after typing a word of MIN_WORD characters,
 or Ctrl+Space. Up/Down select, Tab/Enter accept, Escape dismisses.

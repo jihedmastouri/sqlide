@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlide.backend.db.base import ColumnInfo, Connector, ResultSet, TableInfo
+from sqlide.backend.db.base import (
+    ColumnInfo,
+    Connector,
+    FilterCondition,
+    ResultSet,
+    SortSpec,
+    TableInfo,
+)
 
 
 class PostgresConnector(Connector):
@@ -41,7 +48,14 @@ class PostgresConnector(Connector):
     def list_columns(self, table: str) -> list[ColumnInfo]:
         raise NotImplementedError
 
-    def fetch_rows(self, table: str, offset: int = 0, limit: int = 500) -> ResultSet:
+    def fetch_rows(
+        self,
+        table: str,
+        offset: int = 0,
+        limit: int = 500,
+        filters: list[FilterCondition] | None = None,
+        order_by: list[SortSpec] | None = None,
+    ) -> ResultSet:
         raise NotImplementedError
 
     def execute(self, sql: str) -> ResultSet | int:

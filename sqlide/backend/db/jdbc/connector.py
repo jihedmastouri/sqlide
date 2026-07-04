@@ -21,8 +21,11 @@ from sqlide.backend.db.base import (
     ColumnInfo,
     Connector,
     ConnectorError,
+    FilterCondition,
     ResultSet,
+    SortSpec,
     TableInfo,
+    build_filter_clauses,
 )
 
 
@@ -121,11 +124,22 @@ class JdbcConnector(Connector):
         except Exception as exc:
             raise ConnectorError(str(exc)) from exc
 
-    def fetch_rows(self, table: str, offset: int = 0, limit: int = 500) -> ResultSet:
+    def fetch_rows(
+        self,
+        table: str,
+        offset: int = 0,
+        limit: int = 500,
+        filters: list[FilterCondition] | None = None,
+        order_by: list[SortSpec] | None = None,
+    ) -> ResultSet:
         # No portable LIMIT/OFFSET across JDBC dialects: read and discard
         # `offset` rows, then keep `limit`.
-        sql = f"SELECT * FROM {self.quote_ident(table)}"
-        columns, rows = self._query(sql, skip=offset, limit=limit)
+        self._assert_filter_columns(table, filters, order_by)
+        where, order, params = build_filter_clauses(
+            filters, order_by, self.quote_ident
+        )
+        sql = f"SELECT * FROM {self.quote_ident(table)}{where}{order}"
+        columns, rows = self._query(sql, params=params, skip=offset, limit=limit)
         return ResultSet(columns=columns, rows=rows)
 
     def execute(self, sql: str) -> ResultSet | int:
@@ -169,7 +183,11 @@ class JdbcConnector(Connector):
             raise ConnectorError(str(exc)) from exc
 
     def _query(
-        self, sql: str, skip: int = 0, limit: int | None = None
+        self,
+        sql: str,
+        params: list | None = None,
+        skip: int = 0,
+        limit: int | None = None,
     ) -> tuple[list[str], list[tuple]]:
         if self._conn is None:
             raise ConnectorError("Not connected")
@@ -177,7 +195,10 @@ class JdbcConnector(Connector):
             with self._lock:
                 cur = self._conn.cursor()
                 try:
-                    cur.execute(sql)
+                    if params:
+                        cur.execute(sql, params)
+                    else:
+                        cur.execute(sql)
                     columns = [d[0] for d in cur.description or []]
                     if skip:
                         cur.fetchmany(skip)

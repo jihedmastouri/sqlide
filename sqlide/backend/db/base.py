@@ -26,6 +26,30 @@ class FunctionInfo:
     name: str
 
 
+FILTER_OPERATORS = (
+    "=", "!=", "<", "<=", ">", ">=",
+    "LIKE", "NOT LIKE", "IS NULL", "IS NOT NULL",
+)
+NO_VALUE_OPERATORS = ("IS NULL", "IS NOT NULL")
+CONJUNCTIONS = ("AND", "OR")
+
+
+@dataclass(frozen=True)
+class FilterCondition:
+    """One line of a composed row filter."""
+
+    column: str
+    op: str  # one of FILTER_OPERATORS
+    value: str = ""  # ignored for NO_VALUE_OPERATORS
+    conjunction: str = "AND"  # joins this line to the lines above it
+
+
+@dataclass(frozen=True)
+class SortSpec:
+    column: str
+    descending: bool = False
+
+
 @dataclass
 class ResultSet:
     columns: list[str]
@@ -37,6 +61,46 @@ class ResultSet:
 
 class ConnectorError(Exception):
     """Raised by adapters for any database failure, wrapping the driver error."""
+
+
+def build_filter_clauses(
+    filters: list[FilterCondition] | None,
+    order_by: list[SortSpec] | None,
+    quote: Any,
+    placeholder: str = "?",
+) -> tuple[str, str, list[Any]]:
+    """Render WHERE and ORDER BY fragments (leading space and keyword
+    included, empty string when unused) plus the parameter list.
+
+    Conditions fold left-associatively — ((line1 AND line2) OR line3) —
+    so evaluation matches the visual line order in the filter panel
+    rather than SQL's AND-before-OR precedence.
+
+    Operators and conjunctions are checked against the whitelists above;
+    column names must already be validated against the catalog by the
+    caller, since only the adapter can do that.
+    """
+    params: list[Any] = []
+    where = ""
+    for cond in filters or []:
+        if cond.op not in FILTER_OPERATORS:
+            raise ConnectorError(f"Unsupported filter operator: {cond.op}")
+        if cond.conjunction not in CONJUNCTIONS:
+            raise ConnectorError(f"Unsupported conjunction: {cond.conjunction}")
+        clause = f"{quote(cond.column)} {cond.op}"
+        if cond.op not in NO_VALUE_OPERATORS:
+            clause += f" {placeholder}"
+            params.append(cond.value)
+        where = f"({where}) {cond.conjunction} {clause}" if where else clause
+    if where:
+        where = f" WHERE {where}"
+    order = ""
+    if order_by:
+        order = " ORDER BY " + ", ".join(
+            f"{quote(s.column)} {'DESC' if s.descending else 'ASC'}"
+            for s in order_by
+        )
+    return where, order, params
 
 
 class Connector(ABC):
@@ -78,7 +142,32 @@ class Connector(ABC):
         return []
 
     @abstractmethod
-    def fetch_rows(self, table: str, offset: int = 0, limit: int = 500) -> ResultSet: ...
+    def fetch_rows(
+        self,
+        table: str,
+        offset: int = 0,
+        limit: int = 500,
+        filters: list[FilterCondition] | None = None,
+        order_by: list[SortSpec] | None = None,
+    ) -> ResultSet: ...
+
+    def _assert_filter_columns(
+        self,
+        table: str,
+        filters: list[FilterCondition] | None,
+        order_by: list[SortSpec] | None,
+    ) -> None:
+        """Reject filter/sort column names the catalog doesn't vouch for,
+        so they never reach the SQL text. Skipped when neither is set —
+        list_columns() can cost a catalog round trip."""
+        if not filters and not order_by:
+            return
+        used = {f.column for f in filters or []} | {s.column for s in order_by or []}
+        unknown = used - {c.name for c in self.list_columns(table)}
+        if unknown:
+            raise ConnectorError(
+                f"Unknown column(s) for {table}: {', '.join(sorted(unknown))}"
+            )
 
     @abstractmethod
     def execute(self, sql: str) -> ResultSet | int:

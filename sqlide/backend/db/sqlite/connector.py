@@ -11,8 +11,11 @@ from sqlide.backend.db.base import (
     ColumnInfo,
     Connector,
     ConnectorError,
+    FilterCondition,
     ResultSet,
+    SortSpec,
     TableInfo,
+    build_filter_clauses,
 )
 
 
@@ -93,11 +96,23 @@ class SqliteConnector(Connector):
             for _cid, name, ctype, notnull, _default, pk in rows
         ]
 
-    def fetch_rows(self, table: str, offset: int = 0, limit: int = 500) -> ResultSet:
+    def fetch_rows(
+        self,
+        table: str,
+        offset: int = 0,
+        limit: int = 500,
+        filters: list[FilterCondition] | None = None,
+        order_by: list[SortSpec] | None = None,
+    ) -> ResultSet:
         self._assert_known_table(table)
+        self._assert_filter_columns(table, filters, order_by)
+        where, order, params = build_filter_clauses(
+            filters, order_by, self.quote_ident
+        )
         columns, rows, _ = self._run(
-            f"SELECT * FROM {self.quote_ident(table)} LIMIT ? OFFSET ?",
-            (max(limit, 0), max(offset, 0)),
+            f"SELECT * FROM {self.quote_ident(table)}{where}{order} "
+            "LIMIT ? OFFSET ?",
+            (*params, max(limit, 0), max(offset, 0)),
         )
         return ResultSet(columns=columns, rows=rows)
 

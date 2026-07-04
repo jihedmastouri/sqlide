@@ -32,8 +32,24 @@ columnview.data-table .cell-modified {
   border-radius: 4px;
 }
 
-/* Aggregate popover: tab-aligned name/value lines. */
+/* Aggregate page of the right side panel: tab-aligned name/value
+   lines. */
 label.aggregate-summary {
   font-family: monospace;
   padding: 6px;
+}
+
+/* Sidebar connection rows: status dot — gray while the connection is
+   idle (never opened), green once its connector exists. The widget is
+   an 8×8 box; the radius turns it into a circle. */
+listview.schema-tree .conn-dot {
+  border-radius: 4px;
+}
+
+listview.schema-tree .conn-dot-idle {
+  background-color: alpha(currentColor, 0.4);
+}
+
+listview.schema-tree .conn-dot-active {
+  background-color: @success_bg_color;
 }

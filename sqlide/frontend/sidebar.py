@@ -6,9 +6,14 @@ for lazy trees). Shape:
     connection → Tables / Views / Functions → object → columns
 
 Column rows show "name  type" with a PK marker and are informational.
-Activating a table/view opens a data tab; activating a connection or
-category toggles it; each connection row keeps its "new query console"
-button.
+Rows lead with a per-kind icon (connections also get a connection
+status dot) and expandable rows end with a caret; the built-in
+expander arrow is hidden. Activating a table/view opens a data tab;
+activating a connection or category toggles it; clicking the caret on
+a table/view expands its columns without opening a tab; each
+connection row keeps its "new query console" button. Hovering a
+table/view shows its DDL in a tooltip (fetched lazily, cached on the
+node); hovering a connection shows a short summary.
 
 Lazy loading: GTK probes create_func just to decide whether a row gets
 an expander arrow, so it must stay cheap — it only creates (and caches)
@@ -30,6 +35,15 @@ from sqlide.backend.db.base import Connector
 from sqlide.frontend.util import run_async
 
 _EXPANDABLE = ("connection", "category", "table", "view")
+
+# Leading icon per row kind; kinds not listed (category, column, note)
+# show no icon.
+_KIND_ICONS = {
+    "connection": "network-server-symbolic",
+    "table": "view-grid-symbolic",
+    "view": "view-reveal-symbolic",
+    "function": "system-run-symbolic",
+}
 
 
 class Node(GObject.Object):
@@ -61,6 +75,9 @@ class Node(GObject.Object):
         self.store: Gio.ListStore | None = None  # cached child model
         self.loaded = False
         self.loading = False
+        self.connected = False  # connection rows: status dot state
+        self.ddl: str | None = None  # table/view rows: None = not fetched
+        self.ddl_loading = False
 
 
 class Sidebar(Gtk.ScrolledWindow):
@@ -76,6 +93,9 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_open_table = on_open_table
         self._on_new_query = on_new_query
         self._show_error = show_error
+        # Currently bound status dot per connection name, so
+        # set_connected() can restyle a visible row.
+        self._dots: dict[str, Gtk.Box] = {}
 
         self._roots = Gio.ListStore(item_type=Node)
         self._tree = Gtk.TreeListModel.new(
@@ -101,6 +121,18 @@ class Sidebar(Gtk.ScrolledWindow):
         self._roots.append(
             Node("connection", profile.name, detail=profile.kind, profile=profile)
         )
+
+    def set_connected(self, name: str, connected: bool) -> None:
+        """Flip a connection row's status dot (main thread only; the
+        window marshals here with GLib.idle_add from worker threads)."""
+        for i in range(self._roots.get_n_items()):
+            node = self._roots.get_item(i)
+            if node.label == name:
+                node.connected = connected
+                break
+        dot = self._dots.get(name)
+        if dot is not None:
+            _style_dot(dot, connected)
 
     def expand_profile(self, name: str) -> None:
         """Expand (and thereby connect/load) the row for a profile."""
@@ -135,7 +167,10 @@ class Sidebar(Gtk.ScrolledWindow):
             node.store.append(Node("note", "(none)"))
         node.loaded = True
 
-    def _on_row_expanded(self, row: Gtk.TreeListRow, _pspec) -> None:
+    def _on_row_expanded(
+        self, row: Gtk.TreeListRow, _pspec, list_item: Gtk.ListItem
+    ) -> None:
+        _set_caret(list_item.caret, row.get_expanded())
         if row.get_expanded():
             self._load_children(row.get_item())
 
@@ -208,7 +243,19 @@ class Sidebar(Gtk.ScrolledWindow):
 
     def _setup_row(self, _factory, list_item: Gtk.ListItem) -> None:
         expander = Gtk.TreeExpander()
+        # The caret lives at the end of the row instead (icons stay
+        # aligned at the left edge).
+        expander.set_hide_expander(True)
+        expander.set_indent_for_icon(False)
+        expander.set_has_tooltip(True)
+        expander.connect("query-tooltip", self._query_tooltip, list_item)
         box = Gtk.Box(spacing=6)
+        dot = Gtk.Box(width_request=8, height_request=8)
+        dot.set_valign(Gtk.Align.CENTER)
+        dot.add_css_class("conn-dot")
+        dot.set_visible(False)
+        icon = Gtk.Image()
+        icon.set_visible(False)
         label = Gtk.Label(xalign=0, hexpand=True)
         label.set_ellipsize(Pango.EllipsizeMode.END)
         pk = Gtk.Label(label="PK")
@@ -222,20 +269,44 @@ class Sidebar(Gtk.ScrolledWindow):
         button.add_css_class("flat")
         button.set_valign(Gtk.Align.CENTER)
         button.connect("clicked", self._query_clicked, list_item)
-        for child in (label, pk, detail, button):
+        caret = Gtk.Image(icon_name="pan-end-symbolic")
+        caret.add_css_class("dim-label")
+        caret.set_visible(False)
+        # Expands table/view columns without opening a data tab (row
+        # activation), so the two gestures stay distinct.
+        caret_click = Gtk.GestureClick()
+        caret_click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        caret_click.connect("pressed", self._caret_pressed, list_item)
+        caret.add_controller(caret_click)
+        for child in (dot, icon, label, pk, detail, button, caret):
             box.append(child)
         expander.set_child(box)
         list_item.set_child(expander)
+        list_item.dot = dot
+        list_item.dot_name = ""
+        list_item.icon = icon
         list_item.label = label
         list_item.pk = pk
         list_item.detail = detail
         list_item.button = button
+        list_item.caret = caret
         list_item.row_handler = 0
 
     def _bind_row(self, _factory, list_item: Gtk.ListItem) -> None:
         row = list_item.get_item()  # TreeListRow (passthrough=False)
         node = row.get_item()
         list_item.get_child().set_list_row(row)
+        if node.kind == "connection":
+            _style_dot(list_item.dot, node.connected)
+            list_item.dot.set_visible(True)
+            list_item.dot_name = node.label
+            self._dots[node.label] = list_item.dot
+        else:
+            list_item.dot.set_visible(False)
+        icon_name = _KIND_ICONS.get(node.kind)
+        if icon_name:
+            list_item.icon.set_from_icon_name(icon_name)
+        list_item.icon.set_visible(bool(icon_name))
         list_item.label.set_text(node.label)
         if node.kind == "note":
             list_item.label.add_css_class("dim-label")
@@ -245,8 +316,10 @@ class Sidebar(Gtk.ScrolledWindow):
         list_item.detail.set_text(node.detail)
         list_item.detail.set_visible(bool(node.detail))
         list_item.button.set_visible(node.kind == "connection")
+        list_item.caret.set_visible(node.kind in _EXPANDABLE)
+        _set_caret(list_item.caret, row.get_expanded())
         list_item.row_handler = row.connect(
-            "notify::expanded", self._on_row_expanded
+            "notify::expanded", self._on_row_expanded, list_item
         )
         if row.get_expanded():  # expanded while unbound (e.g. scrolled away)
             self._load_children(node)
@@ -255,9 +328,67 @@ class Sidebar(Gtk.ScrolledWindow):
         if list_item.row_handler:
             list_item.get_item().disconnect(list_item.row_handler)
             list_item.row_handler = 0
+        if list_item.dot_name:
+            if self._dots.get(list_item.dot_name) is list_item.dot:
+                del self._dots[list_item.dot_name]
+            list_item.dot_name = ""
 
     def _query_clicked(self, _button, list_item: Gtk.ListItem) -> None:
         self._on_new_query(list_item.get_item().get_item().profile)
+
+    def _query_tooltip(
+        self, _widget, _x, _y, _keyboard, tooltip: Gtk.Tooltip,
+        list_item: Gtk.ListItem,
+    ) -> bool:
+        row = list_item.get_item()
+        if row is None:
+            return False
+        node = row.get_item()
+        if node.kind == "connection":
+            tooltip.set_text(_connection_summary(node))
+            return True
+        if node.kind not in ("table", "view"):
+            return False
+        if node.ddl is None:
+            # First hover: kick off the fetch; the tooltip shows from
+            # the cache on the next hover.
+            self._fetch_ddl(node)
+            return False
+        if not node.ddl:
+            return False
+        label = Gtk.Label(label=_clamp_lines(node.ddl, 30), xalign=0)
+        label.add_css_class("monospace")
+        tooltip.set_custom(label)
+        return True
+
+    def _fetch_ddl(self, node: Node) -> None:
+        if node.ddl_loading:
+            return
+        node.ddl_loading = True
+
+        def done(ddl: str) -> None:
+            node.ddl_loading = False
+            node.ddl = ddl or ""
+
+        def failed(_exc: Exception) -> None:
+            node.ddl_loading = False  # ddl stays None: re-hover retries
+
+        run_async(
+            lambda: self._ensure(node.profile).get_ddl(node.label),
+            done,
+            failed,
+        )
+
+    def _caret_pressed(
+        self, gesture, _n_press, _x, _y, list_item: Gtk.ListItem
+    ) -> None:
+        row = list_item.get_item()
+        if row is None:
+            return
+        if row.get_item().kind in _EXPANDABLE:
+            # Claim so the press never bubbles into row activation.
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            row.set_expanded(not row.get_expanded())
 
     def _on_activate(self, _view, position: int) -> None:
         row = self._view.get_model().get_item(position)
@@ -266,3 +397,43 @@ class Sidebar(Gtk.ScrolledWindow):
             self._on_open_table(node.profile, node.label)
         elif node.kind in ("connection", "category"):
             row.set_expanded(not row.get_expanded())
+
+
+def _set_caret(caret: Gtk.Image, expanded: bool) -> None:
+    caret.set_from_icon_name(
+        "pan-down-symbolic" if expanded else "pan-end-symbolic"
+    )
+
+
+def _connection_summary(node: Node) -> str:
+    """Connection-row tooltip: kind + target, plus the object count
+    once the schema has loaded (a whole-database DDL dump would be far
+    too big for a tooltip)."""
+    profile = node.profile
+    target = profile.file_path or profile.jdbc_url or profile.host
+    summary = f"{profile.kind} · {target}" if target else profile.kind
+    if node.loaded and node.store is not None:
+        count = sum(
+            len(child.payload)
+            for i in range(node.store.get_n_items())
+            if (child := node.store.get_item(i)).kind == "category"
+            and child.payload is not None
+        )
+        summary += f"\n{count} object(s)"
+    return summary
+
+
+def _clamp_lines(text: str, max_lines: int) -> str:
+    lines = text.splitlines()
+    if len(lines) > max_lines:
+        lines = lines[:max_lines] + ["…"]
+    return "\n".join(lines)
+
+
+def _style_dot(dot: Gtk.Box, connected: bool) -> None:
+    if connected:
+        dot.add_css_class("conn-dot-active")
+        dot.remove_css_class("conn-dot-idle")
+    else:
+        dot.add_css_class("conn-dot-idle")
+        dot.remove_css_class("conn-dot-active")

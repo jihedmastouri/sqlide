@@ -96,6 +96,13 @@ class SqliteConnector(Connector):
             for _cid, name, ctype, notnull, _default, pk in rows
         ]
 
+    def get_ddl(self, name: str) -> str:
+        # sqlite_master.sql is NULL for some internal objects.
+        _, rows, _ = self._run(
+            "SELECT sql FROM sqlite_master WHERE name = ?", (name,)
+        )
+        return (rows[0][0] or "") if rows else ""
+
     def fetch_rows(
         self,
         table: str,

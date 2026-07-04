@@ -53,11 +53,13 @@ class QueryConsole(Gtk.Box):
         sql: str = "",
         connection: str = "",
         on_ran: Callable[[str, str, bool], None] | None = None,
+        on_aggregate: Callable[[list[str]], None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._find_connection = find_connection
         self._ensure = ensure_connector
         self._on_ran = on_ran
+        self._on_aggregate = on_aggregate
         # Set by the window after the tab page exists (tab title).
         self.on_connection_changed: Callable[[str], None] | None = None
 
@@ -134,7 +136,9 @@ class QueryConsole(Gtk.Box):
         self._results.set_show_tabs(False)
         self._results.set_show_border(False)
         self._results.set_scrollable(True)
-        self._append_result_page(ResultGrid(), "Result")
+        self._append_result_page(
+            ResultGrid(on_aggregate=on_aggregate), "Result"
+        )
 
         paned = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL, vexpand=True)
         paned.set_start_child(self._editor)
@@ -329,7 +333,7 @@ class QueryConsole(Gtk.Box):
         for i, (sql, result) in enumerate(outcomes):
             title = _tab_title(i, sql) if len(outcomes) > 1 else "Result"
             if isinstance(result, ResultSet):
-                grid = ResultGrid()
+                grid = ResultGrid(on_aggregate=self._on_aggregate)
                 grid.set_result(result.columns, result.rows)
                 page: Gtk.Widget = grid
                 counts.append(f"{len(result)} row(s)")

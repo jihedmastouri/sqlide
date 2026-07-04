@@ -1,10 +1,11 @@
-"""Query history panel (right sidebar of the main window).
+"""Query history list (the History page of the right side panel).
 
 A Gtk.ListBox over the workspace's HistoryEntry list, newest first.
 Row title is the first line of the SQL (ellipsized), subtitle is
 "connection · time"; failed runs get an error marker. Activating a
 row hands the entry back to the window, which loads it into a query
-console. The header has a clear-history button.
+console. The header (view switcher, clear-history button) belongs to
+the enclosing SidePanel.
 """
 
 from __future__ import annotations
@@ -17,25 +18,11 @@ from gi.repository import Adw, Gtk
 from sqlide.backend.workspaces import HistoryEntry
 
 
-class HistoryPanel(Gtk.Box):
-    # Composes an Adw.ToolbarView rather than subclassing it (final type).
-    def __init__(
-        self,
-        on_activate: Callable[[HistoryEntry], None],
-        on_clear: Callable[[], None],
-    ) -> None:
-        super().__init__()
+class HistoryPanel(Gtk.ScrolledWindow):
+    def __init__(self, on_activate: Callable[[HistoryEntry], None]) -> None:
+        super().__init__(vexpand=True, hexpand=True)
         self._on_activate = on_activate
         self._entries: list[HistoryEntry] = []  # newest first, row order
-
-        view = Adw.ToolbarView(hexpand=True)
-        header = Adw.HeaderBar()
-        header.set_title_widget(Gtk.Label(label="History"))
-        clear_button = Gtk.Button(icon_name="user-trash-symbolic")
-        clear_button.set_tooltip_text("Clear history")
-        clear_button.connect("clicked", lambda *_: on_clear())
-        header.pack_start(clear_button)
-        view.add_top_bar(header)
 
         self._list = Gtk.ListBox()
         self._list.set_selection_mode(Gtk.SelectionMode.NONE)
@@ -44,8 +31,7 @@ class HistoryPanel(Gtk.Box):
         placeholder = Gtk.Label(label="No queries yet", margin_top=24)
         placeholder.add_css_class("dim-label")
         self._list.set_placeholder(placeholder)
-        view.set_content(Gtk.ScrolledWindow(child=self._list, vexpand=True))
-        self.append(view)
+        self.set_child(self._list)
 
     def set_entries(self, entries: list[HistoryEntry]) -> None:
         """Rebuild the list from the workspace history (stored oldest

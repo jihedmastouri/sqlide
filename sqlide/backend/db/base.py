@@ -141,6 +141,15 @@ class Connector(ABC):
         """
         return []
 
+    def get_ddl(self, name: str) -> str:
+        """CREATE statement for a table or view, for the sidebar's
+        hover preview. Empty string when unknown or unsupported.
+
+        Concrete default (not abstract) so adapters without a DDL
+        catalog need no override.
+        """
+        return ""
+
     @abstractmethod
     def fetch_rows(
         self,

@@ -11,8 +11,11 @@ saved back to the workspace file whenever they change and when the
 window closes (which also captures query-console SQL and the selected
 tab). When no tabs are open the content area shows a status message.
 
-Layout: a right OverlaySplitView (query history, hidden by default)
-wraps the left one (connections sidebar). The window owns the shared
+Layout: the left OverlaySplitView (connections sidebar) wraps the
+content area; inside it, below the content header and tab bar, a right
+OverlaySplitView (query history, hidden by default) wraps the tab
+stack — so the panel never reaches the window controls at the top.
+The window owns the shared
 Gtk.StringList of connection names that every query console's dropdown
 observes, records each console run into the workspace history, and
 loads history entries back into a console when activated.
@@ -23,7 +26,7 @@ from __future__ import annotations
 import threading
 from datetime import datetime
 
-from gi.repository import Adw, GObject, Gtk
+from gi.repository import Adw, GLib, GObject, Gtk
 
 from sqlide.frontend.util import main_menu_button
 
@@ -33,8 +36,8 @@ from sqlide.backend.db.base import Connector, ConnectorError
 from sqlide.backend.workspaces import HistoryEntry, Workspace
 from sqlide.frontend.connection_dialog import ConnectionDialog
 from sqlide.frontend.data_grid import TableTab
-from sqlide.frontend.history_panel import HistoryPanel
 from sqlide.frontend.query_console import QueryConsole
+from sqlide.frontend.side_panel import SidePanel
 from sqlide.frontend.sidebar import Sidebar
 
 
@@ -126,23 +129,26 @@ class MainWindow(Adw.ApplicationWindow):
         )
         content_header.pack_end(overview_button)
 
-        content_view = Adw.ToolbarView()
-        content_view.add_top_bar(content_header)
-        content_view.add_top_bar(tab_bar)
-        content_view.set_content(self._stack)
-        self._split.set_content(content_view)
-
-        # Query history in a right sidebar, hidden by default.
-        self._history_panel = HistoryPanel(
+        # Side panel (history + aggregate) in a right sidebar, hidden by
+        # default. It sits inside the content area (below the header bar
+        # and tab bar), so its edge and toggle stay away from the window
+        # controls.
+        self._side_panel = SidePanel(
             on_activate=self._history_activated, on_clear=self._clear_history
         )
-        self._history_panel.set_entries(workspace.history)
+        self._side_panel.set_entries(workspace.history)
         self._history_split = Adw.OverlaySplitView(
             sidebar_position=Gtk.PackType.END, show_sidebar=False
         )
         self._history_split.set_min_sidebar_width(260)
-        self._history_split.set_sidebar(self._history_panel)
-        self._history_split.set_content(self._split)
+        self._history_split.set_sidebar(self._side_panel)
+        self._history_split.set_content(self._stack)
+
+        content_view = Adw.ToolbarView()
+        content_view.add_top_bar(content_header)
+        content_view.add_top_bar(tab_bar)
+        content_view.set_content(self._history_split)
+        self._split.set_content(content_view)
 
         history_toggle = Gtk.ToggleButton(
             icon_name="document-open-recent-symbolic"
@@ -171,7 +177,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._overview = Adw.TabOverview(
             view=self._tab_view,
             enable_new_tab=True,
-            child=self._history_split,
+            child=self._split,
         )
         self._overview.connect("create-tab", self._create_tab)
 
@@ -198,7 +204,16 @@ class MainWindow(Adw.ApplicationWindow):
                 )
                 connector.connect()
                 self._connectors[profile.name] = connector
+                # Runs on a worker thread; the sidebar dot must flip on
+                # the main loop.
+                GLib.idle_add(
+                    self._sidebar.set_connected, profile.name, True
+                )
             return connector
+
+    def is_connected(self, name: str) -> bool:
+        with self._connectors_lock:
+            return name in self._connectors
 
     # Workspace persistence
 
@@ -251,6 +266,11 @@ class MainWindow(Adw.ApplicationWindow):
     def show_error(self, message: str) -> None:
         self._toasts.add_toast(Adw.Toast(title=message))
 
+    def show_aggregate(self, lines: list[str]) -> None:
+        """Route a grid's Aggregate summary into the side panel."""
+        self._side_panel.show_aggregate(lines)
+        self._history_split.set_show_sidebar(True)
+
     def _add_connection(self, *_args) -> None:
         ConnectionDialog(on_save=self._profile_added).present(self)
 
@@ -269,7 +289,13 @@ class MainWindow(Adw.ApplicationWindow):
             if getattr(page.get_child(), "tab_key", None) == key:
                 self._tab_view.set_selected_page(page)
                 return
-        tab = TableTab(profile, table, self.ensure_connector, self.show_error)
+        tab = TableTab(
+            profile,
+            table,
+            self.ensure_connector,
+            self.show_error,
+            on_aggregate=self.show_aggregate,
+        )
         tab.tab_key = key
         page = self._tab_view.append(tab)
         page.set_title(f"{profile.name} ▸ {table}")
@@ -286,6 +312,7 @@ class MainWindow(Adw.ApplicationWindow):
             sql=sql,
             connection=profile.name if profile is not None else "",
             on_ran=self._query_ran,
+            on_aggregate=self.show_aggregate,
         )
         page = self._tab_view.append(console)
 
@@ -337,12 +364,12 @@ class MainWindow(Adw.ApplicationWindow):
             ok=ok,
         ))
         self._save_state()
-        self._history_panel.set_entries(self.workspace.history)
+        self._side_panel.set_entries(self.workspace.history)
 
     def _clear_history(self) -> None:
         self.workspace.history.clear()
         self._save_state()
-        self._history_panel.set_entries([])
+        self._side_panel.set_entries([])
 
     def _history_activated(self, entry: HistoryEntry) -> None:
         page = self._tab_view.get_selected_page()

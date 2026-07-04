@@ -13,8 +13,9 @@ Ctrl+C (or the context menu's Copy) copies the selection as
 tab-separated text; row and block selections include a header line with
 the column names, following the current display order of the columns.
 "Copy As" offers CSV, INSERT statements, pretty (ASCII table) and
-Markdown. "Aggregate" pops a summary (count/sum/avg/min/max) of the
-selected cells.
+Markdown. "Aggregate" computes a summary (count/sum/avg/min/max) of
+the selected cells and hands it to the on_aggregate callback, which
+the window routes to the Aggregate page of the right side panel.
 
 TableTab: a ResultGrid bound to one table — paged loading, refresh, and
 primary-key-based cell editing. Editing is opt-in: a toggle in the
@@ -65,10 +66,12 @@ class ResultGrid(Gtk.ScrolledWindow):
         self,
         on_edit: EditCallback | None = None,
         table_name: str | None = None,
+        on_aggregate: Callable[[list[str]], None] | None = None,
     ) -> None:
         super().__init__(vexpand=True, hexpand=True)
         self.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self._on_edit = on_edit
+        self._aggregate_cb = on_aggregate
         # Used by "Copy As > INSERT Statement"; falls back to a placeholder.
         self.table_name = table_name
         self._store = Gio.ListStore(item_type=RowItem)
@@ -135,10 +138,6 @@ class ResultGrid(Gtk.ScrolledWindow):
         self._popover.set_parent(self._view)
         self._popover.set_has_arrow(False)
 
-        self._agg_label = Gtk.Label(justify=Gtk.Justification.LEFT)
-        self._agg_label.add_css_class("aggregate-summary")
-        self._agg_popover = Gtk.Popover(child=self._agg_label, autohide=True)
-        self._agg_popover.set_parent(self._view)
         self._view.connect("destroy", self._on_view_destroy)
 
         shortcuts = Gtk.ShortcutController()
@@ -359,7 +358,6 @@ class ResultGrid(Gtk.ScrolledWindow):
 
     def _on_view_destroy(self, *_args) -> None:
         self._popover.unparent()
-        self._agg_popover.unparent()
 
     # Copy
 
@@ -422,7 +420,7 @@ class ResultGrid(Gtk.ScrolledWindow):
 
     def _on_aggregate(self, *_args) -> None:
         data = self._selection_data()
-        if data is None:
+        if data is None or self._aggregate_cb is None:
             return
         _headers, rows = data
         values = [v for row in rows for v in row]
@@ -448,9 +446,7 @@ class ResultGrid(Gtk.ScrolledWindow):
                 f"Min\t{_format_number(min(numbers))}",
                 f"Max\t{_format_number(max(numbers))}",
             ]
-        self._agg_label.set_text("\n".join(lines).expandtabs(12))
-        self._agg_popover.set_pointing_to(self._menu_rect)
-        self._agg_popover.popup()
+        self._aggregate_cb(lines)
 
 
 def _cell_text(value: Any) -> str:
@@ -639,6 +635,7 @@ class TableTab(Gtk.Box):
         table: str,
         ensure_connector: Callable[[ConnectionProfile], Connector],
         show_error: Callable[[str], None],
+        on_aggregate: Callable[[list[str]], None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.profile = profile
@@ -659,7 +656,11 @@ class TableTab(Gtk.Box):
         self._filter_revealer = Gtk.Revealer(child=self._build_filter_panel())
         self.append(self._filter_revealer)
 
-        self._grid = ResultGrid(on_edit=self._commit_edit, table_name=table)
+        self._grid = ResultGrid(
+            on_edit=self._commit_edit,
+            table_name=table,
+            on_aggregate=on_aggregate,
+        )
         self.append(self._grid)
 
         bar = Gtk.ActionBar()

@@ -3,16 +3,35 @@
 ResultGrid: a Gtk.ColumnView whose columns are built at runtime from a
 result set. Reused by table tabs and the query console. When editable,
 cells are Gtk.EditableLabel and committed edits go through a callback.
+Editing is locked until set_unlocked(True); mark_modified() highlights
+cells with uncommitted changes.
+
+Columns can be dragged to reorder and resized at their edges. Cells are
+selectable for copying: click selects a cell, Shift+click extends to a
+rectangular block, and the context menu selects a whole row or column.
+Ctrl+C (or the context menu's Copy) copies the selection as
+tab-separated text; row and block selections include a header line with
+the column names, following the current display order of the columns.
+"Copy As" offers CSV, INSERT statements, pretty (ASCII table) and
+Markdown. "Aggregate" pops a summary (count/sum/avg/min/max) of the
+selected cells.
 
 TableTab: a ResultGrid bound to one table — paged loading, refresh, and
-primary-key-based cell editing via Connector.update_cell().
+primary-key-based cell editing. Editing is opt-in: a toggle in the
+action bar unlocks the cells, edits accumulate locally (highlighted in
+the grid), and Save opens a review dialog showing the UPDATE statements
+before they run through Connector.update_cell(). Refresh discards
+pending edits.
 """
 
 from __future__ import annotations
 
 from typing import Any, Callable
 
-from gi.repository import Gio, GObject, Gtk, Pango
+import csv
+import io
+
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import (
@@ -42,10 +61,16 @@ class RowItem(GObject.Object):
 
 
 class ResultGrid(Gtk.ScrolledWindow):
-    def __init__(self, on_edit: EditCallback | None = None) -> None:
+    def __init__(
+        self,
+        on_edit: EditCallback | None = None,
+        table_name: str | None = None,
+    ) -> None:
         super().__init__(vexpand=True, hexpand=True)
         self.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self._on_edit = on_edit
+        # Used by "Copy As > INSERT Statement"; falls back to a placeholder.
+        self.table_name = table_name
         self._store = Gio.ListStore(item_type=RowItem)
         self._view = Gtk.ColumnView(
             model=Gtk.NoSelection(model=self._store), hexpand=True
@@ -53,7 +78,78 @@ class ResultGrid(Gtk.ScrolledWindow):
         self._view.add_css_class("data-table")
         self._view.set_show_row_separators(True)
         self._view.set_show_column_separators(True)
+        self._view.set_reorderable(True)
         self.set_child(self._view)
+
+        self._column_names: list[str] = []
+        # ColumnViewColumn objects in data order; get_columns() gives the
+        # display order after the user drags headers around.
+        self._column_objs: list[Gtk.ColumnViewColumn] = []
+        # Selected cells = _sel_rows × _sel_cols (data column indices).
+        self._sel_rows: set[int] = set()
+        self._sel_cols: set[int] = set()
+        self._sel_kind: str | None = None  # "cell" | "block" | "row" | "column"
+        self._editable_grid = False  # cells are EditableLabels
+        self._unlocked = False  # edits allowed right now
+        self._modified: set[tuple[int, int]] = set()  # (row, data col)
+        self._anchor: tuple[int, int] | None = None
+        # Currently bound cell widgets, for restyling on selection change.
+        self._bound_cells: dict[Gtk.Widget, tuple[Gtk.ListItem, int]] = {}
+        self._menu_cell: tuple[int, int] = (0, 0)
+        self._menu_rect = Gdk.Rectangle()
+
+        actions = Gio.SimpleActionGroup()
+        for name, callback in (
+            ("select-row", self._on_select_row),
+            ("select-column", self._on_select_column),
+            ("copy", lambda *_: self.copy_selection()),
+            ("aggregate", self._on_aggregate),
+        ):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", callback)
+            actions.add_action(action)
+        copy_as = Gio.SimpleAction.new("copy-as", GLib.VariantType.new("s"))
+        copy_as.connect(
+            "activate", lambda _a, param: self.copy_selection(param.get_string())
+        )
+        actions.add_action(copy_as)
+        self._view.insert_action_group("grid", actions)
+
+        menu = Gio.Menu()
+        menu.append("Select Row", "grid.select-row")
+        menu.append("Select Column", "grid.select-column")
+        copy_section = Gio.Menu()
+        copy_section.append("Copy", "grid.copy")
+        copy_as_menu = Gio.Menu()
+        for label, fmt in (
+            ("CSV", "csv"),
+            ("INSERT Statement", "insert"),
+            ("Pretty", "pretty"),
+            ("Markdown", "markdown"),
+        ):
+            copy_as_menu.append(label, f"grid.copy-as::{fmt}")
+        copy_section.append_submenu("Copy As", copy_as_menu)
+        copy_section.append("Aggregate", "grid.aggregate")
+        menu.append_section(None, copy_section)
+        self._popover = Gtk.PopoverMenu.new_from_model(menu)
+        self._popover.set_parent(self._view)
+        self._popover.set_has_arrow(False)
+
+        self._agg_label = Gtk.Label(justify=Gtk.Justification.LEFT)
+        self._agg_label.add_css_class("aggregate-summary")
+        self._agg_popover = Gtk.Popover(child=self._agg_label, autohide=True)
+        self._agg_popover.set_parent(self._view)
+        self._view.connect("destroy", self._on_view_destroy)
+
+        shortcuts = Gtk.ShortcutController()
+        shortcuts.set_scope(Gtk.ShortcutScope.LOCAL)
+        shortcuts.add_shortcut(
+            Gtk.Shortcut.new(
+                Gtk.ShortcutTrigger.parse_string("<Control>c"),
+                Gtk.CallbackAction.new(self._on_copy_shortcut),
+            )
+        )
+        self._view.add_controller(shortcuts)
 
     def clear(self) -> None:
         self.set_result([], [])
@@ -65,8 +161,17 @@ class ResultGrid(Gtk.ScrolledWindow):
         for col in [old.get_item(i) for i in range(old.get_n_items())]:
             self._view.remove_column(col)
         self._store.remove_all()
+        self._column_names = list(columns)
+        self._column_objs = []
+        self._bound_cells.clear()
+        self._sel_rows = set()
+        self._sel_cols = set()
+        self._sel_kind = None
+        self._anchor = None
+        self._modified = set()
 
         editable = editable and self._on_edit is not None
+        self._editable_grid = editable
         for index, name in enumerate(columns):
             factory = Gtk.SignalListItemFactory()
             if editable:
@@ -75,9 +180,11 @@ class ResultGrid(Gtk.ScrolledWindow):
             else:
                 factory.connect("setup", self._setup_label)
                 factory.connect("bind", self._bind_label, index)
+            factory.connect("unbind", self._unbind_cell)
             column = Gtk.ColumnViewColumn(title=name, factory=factory)
             column.set_resizable(True)
             column.set_expand(True)
+            self._column_objs.append(column)
             self._view.append_column(column)
 
         for row in rows:
@@ -86,9 +193,10 @@ class ResultGrid(Gtk.ScrolledWindow):
     # Read-only cells
 
     def _setup_label(self, factory, list_item) -> None:
-        label = Gtk.Label(xalign=0)
+        label = Gtk.Label(xalign=0, hexpand=True)
         label.set_ellipsize(Pango.EllipsizeMode.END)
         label.set_max_width_chars(50)
+        self._attach_cell_gesture(label)
         list_item.set_child(label)
 
     def _bind_label(self, factory, list_item, index) -> None:
@@ -100,20 +208,40 @@ class ResultGrid(Gtk.ScrolledWindow):
         else:
             label.set_text(str(value))
             label.remove_css_class("dim-label")
+        self._register_cell(label, list_item, index)
 
     # Editable cells
 
     def _setup_editable(self, factory, list_item, index) -> None:
-        widget = Gtk.EditableLabel()
+        widget = Gtk.EditableLabel(hexpand=True)
         # The ListItem is recycled across rows; resolve the current row
         # with get_item() at commit time, not here.
         widget.connect("notify::editing", self._on_editing_changed, list_item, index)
+        self._attach_cell_gesture(widget)
         list_item.set_child(widget)
 
     def _bind_editable(self, factory, list_item, index) -> None:
         widget = list_item.get_child()
         value = list_item.get_item().values[index]
         widget.set_text("" if value is None else str(value))
+        widget.set_editable(self._unlocked)
+        self._register_cell(widget, list_item, index)
+
+    def set_unlocked(self, unlocked: bool) -> None:
+        """Allow or forbid starting cell edits (the lock is enforced in
+        the click gesture; set_editable is a second layer so a stray
+        edit cannot change text)."""
+        self._unlocked = unlocked
+        for widget in self._bound_cells:
+            if isinstance(widget, Gtk.EditableLabel):
+                widget.set_editable(unlocked)
+
+    def mark_modified(self, row: RowItem, col: int) -> None:
+        """Highlight a cell as locally edited but not yet saved."""
+        found, position = self._store.find(row)
+        if found:
+            self._modified.add((position, col))
+            self._restyle_cells()
 
     def _on_editing_changed(self, widget, _pspec, list_item, index) -> None:
         if widget.get_property("editing"):
@@ -126,6 +254,258 @@ class ResultGrid(Gtk.ScrolledWindow):
         new_text = widget.get_text()
         if new_text != old_text:
             self._on_edit(row, index, new_text)
+
+    # Selection
+
+    def _attach_cell_gesture(self, widget) -> None:
+        # No user data on the connection: the handler resolves the cell
+        # through _bound_cells. A closure ref back to the widget (or its
+        # ListItem) from its own controller crashes GTK at teardown.
+        click = Gtk.GestureClick(button=0)
+        # Capture phase so a claimed press (Shift+click, right-click)
+        # never reaches an EditableLabel and starts an edit.
+        click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        click.connect("pressed", self._on_cell_pressed)
+        widget.add_controller(click)
+
+    def _register_cell(self, widget, list_item, index) -> None:
+        self._bound_cells[widget] = (list_item, index)
+        self._style_cell(widget, list_item.get_position(), index)
+
+    def _unbind_cell(self, factory, list_item) -> None:
+        self._bound_cells.pop(list_item.get_child(), None)
+
+    def _style_cell(self, widget, row: int, col: int) -> None:
+        if row in self._sel_rows and col in self._sel_cols:
+            widget.add_css_class("cell-selected")
+        else:
+            widget.remove_css_class("cell-selected")
+        if (row, col) in self._modified:
+            widget.add_css_class("cell-modified")
+        else:
+            widget.remove_css_class("cell-modified")
+
+    def _restyle_cells(self) -> None:
+        for widget, (list_item, col) in self._bound_cells.items():
+            self._style_cell(widget, list_item.get_position(), col)
+
+    def _select(self, rows: set[int], cols: set[int], kind: str) -> None:
+        self._sel_rows = rows
+        self._sel_cols = cols
+        self._sel_kind = kind
+        self._restyle_cells()
+
+    def _on_cell_pressed(self, gesture, _n_press, x, y) -> None:
+        widget = gesture.get_widget()
+        bound = self._bound_cells.get(widget)
+        if bound is None:
+            return
+        list_item, index = bound
+        row = list_item.get_position()
+        if row == Gtk.INVALID_LIST_POSITION:
+            return
+        button = gesture.get_current_button()
+        state = gesture.get_current_event_state()
+        shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
+        if button == Gdk.BUTTON_SECONDARY:
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            if row not in self._sel_rows or index not in self._sel_cols:
+                self._anchor = (row, index)
+                self._select({row}, {index}, "cell")
+            self._menu_cell = (row, index)
+            self._popup_menu(widget, x, y)
+        elif button == Gdk.BUTTON_PRIMARY:
+            if shift and self._anchor is not None:
+                gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+                self._select_block(self._anchor, (row, index))
+            else:
+                if self._editable_grid and not self._unlocked:
+                    # Locked: swallow the press so the EditableLabel
+                    # never sees it and cannot start an edit.
+                    gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+                # When unlocked the press is not claimed, so the same
+                # click still starts the edit.
+                self._anchor = (row, index)
+                self._select({row}, {index}, "cell")
+
+    def _select_block(self, anchor: tuple[int, int], end: tuple[int, int]) -> None:
+        rows = set(range(min(anchor[0], end[0]), max(anchor[0], end[0]) + 1))
+        # Column span is visual: use display positions, then map the
+        # covered range back to data indices.
+        order = self._display_order()
+        pos = {data_index: p for p, data_index in enumerate(order)}
+        first = min(pos[anchor[1]], pos[end[1]])
+        last = max(pos[anchor[1]], pos[end[1]])
+        cols = set(order[first : last + 1])
+        self._select(rows, cols, "block")
+
+    def _on_select_row(self, *_args) -> None:
+        row, _col = self._menu_cell
+        self._select({row}, set(range(len(self._column_names))), "row")
+
+    def _on_select_column(self, *_args) -> None:
+        _row, col = self._menu_cell
+        self._select(set(range(self._store.get_n_items())), {col}, "column")
+
+    def _popup_menu(self, widget, x, y) -> None:
+        ok, bounds = widget.compute_bounds(self._view)
+        rect = Gdk.Rectangle()
+        rect.x = int(bounds.origin.x + x) if ok else 0
+        rect.y = int(bounds.origin.y + y) if ok else 0
+        rect.width = rect.height = 1
+        self._menu_rect = rect
+        self._popover.set_pointing_to(rect)
+        self._popover.popup()
+
+    def _on_view_destroy(self, *_args) -> None:
+        self._popover.unparent()
+        self._agg_popover.unparent()
+
+    # Copy
+
+    def _display_order(self) -> list[int]:
+        """Data column indices in current display order."""
+        columns = self._view.get_columns()
+        return [
+            self._column_objs.index(columns.get_item(i))
+            for i in range(columns.get_n_items())
+        ]
+
+    def _on_copy_shortcut(self, _widget, _args) -> bool:
+        return self.copy_selection()
+
+    def copy_selection(self, fmt: str = "default") -> bool:
+        data = self._selection_data()
+        if data is None:
+            return False
+        headers, rows = data
+        formatter = {
+            "default": self._format_default,
+            "csv": _format_csv,
+            "insert": self._format_insert,
+            "pretty": _format_pretty,
+            "markdown": _format_markdown,
+        }[fmt]
+        self.get_clipboard().set(formatter(headers, rows))
+        return True
+
+    def _selection_data(self) -> tuple[list[str], list[list[Any]]] | None:
+        """Selected cells as (header names, row values), in display order."""
+        if not self._sel_rows or not self._sel_cols:
+            return None
+        order = [i for i in self._display_order() if i in self._sel_cols]
+        headers = [self._column_names[i] for i in order]
+        rows = []
+        for row in sorted(self._sel_rows):
+            item = self._store.get_item(row)
+            if item is not None:
+                rows.append([item.values[i] for i in order])
+        return headers, rows
+
+    def _format_default(self, headers: list[str], rows: list[list[Any]]) -> str:
+        lines = []
+        if self._sel_kind in ("row", "block"):
+            lines.append("\t".join(headers))
+        lines.extend("\t".join(_cell_text(v) for v in row) for row in rows)
+        return "\n".join(lines)
+
+    def _format_insert(self, headers: list[str], rows: list[list[Any]]) -> str:
+        table = self.table_name or "table_name"
+        columns = ", ".join(headers)
+        return "\n".join(
+            f"INSERT INTO {table} ({columns}) "
+            f"VALUES ({', '.join(_sql_literal(v) for v in row)});"
+            for row in rows
+        )
+
+    # Aggregate
+
+    def _on_aggregate(self, *_args) -> None:
+        data = self._selection_data()
+        if data is None:
+            return
+        _headers, rows = data
+        values = [v for row in rows for v in row]
+        numbers = []
+        for value in values:
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                numbers.append(value)
+            elif isinstance(value, str):
+                try:
+                    numbers.append(float(value))
+                except ValueError:
+                    pass
+        lines = [
+            f"Count\t{len(values)}",
+            f"Not NULL\t{sum(1 for v in values if v is not None)}",
+        ]
+        if numbers:
+            lines += [
+                f"Sum\t{_format_number(sum(numbers))}",
+                f"Avg\t{_format_number(sum(numbers) / len(numbers))}",
+                f"Min\t{_format_number(min(numbers))}",
+                f"Max\t{_format_number(max(numbers))}",
+            ]
+        self._agg_label.set_text("\n".join(lines).expandtabs(12))
+        self._agg_popover.set_pointing_to(self._menu_rect)
+        self._agg_popover.popup()
+
+
+def _cell_text(value: Any) -> str:
+    return "NULL" if value is None else str(value)
+
+
+def _sql_literal(value: Any) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _format_number(value: float) -> str:
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
+def _format_csv(headers: list[str], rows: list[list[Any]]) -> str:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(headers)
+    for row in rows:
+        writer.writerow("" if v is None else v for v in row)
+    return buffer.getvalue().rstrip("\n")
+
+
+def _format_pretty(headers: list[str], rows: list[list[Any]]) -> str:
+    cells = [headers] + [[_cell_text(v) for v in row] for row in rows]
+    widths = [max(len(line[i]) for line in cells) for i in range(len(headers))]
+    rule = "+" + "+".join("-" * (w + 2) for w in widths) + "+"
+
+    def line(values: list[str]) -> str:
+        return "| " + " | ".join(v.ljust(w) for v, w in zip(values, widths)) + " |"
+
+    body = [line(values) for values in cells[1:]]
+    return "\n".join([rule, line(cells[0]), rule, *body, rule])
+
+
+def _format_markdown(headers: list[str], rows: list[list[Any]]) -> str:
+    def line(values: list[str]) -> str:
+        return "| " + " | ".join(v.replace("|", "\\|") for v in values) + " |"
+
+    lines = [
+        line(headers),
+        "| " + " | ".join("---" for _ in headers) + " |",
+    ]
+    lines.extend(line([_cell_text(v) for v in row]) for row in rows)
+    return "\n".join(lines)
 
 
 class _FilterRow(Gtk.Box):
@@ -188,8 +568,70 @@ def _selected_string(dropdown: Gtk.DropDown) -> str:
     return item.get_string() if item is not None else ""
 
 
+class UpdatePreviewDialog(Adw.Dialog):
+    """Review step before saving cell edits: shows the UPDATE statements
+    that will run, with Cancel / Execute. Values are bound as parameters
+    at execution time; the preview renders them as SQL literals."""
+
+    def __init__(self, statements: list[str], on_execute: Callable[[], None]) -> None:
+        super().__init__(
+            title=f"Review Changes ({len(statements)})",
+            content_width=560,
+            content_height=400,
+        )
+        header = Adw.HeaderBar()
+        header.set_show_start_title_buttons(False)
+        header.set_show_end_title_buttons(False)
+        cancel = Gtk.Button(label="Cancel")
+        cancel.connect("clicked", lambda *_: self.close())
+        execute = Gtk.Button(label="Execute")
+        execute.add_css_class("destructive-action")
+        execute.connect("clicked", self._on_execute_clicked)
+        header.pack_start(cancel)
+        header.pack_end(execute)
+        self._on_execute = on_execute
+
+        text = Gtk.TextView(
+            editable=False,
+            monospace=True,
+            cursor_visible=False,
+            wrap_mode=Gtk.WrapMode.WORD_CHAR,
+            left_margin=12,
+            right_margin=12,
+            top_margin=12,
+            bottom_margin=12,
+        )
+        text.get_buffer().set_text("\n".join(statements))
+        scroller = Gtk.ScrolledWindow(child=text, vexpand=True)
+
+        caption = Gtk.Label(
+            label="Values are bound as parameters when executed.",
+            xalign=0,
+            margin_start=12,
+            margin_end=12,
+            margin_bottom=6,
+        )
+        caption.add_css_class("dim-label")
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content.append(scroller)
+        content.append(caption)
+        view = Adw.ToolbarView()
+        view.add_top_bar(header)
+        view.set_content(content)
+        self.set_child(view)
+
+    def _on_execute_clicked(self, *_args) -> None:
+        self.close()
+        self._on_execute()
+
+
 class TableTab(Gtk.Box):
-    """Content of one "table data" tab: paged grid + action bar."""
+    """Content of one "table data" tab: paged grid + action bar.
+
+    Cell editing is locked until the pencil toggle is pressed. Edits are
+    held locally (pending) and only hit the database after Save, which
+    first shows the UPDATE statements in an UpdatePreviewDialog."""
 
     def __init__(
         self,
@@ -210,11 +652,14 @@ class TableTab(Gtk.Box):
         self._filters: list[FilterCondition] = []
         self._order_by: list[SortSpec] = []
         self._filter_rows: list[_FilterRow] = []
+        # Pending (unsaved) edits per row: pk values snapshotted at the
+        # first edit of the row, then {column name: new text}.
+        self._pending: dict[RowItem, tuple[dict[str, Any], dict[str, str]]] = {}
 
         self._filter_revealer = Gtk.Revealer(child=self._build_filter_panel())
         self.append(self._filter_revealer)
 
-        self._grid = ResultGrid(on_edit=self._commit_edit)
+        self._grid = ResultGrid(on_edit=self._commit_edit, table_name=table)
         self.append(self._grid)
 
         bar = Gtk.ActionBar()
@@ -230,15 +675,25 @@ class TableTab(Gtk.Box):
         bar.pack_start(self._next)
 
         refresh = Gtk.Button(icon_name="view-refresh-symbolic")
-        refresh.set_tooltip_text("Refresh")
+        refresh.set_tooltip_text("Refresh (discards unsaved edits)")
         refresh.connect("clicked", lambda *_: self.reload())
         self._filter_toggle = Gtk.ToggleButton(icon_name="edit-find-symbolic")
         self._filter_toggle.set_tooltip_text("Filter and sort")
         self._filter_toggle.connect("toggled", self._on_filter_toggled)
+        self._edit_toggle = Gtk.ToggleButton(icon_name="document-edit-symbolic")
+        self._edit_toggle.set_tooltip_text("Unlock editing")
+        self._edit_toggle.set_sensitive(False)
+        self._edit_toggle.connect("toggled", self._on_edit_toggled)
+        self._save = Gtk.Button()
+        self._save.add_css_class("suggested-action")
+        self._save.set_visible(False)
+        self._save.connect("clicked", self._on_save_clicked)
         self._mode_label = Gtk.Label()
         self._mode_label.add_css_class("dim-label")
         bar.pack_end(refresh)
         bar.pack_end(self._filter_toggle)
+        bar.pack_end(self._edit_toggle)
+        bar.pack_end(self._save)
         bar.pack_end(self._mode_label)
         self.append(bar)
 
@@ -269,7 +724,11 @@ class TableTab(Gtk.Box):
             self._result_names = result.columns
             self._set_column_names([c.name for c in self._columns])
             editable = any(c.is_pk for c in self._columns)
+            self._pending.clear()
+            self._update_save_button()
             self._grid.set_result(result.columns, result.rows, editable=editable)
+            self._edit_toggle.set_sensitive(editable)
+            self._grid.set_unlocked(editable and self._edit_toggle.get_active())
             count = len(result)
             page = f"{offset + 1}–{offset + count}" if count else "no rows"
             if filters:
@@ -396,28 +855,80 @@ class TableTab(Gtk.Box):
         self._offset += PAGE_SIZE
         self.reload()
 
+    # Editing
+
+    def _on_edit_toggled(self, toggle: Gtk.ToggleButton) -> None:
+        # Locking with pending edits keeps them pending; Save (or a
+        # discarding Refresh) is still available.
+        self._grid.set_unlocked(toggle.get_active())
+
     def _commit_edit(self, row: RowItem, index: int, new_text: str) -> None:
         column_name = self._result_names[index]
-        try:
-            pk_values = {
-                c.name: row.values[self._result_names.index(c.name)]
-                for c in self._columns
-                if c.is_pk
-            }
-        except ValueError:
-            self._show_error("Cannot edit: primary key column missing from result")
-            return
+        pending = self._pending.get(row)
+        if pending is None:
+            # Snapshot the pk before applying the edit, so a row stays
+            # addressable in the database even if its pk cell is edited.
+            try:
+                pk_values = {
+                    c.name: row.values[self._result_names.index(c.name)]
+                    for c in self._columns
+                    if c.is_pk
+                }
+            except ValueError:
+                self._show_error(
+                    "Cannot edit: primary key column missing from result"
+                )
+                return
+            pending = self._pending[row] = (pk_values, {})
+        pending[1][column_name] = new_text
+        row.values[index] = new_text
+        self._grid.mark_modified(row, index)
+        self._update_save_button()
 
-        def work():
-            self._ensure(self.profile).update_cell(
-                self.table, pk_values, column_name, new_text
+    def _update_save_button(self) -> None:
+        count = sum(len(changes) for _pk, changes in self._pending.values())
+        self._save.set_visible(count > 0)
+        self._save.set_label(f"Save ({count})")
+
+    def _pending_updates(self) -> list[tuple[dict[str, Any], str, str]]:
+        """Flat (pk values, column, new value) list, one per edited cell."""
+        return [
+            (pk_values, column, value)
+            for pk_values, changes in self._pending.values()
+            for column, value in changes.items()
+        ]
+
+    def _on_save_clicked(self, *_args) -> None:
+        updates = self._pending_updates()
+        if not updates:
+            return
+        statements = [
+            f"UPDATE {self.table} SET {column} = {_sql_literal(value)}"
+            " WHERE "
+            + " AND ".join(
+                f"{name} = {_sql_literal(pk)}" for name, pk in pk_values.items()
             )
+            + ";"
+            for pk_values, column, value in updates
+        ]
+        dialog = UpdatePreviewDialog(
+            statements, lambda: self._execute_updates(updates)
+        )
+        dialog.present(self)
+
+    def _execute_updates(
+        self, updates: list[tuple[dict[str, Any], str, str]]
+    ) -> None:
+        def work():
+            connector = self._ensure(self.profile)
+            for pk_values, column, value in updates:
+                connector.update_cell(self.table, pk_values, column, value)
 
         def done(_result):
-            row.values[index] = new_text
+            self.reload()  # clears pending and modified marks
 
         def failed(exc):
             self._show_error(str(exc))
-            self.reload()
+            self.reload()  # resync with whatever was applied
 
         run_async(work, done, failed)

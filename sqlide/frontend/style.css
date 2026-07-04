@@ -15,3 +15,25 @@ listview.schema-tree > row {
 columnview.data-table > listview > row > cell {
   padding: 4px 8px 4px 16px;
 }
+
+/* Cells picked with click / Shift+click / the context menu; copied
+   with Ctrl+C. The class sits on the cell child (label), which is
+   hexpand so the highlight spans the column. */
+columnview.data-table .cell-selected {
+  background-color: alpha(@accent_bg_color, 0.35);
+  border-radius: 4px;
+}
+
+/* Cells edited but not yet saved (pending until Save executes the
+   UPDATEs or Refresh discards them). Listed after .cell-selected so
+   the pending highlight stays visible on selected cells. */
+columnview.data-table .cell-modified {
+  background-color: alpha(@warning_bg_color, 0.4);
+  border-radius: 4px;
+}
+
+/* Aggregate popover: tab-aligned name/value lines. */
+label.aggregate-summary {
+  font-family: monospace;
+  padding: 6px;
+}

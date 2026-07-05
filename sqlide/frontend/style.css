@@ -16,6 +16,16 @@ columnview.data-table > listview > row > cell {
   padding: 4px 8px 4px 16px;
 }
 
+/* Row-number stub column: dimmed, right-aligned numbers with tighter
+   padding than data cells (which carry extra left padding to stretch
+   the grid). Clicking a number selects its whole row. */
+columnview.data-table > listview > row > cell.rownum-cell {
+  padding: 4px 8px;
+}
+columnview.data-table label.row-number {
+  font-size: 0.85em;
+}
+
 /* Cells picked with click / Shift+click / drag / the context menu;
    copied with Ctrl+C. The selection shows as a border around the
    selected region, not a fill behind the text: the grid puts a

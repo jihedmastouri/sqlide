@@ -12,7 +12,9 @@ right-click menu — never on left-click, which stays free for the
 reorder drag — and sorted columns show an arrow in their title. Cells
 are selectable for copying: click selects a cell, dragging (or
 Shift+click) extends to a rectangular block, a header click selects
-the whole column, and the context menu selects a whole row or column.
+the whole column (and, without a drag, pops up a Copy / Copy As /
+Aggregate menu), a click on the row-number stub column selects the
+whole row, and the context menu selects a whole row or column.
 The selection renders as a border around the selected region.
 Ctrl+C (or the context menu's Copy) copies the selection as
 tab-separated text; row and block selections include a header line with
@@ -54,6 +56,16 @@ from sqlide.backend.workspaces import TabState
 from sqlide.frontend.util import run_async
 
 PAGE_SIZE = 500
+
+# "Copy As" clipboard formats, shared by the cell context menu and the
+# header left-click menu: (label, format key for copy_selection).
+COPY_FORMATS = (
+    ("CSV", "csv"),
+    ("INSERT Statement", "insert"),
+    ("JSON", "json"),
+    ("Pretty", "pretty"),
+    ("Markdown", "markdown"),
+)
 
 # on_edit(row_item, column_index, new_text)
 EditCallback = Callable[["RowItem", int, str], None]
@@ -105,6 +117,12 @@ class ResultGrid(Gtk.ScrolledWindow):
         # ColumnViewColumn objects in data order; get_columns() gives the
         # display order after the user drags headers around.
         self._column_objs: list[Gtk.ColumnViewColumn] = []
+        # Row-number stub column, always at display position 0 and never
+        # part of _column_objs: display-order math skips it and header
+        # drags neither move it nor cross it.
+        self._rownum_col: Gtk.ColumnViewColumn | None = None
+        self._rownum_cells: dict[Gtk.Widget, Gtk.ListItem] = {}
+        self._row_offset = 0  # added to positions so paging keeps counting
         # Selected cells = _sel_rows × _sel_cols (data column indices).
         self._sel_rows: set[int] = set()
         self._sel_cols: set[int] = set()
@@ -148,13 +166,7 @@ class ResultGrid(Gtk.ScrolledWindow):
         copy_section = Gio.Menu()
         copy_section.append("Copy", "grid.copy")
         copy_as_menu = Gio.Menu()
-        for label, fmt in (
-            ("CSV", "csv"),
-            ("INSERT Statement", "insert"),
-            ("JSON", "json"),
-            ("Pretty", "pretty"),
-            ("Markdown", "markdown"),
-        ):
+        for label, fmt in COPY_FORMATS:
             copy_as_menu.append(label, f"grid.copy-as::{fmt}")
         copy_section.append_submenu("Copy As", copy_as_menu)
         copy_section.append("Aggregate", "grid.aggregate")
@@ -168,6 +180,19 @@ class ResultGrid(Gtk.ScrolledWindow):
         self._popover = Gtk.PopoverMenu.new_from_model(menu)
         self._popover.set_parent(self._view)
         self._popover.set_has_arrow(False)
+
+        # Popped up by a plain left-click on a column header (the click
+        # already selected the whole column, so no Select items here).
+        header_menu = Gio.Menu()
+        header_menu.append("Copy", "grid.copy")
+        header_copy_as = Gio.Menu()
+        for label, fmt in COPY_FORMATS:
+            header_copy_as.append(label, f"grid.copy-as::{fmt}")
+        header_menu.append_submenu("Copy As", header_copy_as)
+        header_menu.append("Aggregate", "grid.aggregate")
+        self._header_popover = Gtk.PopoverMenu.new_from_model(header_menu)
+        self._header_popover.set_parent(self._view)
+        self._header_popover.set_has_arrow(False)
 
         self._view.connect("destroy", self._on_view_destroy)
 
@@ -189,8 +214,9 @@ class ResultGrid(Gtk.ScrolledWindow):
         # the dragged column live-swaps with the neighbor the pointer
         # crosses into. Inert over cells, so it coexists with the
         # block-selection drag above.
-        self._header_drag_pos: int | None = None  # display position
+        self._header_drag_pos: int | None = None  # span position
         self._header_drag_start = (0.0, 0.0)
+        self._header_moved = False  # a column moved during this drag
         header_drag = Gtk.GestureDrag(button=Gdk.BUTTON_PRIMARY)
         header_drag.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         header_drag.connect("drag-begin", self._on_header_drag_begin)
@@ -212,7 +238,11 @@ class ResultGrid(Gtk.ScrolledWindow):
         self.set_result([], [])
 
     def set_result(
-        self, columns: list[str], rows: list[tuple], editable: bool = False
+        self,
+        columns: list[str],
+        rows: list[tuple],
+        editable: bool = False,
+        row_offset: int = 0,
     ) -> None:
         # A re-query with the same columns (sort, filter, paging,
         # refresh) must not undo the user's drag-reorder: remember the
@@ -230,6 +260,8 @@ class ResultGrid(Gtk.ScrolledWindow):
         self._column_names = list(columns)
         self._column_objs = []
         self._bound_cells.clear()
+        self._rownum_cells.clear()
+        self._row_offset = row_offset
         self._sel_rows = set()
         self._sel_cols = set()
         self._sel_kind = None
@@ -239,6 +271,21 @@ class ResultGrid(Gtk.ScrolledWindow):
 
         editable = editable and self._on_edit is not None
         self._editable_grid = editable
+
+        # Row-number stub: untitled, fixed width (sized to the largest
+        # number it will show), not resizable, never reordered. Clicking
+        # a number selects its whole row.
+        rownum_factory = Gtk.SignalListItemFactory()
+        rownum_factory.connect("setup", self._setup_rownum)
+        rownum_factory.connect("bind", self._bind_rownum)
+        rownum_factory.connect("unbind", self._unbind_rownum)
+        self._rownum_col = Gtk.ColumnViewColumn(title="", factory=rownum_factory)
+        self._rownum_col.set_resizable(False)
+        self._rownum_col.set_expand(False)
+        digits = max(2, len(str(row_offset + len(rows))))
+        self._rownum_col.set_fixed_width(20 + 9 * digits)
+        self._view.append_column(self._rownum_col)
+
         for index, name in enumerate(columns):
             factory = Gtk.SignalListItemFactory()
             if editable:
@@ -336,6 +383,46 @@ class ResultGrid(Gtk.ScrolledWindow):
             label.set_text(str(value))
             label.remove_css_class("dim-label")
         self._register_cell(label, list_item, index)
+
+    # Row-number cells
+
+    def _setup_rownum(self, factory, list_item) -> None:
+        label = Gtk.Label(xalign=1.0)
+        label.add_css_class("dim-label")
+        label.add_css_class("row-number")
+        # Same no-user-data rule as _attach_cell_gesture: the handler
+        # resolves the row through _rownum_cells.
+        click = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
+        click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        click.connect("pressed", self._on_rownum_pressed)
+        label.add_controller(click)
+        list_item.set_child(label)
+
+    def _bind_rownum(self, factory, list_item) -> None:
+        label = list_item.get_child()
+        label.set_text(str(self._row_offset + list_item.get_position() + 1))
+        self._rownum_cells[label] = list_item
+        parent = label.get_parent()
+        if parent is not None:
+            # Tighter padding than data cells (see style.css).
+            parent.add_css_class("rownum-cell")
+
+    def _unbind_rownum(self, factory, list_item) -> None:
+        self._rownum_cells.pop(list_item.get_child(), None)
+
+    def _on_rownum_pressed(self, gesture, _n_press, _x, _y) -> None:
+        list_item = self._rownum_cells.get(gesture.get_widget())
+        if list_item is None:
+            return
+        row = list_item.get_position()
+        if row == Gtk.INVALID_LIST_POSITION:
+            return
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        order = self._display_order()
+        # Anchor on the first display column so Shift+click extends
+        # from this row like any other selection.
+        self._anchor = (row, order[0]) if order else None
+        self._select({row}, set(range(len(self._column_names))), "row")
 
     # Editable cells
 
@@ -567,7 +654,8 @@ class ResultGrid(Gtk.ScrolledWindow):
             return False
         spans = self._header_spans()
         position = self._span_at(spans, x)
-        if position is None:
+        # Span 0 is the row-number stub: no reorder, no column select.
+        if position is None or position == 0:
             return False
         start, end = spans[position]
         if x - start < self._RESIZE_EDGE or end - x < self._RESIZE_EDGE:
@@ -577,44 +665,71 @@ class ResultGrid(Gtk.ScrolledWindow):
         return True
 
     def _update_header_drag(self, x: float) -> None:
+        # _header_drag_pos is in span space, where 0 is the row-number
+        # stub and data columns start at 1; that matches the view's
+        # column positions, so insert_column takes it unshifted.
         if self._header_drag_pos is None:
             return
         spans = self._header_spans()
         target = self._span_at(spans, x)
         if target is None:
-            target = 0 if spans and x < spans[0][0] else len(spans) - 1
-        if target < 0 or target == self._header_drag_pos:
+            target = 1 if spans and x < spans[0][0] else len(spans) - 1
+        target = max(target, 1)  # never left of the row-number stub
+        if target == self._header_drag_pos:
             return
         order = self._display_order()
-        if not 0 <= self._header_drag_pos < len(order):
+        if not 1 <= self._header_drag_pos <= len(order):
             return
-        column = self._column_objs[order[self._header_drag_pos]]
+        column = self._column_objs[order[self._header_drag_pos - 1]]
         self._view.remove_column(column)
         self._view.insert_column(target, column)
         self._header_drag_pos = target
+        self._header_moved = True
         # Selection borders depend on display neighbors.
         self._restyle_cells()
+
+    _CLICK_SLOP = 4.0  # px of movement still counting as a plain click
 
     def _on_header_drag_begin(self, gesture, x, y) -> None:
         if self._begin_header_drag(x, y):
             # Sorting is on right-click, so the left press is free:
-            # claim it, select the whole column (a plain click ends
-            # here), and let any movement reorder it.
+            # claim it, select the whole column (a plain click ends in
+            # the Copy/Aggregate menu at drag-end), and let any
+            # movement reorder it.
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
             self._view.set_cursor(Gdk.Cursor.new_from_name("grabbing"))
+            self._header_moved = False
             order = self._display_order()
             self._select(
                 set(range(self._store.get_n_items())),
-                {order[self._header_drag_pos]},
+                {order[self._header_drag_pos - 1]},
                 "column",
             )
 
     def _on_header_drag_update(self, _gesture, dx, _dy) -> None:
         self._update_header_drag(self._header_drag_start[0] + dx)
 
-    def _on_header_drag_end(self, _gesture, _dx, _dy) -> None:
+    def _on_header_drag_end(self, _gesture, dx, dy) -> None:
+        was_click = (
+            self._header_drag_pos is not None
+            and not self._header_moved
+            and abs(dx) < self._CLICK_SLOP
+            and abs(dy) < self._CLICK_SLOP
+        )
         self._header_drag_pos = None
         self._view.set_cursor(None)
+        if was_click:
+            self._popup_header_menu()
+
+    def _popup_header_menu(self) -> None:
+        """Offer Copy / Copy As / Aggregate for the column a plain
+        header click just selected."""
+        x, y = self._header_drag_start
+        rect = Gdk.Rectangle()
+        rect.x, rect.y = int(x), int(y)
+        rect.width = rect.height = 1
+        self._header_popover.set_pointing_to(rect)
+        self._header_popover.popup()
 
     def _select_block(self, anchor: tuple[int, int], end: tuple[int, int]) -> None:
         rows = set(range(min(anchor[0], end[0]), max(anchor[0], end[0]) + 1))
@@ -647,15 +762,18 @@ class ResultGrid(Gtk.ScrolledWindow):
 
     def _on_view_destroy(self, *_args) -> None:
         self._popover.unparent()
+        self._header_popover.unparent()
 
     # Copy
 
     def _display_order(self) -> list[int]:
-        """Data column indices in current display order."""
+        """Data column indices in current display order (the row-number
+        stub is not a data column and is skipped)."""
         columns = self._view.get_columns()
         return [
-            self._column_objs.index(columns.get_item(i))
+            self._column_objs.index(item)
             for i in range(columns.get_n_items())
+            if (item := columns.get_item(i)) in self._column_objs
         ]
 
     def _move_menu_column(self, delta: int) -> None:
@@ -671,7 +789,9 @@ class ResultGrid(Gtk.ScrolledWindow):
             return
         column = self._column_objs[col]
         self._view.remove_column(column)
-        self._view.insert_column(target, column)
+        # View positions are display positions shifted by the
+        # row-number stub at 0.
+        self._view.insert_column(target + 1, column)
         self._restyle_cells()
 
     def _on_copy_shortcut(self, _widget, _args) -> bool:
@@ -1163,7 +1283,9 @@ class TableTab(Gtk.Box):
             editable = any(c.is_pk for c in self._columns)
             self._pending.clear()
             self._update_save_button()
-            self._grid.set_result(result.columns, result.rows, editable=editable)
+            self._grid.set_result(
+                result.columns, result.rows, editable=editable, row_offset=offset
+            )
             self._grid.set_sort_state(
                 [(s.column, s.descending) for s in order_by]
             )

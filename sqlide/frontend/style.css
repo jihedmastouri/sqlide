@@ -127,3 +127,24 @@ listview.schema-tree .conn-dot-idle {
 listview.schema-tree .conn-dot-active {
   background-color: @success_bg_color;
 }
+
+/* CLI client console: a terminal-like scrollback and prompt line. The
+   entry is made flat and monospace so it reads as the continuation of
+   the scrollback rather than a form field. */
+.cli-output text {
+  font-family: monospace;
+}
+
+.cli-prompt {
+  font-family: monospace;
+  font-weight: bold;
+}
+
+entry.cli-entry {
+  font-family: monospace;
+  background: none;
+  border: none;
+  box-shadow: none;
+  min-height: 0;
+  padding: 2px 0;
+}

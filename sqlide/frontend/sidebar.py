@@ -95,6 +95,7 @@ class Sidebar(Gtk.ScrolledWindow):
         ensure_connector: Callable[[ConnectionProfile], Connector],
         on_open_table: Callable[[ConnectionProfile, str], None],
         on_new_query: Callable[..., None],  # (profile, sql="")
+        on_open_cli: Callable[[ConnectionProfile], None],
         on_open_definition: Callable[[ConnectionProfile, str], None],
         on_open_function: Callable[[ConnectionProfile, str], None],
         on_relation_graph: Callable[[ConnectionProfile], None],
@@ -105,6 +106,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self._ensure = ensure_connector
         self._on_open_table = on_open_table
         self._on_new_query = on_new_query
+        self._on_open_cli = on_open_cli
         self._on_open_definition = on_open_definition
         self._on_open_function = on_open_function
         self._on_relation_graph = on_relation_graph
@@ -140,6 +142,7 @@ class Sidebar(Gtk.ScrolledWindow):
         for name, callback in (
             ("view-data", self._menu_view_data),
             ("query-console", self._menu_query_console),
+            ("cli-console", self._menu_cli_console),
             ("definition", self._menu_definition),
             ("edit-function", self._menu_edit_function),
             ("relation-graph", self._menu_relation_graph),
@@ -158,6 +161,9 @@ class Sidebar(Gtk.ScrolledWindow):
         self._connection_menu = Gio.Menu()
         self._connection_menu.append(
             "New Query Console", "schema.query-console"
+        )
+        self._connection_menu.append(
+            "New CLI Client", "schema.cli-console"
         )
         self._connection_menu.append(
             "Relation Graph", "schema.relation-graph"
@@ -481,6 +487,11 @@ class Sidebar(Gtk.ScrolledWindow):
             self._on_new_query(node.profile, f"SELECT * FROM {node.label};")
         else:
             self._on_new_query(node.profile)
+
+    def _menu_cli_console(self, *_args) -> None:
+        node = self._menu_node
+        if node is not None and node.profile is not None:
+            self._on_open_cli(node.profile)
 
     def _menu_definition(self, *_args) -> None:
         node = self._menu_node

@@ -70,9 +70,13 @@ Shared dataclasses: `TableInfo(name, kind)`, `ColumnInfo(name, type, is_pk,
 nullable)`, `FunctionInfo(name)`, `ResultSet(columns, rows)`. All driver
 errors are re-raised as `ConnectorError` with a readable message.
 `list_functions()` has a concrete default returning `[]` so adapters without
-a function catalog (SQLite, the unimplemented stubs) need no override;
-Postgres (`pg_proc`) and MySQL (`information_schema.routines`) fill it in
-when milestone 7 lands.
+a function catalog need no override; MySQL (`information_schema.routines`)
+and Postgres fill it in. Postgres reports its full set of programmable
+objects — PL/pgSQL (and other-language) functions, procedures (`pg_proc`)
+and triggers (`pg_trigger`) — and `get_ddl()` reconstructs a runnable
+CREATE for each (`pg_get_functiondef` / `pg_get_triggerdef` /
+`pg_get_viewdef`, a synthesized `CREATE TABLE` for tables), so the
+definition tab round-trips a PL/pgSQL body edit.
 
 Each database is a **folder** under `backend/db/`, exposing its `Connector`
 implementation from `connector.py`. Dialect differences (identifier quoting,
@@ -190,6 +194,7 @@ sqlide/
     │       ├── __init__.py
     │       ├── base.py        # Connector ABC + dataclasses + ConnectorError
     │       ├── registry.py    # kind -> adapter, driver availability
+    │       ├── cli.py         # psql/mysql/sqlite-style meta-command engine
     │       ├── sqlite/
     │       │   ├── __init__.py
     │       │   └── connector.py
@@ -211,6 +216,7 @@ sqlide/
         ├── sidebar.py         # lazy schema tree (TreeListModel)
         ├── data_grid.py       # ResultGrid + TableTab
         ├── query_console.py
+        ├── cli_console.py     # psql/mysql/sqlite-style CLI client tab
         ├── sql_editor.py      # GtkSourceView 5 with TextView fallback
         ├── completion.py      # completion popup + keyword provider
         ├── history_panel.py   # query history (right panel)
@@ -238,9 +244,19 @@ sqlide/
 6f. **Schema tree** — lazy TreeListModel sidebar (connection → Tables /
    Views / Functions → object → columns), `list_functions()` on the
    connector ABC. — **done**
-7. **MySQL + PostgreSQL adapters** — stubs in place, to implement
-   (including their `list_functions()`). JDBC adapter written but
-   experimental/untested (needs JVM + jaydebeapi).
+7. **MySQL + PostgreSQL adapters** — MySQL (PyMySQL) and PostgreSQL
+   (psycopg v3) implemented, including `list_functions()` and DDL for
+   their programmable objects (Postgres: PL/pgSQL functions, procedures
+   and triggers). JDBC adapter written but experimental/untested (needs
+   JVM + jaydebeapi). — **done** (Postgres verified against the ABC and
+   its transaction flow; live-server run pending a psycopg install).
+7b. **CLI client console** — a psql/mysql/sqlite-style terminal tab
+   (`frontend/cli_console.py` over `backend/db/cli.py`): meta-commands
+   (`\dt`, `\d table`, `\l`, `\df`, `.tables`, `.schema`, both spellings
+   accepted for any kind) answered from the connector catalog, plus SQL
+   passthrough rendered as an aligned text table. Opened from the header
+   bar (terminal icon) or a connection's context menu; persisted as a
+   `cli` TabState. — **done**
 8. **Polish** — connection edit/remove in the sidebar, empty-string vs NULL
    handling when editing, keyboard shortcuts, about dialog, close
    connectors on exit.

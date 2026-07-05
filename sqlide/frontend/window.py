@@ -41,6 +41,7 @@ from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import registry
 from sqlide.backend.db.base import Connector, ConnectorError
 from sqlide.backend.workspaces import HistoryEntry, Workspace
+from sqlide.frontend.cli_console import CliConsole
 from sqlide.frontend.connection_dialog import ConnectionDialog
 from sqlide.frontend.data_grid import ResultGrid, TableTab
 from sqlide.frontend.definition_tab import DefinitionTab, FunctionTab
@@ -126,6 +127,7 @@ class MainWindow(Adw.ApplicationWindow):
             ensure_connector=self.ensure_connector,
             on_open_table=self.open_table,
             on_new_query=self.new_query,
+            on_open_cli=self.open_cli,
             on_open_definition=self.open_definition,
             on_open_function=self.open_function,
             on_relation_graph=self.open_relation_graph,
@@ -178,12 +180,16 @@ class MainWindow(Adw.ApplicationWindow):
             | GObject.BindingFlags.BIDIRECTIONAL,
         )
         content_header.pack_start(sidebar_toggle)
-        new_query_button = Gtk.Button(icon_name="utilities-terminal-symbolic")
+        new_query_button = Gtk.Button(icon_name="document-edit-symbolic")
         new_query_button.set_tooltip_text("New query console")
         new_query_button.connect(
             "clicked", lambda *_: self.new_query(self._default_query_profile())
         )
         content_header.pack_start(new_query_button)
+        cli_button = Gtk.Button(icon_name="utilities-terminal-symbolic")
+        cli_button.set_tooltip_text("New CLI client console")
+        cli_button.connect("clicked", self._new_cli_console)
+        content_header.pack_start(cli_button)
         builder_button = Gtk.Button(icon_name="system-run-symbolic")
         builder_button.set_tooltip_text("New query builder")
         builder_button.connect("clicked", self._new_query_builder)
@@ -583,6 +589,9 @@ class MainWindow(Adw.ApplicationWindow):
                 elif tab.kind == "query":
                     # Restore the console even if its connection is gone.
                     self.new_query(profile, sql=tab.sql)
+                elif tab.kind == "cli":
+                    # Restore the CLI session even if its connection is gone.
+                    self.open_cli(profile)
             selected = self.workspace.selected_tab
             view = self._active_pane.view
             if 0 <= selected < view.get_n_pages():
@@ -838,6 +847,34 @@ class MainWindow(Adw.ApplicationWindow):
             page.set_title(f"query · {name}" if name else "query")
             page.set_tooltip(
                 f"Query console on {name}" if name else "Query console"
+            )
+            if not self._restoring:
+                self._save_state()
+
+        console.on_connection_changed = set_title
+        set_title(console.selected_connection())
+        view.set_selected_page(page)
+        return page
+
+    def _new_cli_console(self, *_args) -> None:
+        self.open_cli(self._default_query_profile())
+
+    def open_cli(
+        self, profile: ConnectionProfile | None = None
+    ) -> Adw.TabPage:
+        console = CliConsole(
+            self._connection_names,
+            self.workspace.find_connection,
+            self.ensure_connector,
+            connection=profile.name if profile is not None else "",
+        )
+        view = self._active_pane.view
+        page = view.append(console)
+
+        def set_title(name: str) -> None:
+            page.set_title(f"cli · {name}" if name else "cli")
+            page.set_tooltip(
+                f"CLI client on {name}" if name else "CLI client"
             )
             if not self._restoring:
                 self._save_state()

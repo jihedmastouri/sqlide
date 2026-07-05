@@ -11,8 +11,9 @@ grid is sortable (on_header_sort), sorting is on the header's
 right-click menu — never on left-click, which stays free for the
 reorder drag — and sorted columns show an arrow in their title. Cells
 are selectable for copying: click selects a cell, dragging (or
-Shift+click) extends to a rectangular block, and the context menu
-selects a whole row or column.
+Shift+click) extends to a rectangular block, a header click selects
+the whole column, and the context menu selects a whole row or column.
+The selection renders as a border around the selected region.
 Ctrl+C (or the context menu's Copy) copies the selection as
 tab-separated text; row and block selections include a header line with
 the column names, following the current display order of the columns.
@@ -401,19 +402,45 @@ class ResultGrid(Gtk.ScrolledWindow):
     def _unbind_cell(self, factory, list_item) -> None:
         self._bound_cells.pop(list_item.get_child(), None)
 
-    def _style_cell(self, widget, row: int, col: int) -> None:
-        if row in self._sel_rows and col in self._sel_cols:
-            widget.add_css_class("cell-selected")
-        else:
-            widget.remove_css_class("cell-selected")
+    def _style_cell(
+        self, widget, row: int, col: int, order: list[int] | None = None
+    ) -> None:
+        # The selection is drawn as a border around the selected
+        # region, not a fill: each selected cell gets a side class for
+        # every edge with no selected neighbor, and the CSS draws that
+        # side. Classes go on the cell widget (the label's parent) so
+        # the lines tile seamlessly across cells.
+        parent = widget.get_parent()
+        target = parent if parent is not None else widget
+        selected = row in self._sel_rows and col in self._sel_cols
+        top = bottom = left = right = False
+        if selected:
+            if order is None:
+                order = self._display_order()
+            pos = order.index(col)
+            top = (row - 1) not in self._sel_rows
+            bottom = (row + 1) not in self._sel_rows
+            left = pos == 0 or order[pos - 1] not in self._sel_cols
+            right = pos == len(order) - 1 or order[pos + 1] not in self._sel_cols
+        for name, on in (
+            ("sel-top", top),
+            ("sel-bottom", bottom),
+            ("sel-left", left),
+            ("sel-right", right),
+        ):
+            if on:
+                target.add_css_class(name)
+            else:
+                target.remove_css_class(name)
         if (row, col) in self._modified:
             widget.add_css_class("cell-modified")
         else:
             widget.remove_css_class("cell-modified")
 
     def _restyle_cells(self) -> None:
+        order = self._display_order()
         for widget, (list_item, col) in self._bound_cells.items():
-            self._style_cell(widget, list_item.get_position(), col)
+            self._style_cell(widget, list_item.get_position(), col, order)
 
     def _select(self, rows: set[int], cols: set[int], kind: str) -> None:
         self._sel_rows = rows
@@ -565,13 +592,22 @@ class ResultGrid(Gtk.ScrolledWindow):
         self._view.remove_column(column)
         self._view.insert_column(target, column)
         self._header_drag_pos = target
+        # Selection borders depend on display neighbors.
+        self._restyle_cells()
 
     def _on_header_drag_begin(self, gesture, x, y) -> None:
         if self._begin_header_drag(x, y):
-            # Plain left-click on a header does nothing else (sorting
-            # is on right-click), so claiming the press is free.
+            # Sorting is on right-click, so the left press is free:
+            # claim it, select the whole column (a plain click ends
+            # here), and let any movement reorder it.
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
             self._view.set_cursor(Gdk.Cursor.new_from_name("grabbing"))
+            order = self._display_order()
+            self._select(
+                set(range(self._store.get_n_items())),
+                {order[self._header_drag_pos]},
+                "column",
+            )
 
     def _on_header_drag_update(self, _gesture, dx, _dy) -> None:
         self._update_header_drag(self._header_drag_start[0] + dx)
@@ -636,6 +672,7 @@ class ResultGrid(Gtk.ScrolledWindow):
         column = self._column_objs[col]
         self._view.remove_column(column)
         self._view.insert_column(target, column)
+        self._restyle_cells()
 
     def _on_copy_shortcut(self, _widget, _args) -> bool:
         return self.copy_selection()

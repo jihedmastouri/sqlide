@@ -16,17 +16,81 @@ columnview.data-table > listview > row > cell {
   padding: 4px 8px 4px 16px;
 }
 
-/* Cells picked with click / Shift+click / the context menu; copied
-   with Ctrl+C. The class sits on the cell child (label), which is
-   hexpand so the highlight spans the column. */
-columnview.data-table .cell-selected {
-  background-color: alpha(@accent_bg_color, 0.35);
-  border-radius: 4px;
+/* Cells picked with click / Shift+click / drag / the context menu;
+   copied with Ctrl+C. The selection shows as a border around the
+   selected region, not a fill behind the text: the grid puts a
+   sel-<side> class on each selected cell edge that has no selected
+   neighbor, and inset box-shadows draw those sides (no layout shift,
+   and the theme's row/column separators stay untouched). box-shadow
+   does not compose across classes, so every side combination needs
+   its own rule; specificity grows with class count, so the most
+   complete combination wins. */
+columnview.data-table cell.sel-top {
+  box-shadow: inset 0 2px 0 0 @accent_bg_color;
+}
+columnview.data-table cell.sel-bottom {
+  box-shadow: inset 0 -2px 0 0 @accent_bg_color;
+}
+columnview.data-table cell.sel-left {
+  box-shadow: inset 2px 0 0 0 @accent_bg_color;
+}
+columnview.data-table cell.sel-right {
+  box-shadow: inset -2px 0 0 0 @accent_bg_color;
+}
+columnview.data-table cell.sel-top.sel-bottom {
+  box-shadow: inset 0 2px 0 0 @accent_bg_color,
+    inset 0 -2px 0 0 @accent_bg_color;
+}
+columnview.data-table cell.sel-top.sel-left {
+  box-shadow: inset 0 2px 0 0 @accent_bg_color,
+    inset 2px 0 0 0 @accent_bg_color;
+}
+columnview.data-table cell.sel-top.sel-right {
+  box-shadow: inset 0 2px 0 0 @accent_bg_color,
+    inset -2px 0 0 0 @accent_bg_color;
+}
+columnview.data-table cell.sel-bottom.sel-left {
+  box-shadow: inset 0 -2px 0 0 @accent_bg_color,
+    inset 2px 0 0 0 @accent_bg_color;
+}
+columnview.data-table cell.sel-bottom.sel-right {
+  box-shadow: inset 0 -2px 0 0 @accent_bg_color,
+    inset -2px 0 0 0 @accent_bg_color;
+}
+columnview.data-table cell.sel-left.sel-right {
+  box-shadow: inset 2px 0 0 0 @accent_bg_color,
+    inset -2px 0 0 0 @accent_bg_color;
+}
+columnview.data-table cell.sel-top.sel-bottom.sel-left {
+  box-shadow: inset 0 2px 0 0 @accent_bg_color,
+    inset 0 -2px 0 0 @accent_bg_color,
+    inset 2px 0 0 0 @accent_bg_color;
+}
+columnview.data-table cell.sel-top.sel-bottom.sel-right {
+  box-shadow: inset 0 2px 0 0 @accent_bg_color,
+    inset 0 -2px 0 0 @accent_bg_color,
+    inset -2px 0 0 0 @accent_bg_color;
+}
+columnview.data-table cell.sel-top.sel-left.sel-right {
+  box-shadow: inset 0 2px 0 0 @accent_bg_color,
+    inset 2px 0 0 0 @accent_bg_color,
+    inset -2px 0 0 0 @accent_bg_color;
+}
+columnview.data-table cell.sel-bottom.sel-left.sel-right {
+  box-shadow: inset 0 -2px 0 0 @accent_bg_color,
+    inset 2px 0 0 0 @accent_bg_color,
+    inset -2px 0 0 0 @accent_bg_color;
+}
+columnview.data-table cell.sel-top.sel-bottom.sel-left.sel-right {
+  box-shadow: inset 0 2px 0 0 @accent_bg_color,
+    inset 0 -2px 0 0 @accent_bg_color,
+    inset 2px 0 0 0 @accent_bg_color,
+    inset -2px 0 0 0 @accent_bg_color;
 }
 
 /* Cells edited but not yet saved (pending until Save executes the
-   UPDATEs or Refresh discards them). Listed after .cell-selected so
-   the pending highlight stays visible on selected cells. */
+   UPDATEs or Refresh discards them). A fill on the label, so it stays
+   visible inside a selection's border. */
 columnview.data-table .cell-modified {
   background-color: alpha(@warning_bg_color, 0.4);
   border-radius: 4px;

@@ -47,20 +47,68 @@ class MysqlConnector(Connector):
         user: str,
         password: str,
         database: str,
+        ssl: dict | None = None,
+        ssh: dict | None = None,
     ) -> None:
         self.host = host
         self.port = port
         self.user = user
         self.password = password
         self.database = database
+        self.ssl = ssl
+        self.ssh = ssh
         self._conn: pymysql.connections.Connection | None = None
+        self._tunnel = None  # sqlide.backend.ssh.SshTunnel when active
         self._lock = threading.Lock()
 
+    def _ssl_kwargs(self) -> dict:
+        """pymysql keyword args for the profile's SSL settings."""
+        if not self.ssl:
+            return {}
+        mode = self.ssl.get("mode", "")
+        if mode == "disable":
+            return {"ssl_disabled": True}
+        kwargs: dict = {}
+        if self.ssl.get("ca"):
+            kwargs["ssl_ca"] = self.ssl["ca"]
+        if self.ssl.get("cert"):
+            kwargs["ssl_cert"] = self.ssl["cert"]
+        if self.ssl.get("key"):
+            kwargs["ssl_key"] = self.ssl["key"]
+        if mode in ("verify-ca", "verify-full"):
+            kwargs["ssl_verify_cert"] = True
+        if mode == "verify-full":
+            kwargs["ssl_verify_identity"] = True
+        if mode == "require" and not kwargs:
+            # Force TLS on without certificate checks: a truthy ssl
+            # dict makes pymysql build a default (non-verifying) context.
+            kwargs["ssl"] = {"ca": None}
+        return kwargs
+
     def connect(self) -> None:
+        host, port = self.host, self.port
+        if self.ssh:
+            from sqlide.backend.ssh import SshTunnel
+
+            self._tunnel = SshTunnel(
+                host=self.ssh.get("host", ""),
+                port=self.ssh.get("port", 22),
+                user=self.ssh.get("user", ""),
+                password=self.ssh.get("password", ""),
+                key_path=self.ssh.get("key_path", ""),
+                remote_host=self.host,
+                remote_port=self.port,
+            )
+            try:
+                port = self._tunnel.start()
+            except Exception:
+                self._tunnel = None
+                raise
+            host = "127.0.0.1"
         try:
             self._conn = pymysql.connect(
-                host=self.host,
-                port=self.port,
+                host=host,
+                port=port,
                 user=self.user,
                 password=self.password,
                 database=self.database or None,
@@ -69,8 +117,10 @@ class MysqlConnector(Connector):
                 # changed rows — otherwise update_cell's expect_rowcount
                 # check fails when a cell is set to its current value.
                 client_flag=CLIENT.FOUND_ROWS,
+                **self._ssl_kwargs(),
             )
         except pymysql.Error as exc:
+            self._stop_tunnel()
             raise ConnectorError(_message(exc)) from exc
 
     def close(self) -> None:
@@ -80,6 +130,15 @@ class MysqlConnector(Connector):
             except pymysql.Error:
                 pass
             self._conn = None
+        self._stop_tunnel()
+
+    def _stop_tunnel(self) -> None:
+        if self._tunnel is not None:
+            try:
+                self._tunnel.stop()
+            except Exception:
+                pass
+            self._tunnel = None
 
     def _run(
         self, sql: str, params: tuple = (), expect_rowcount: int | None = None

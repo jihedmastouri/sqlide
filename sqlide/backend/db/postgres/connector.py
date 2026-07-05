@@ -25,12 +25,18 @@ class PostgresConnector(Connector):
         user: str,
         password: str,
         database: str,
+        ssl: dict | None = None,
+        ssh: dict | None = None,
     ) -> None:
         self.host = host
         self.port = port
         self.user = user
         self.password = password
         self.database = database
+        # ssl maps onto conninfo sslmode/sslrootcert/sslcert/sslkey and
+        # ssh onto an SshTunnel (see the MySQL adapter) once implemented.
+        self.ssl = ssl
+        self.ssh = ssh
         self._conn = None
 
     def connect(self) -> None:

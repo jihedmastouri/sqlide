@@ -98,6 +98,7 @@ class Sidebar(Gtk.ScrolledWindow):
         on_open_definition: Callable[[ConnectionProfile, str], None],
         on_open_function: Callable[[ConnectionProfile, str], None],
         on_relation_graph: Callable[[ConnectionProfile], None],
+        on_query_builder: Callable[..., None],  # (profile, table="")
         show_error: Callable[[str], None],
     ) -> None:
         super().__init__(vexpand=True)
@@ -107,6 +108,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_open_definition = on_open_definition
         self._on_open_function = on_open_function
         self._on_relation_graph = on_relation_graph
+        self._on_query_builder = on_query_builder
         self._show_error = show_error
         # Currently bound status dot per connection name, so
         # set_connected() can restyle a visible row.
@@ -141,6 +143,7 @@ class Sidebar(Gtk.ScrolledWindow):
             ("definition", self._menu_definition),
             ("edit-function", self._menu_edit_function),
             ("relation-graph", self._menu_relation_graph),
+            ("query-builder", self._menu_query_builder),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", callback)
@@ -151,12 +154,16 @@ class Sidebar(Gtk.ScrolledWindow):
         self._object_menu.append("View Data", "schema.view-data")
         self._object_menu.append("Query Console", "schema.query-console")
         self._object_menu.append("Table Definition", "schema.definition")
+        self._object_menu.append("Query Builder", "schema.query-builder")
         self._connection_menu = Gio.Menu()
         self._connection_menu.append(
             "New Query Console", "schema.query-console"
         )
         self._connection_menu.append(
             "Relation Graph", "schema.relation-graph"
+        )
+        self._connection_menu.append(
+            "Query Builder", "schema.query-builder"
         )
         self._function_menu = Gio.Menu()
         self._function_menu.append("Edit Definition", "schema.edit-function")
@@ -489,6 +496,13 @@ class Sidebar(Gtk.ScrolledWindow):
         node = self._menu_node
         if node is not None and node.profile is not None:
             self._on_relation_graph(node.profile)
+
+    def _menu_query_builder(self, *_args) -> None:
+        node = self._menu_node
+        if node is None or node.profile is None:
+            return
+        table = node.label if node.kind in ("table", "view") else ""
+        self._on_query_builder(node.profile, table)
 
     def _query_tooltip(
         self, _widget, _x, _y, _keyboard, tooltip: Gtk.Tooltip,

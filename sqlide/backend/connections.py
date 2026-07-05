@@ -23,6 +23,43 @@ class ConnectionProfile:
     jdbc_url: str = ""  # jdbc only, e.g. jdbc:h2:/path/to/db
     driver_class: str = ""  # jdbc only, e.g. org.h2.Driver
     jar_path: str = ""  # jdbc only, path to the driver jar
+    # Advanced, server kinds (mysql/postgres) only. SSL: mode "" keeps
+    # the driver default; the paths are optional PEM files.
+    ssl_mode: str = ""  # "" | "disable" | "require" | "verify-ca" | "verify-full"
+    ssl_ca: str = ""
+    ssl_cert: str = ""
+    ssl_key: str = ""
+    # SSH tunnel: when enabled, the adapter connects through a local
+    # forward to ssh_host instead of reaching host:port directly.
+    use_ssh: bool = False
+    ssh_host: str = ""
+    ssh_port: int = 22
+    ssh_user: str = ""
+    ssh_password: str = ""
+    ssh_key_path: str = ""
+
+    def ssl_params(self) -> dict | None:
+        """SSL settings for the adapter, or None when untouched."""
+        if not (self.ssl_mode or self.ssl_ca or self.ssl_cert or self.ssl_key):
+            return None
+        return {
+            "mode": self.ssl_mode,
+            "ca": self.ssl_ca,
+            "cert": self.ssl_cert,
+            "key": self.ssl_key,
+        }
+
+    def ssh_params(self) -> dict | None:
+        """SSH tunnel settings for the adapter, or None when disabled."""
+        if not self.use_ssh:
+            return None
+        return {
+            "host": self.ssh_host,
+            "port": self.ssh_port or 22,
+            "user": self.ssh_user,
+            "password": self.ssh_password,
+            "key_path": self.ssh_key_path,
+        }
 
     def connect_params(self) -> dict:
         """Keyword args for registry.create_connector()."""
@@ -42,6 +79,8 @@ class ConnectionProfile:
             "user": self.user,
             "password": self.password,
             "database": self.database,
+            "ssl": self.ssl_params(),
+            "ssh": self.ssh_params(),
         }
 
     def to_dict(self) -> dict:

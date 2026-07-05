@@ -43,6 +43,7 @@ from sqlide.backend.workspaces import HistoryEntry, Workspace
 from sqlide.frontend.connection_dialog import ConnectionDialog
 from sqlide.frontend.data_grid import ResultGrid, TableTab
 from sqlide.frontend.definition_tab import DefinitionTab, FunctionTab
+from sqlide.frontend.query_builder import QueryBuilderTab
 from sqlide.frontend.query_console import QueryConsole
 from sqlide.frontend.relation_graph import RelationGraphTab
 from sqlide.frontend.side_panel import SidePanel
@@ -126,6 +127,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_open_definition=self.open_definition,
             on_open_function=self.open_function,
             on_relation_graph=self.open_relation_graph,
+            on_query_builder=self.open_query_builder,
             show_error=self.show_error,
         )
         search = Gtk.SearchEntry(placeholder_text="Find tables…")
@@ -180,6 +182,10 @@ class MainWindow(Adw.ApplicationWindow):
             "clicked", lambda *_: self.new_query(self._default_query_profile())
         )
         content_header.pack_start(new_query_button)
+        builder_button = Gtk.Button(icon_name="system-run-symbolic")
+        builder_button.set_tooltip_text("New query builder")
+        builder_button.connect("clicked", self._new_query_builder)
+        content_header.pack_start(builder_button)
         split_button = Gtk.Button(icon_name="view-dual-symbolic")
         split_button.set_tooltip_text("Split: move current tab to a new pane")
         split_button.connect("clicked", self._split_current_tab)
@@ -531,6 +537,9 @@ class MainWindow(Adw.ApplicationWindow):
                 elif tab.kind == "relations":
                     if profile is not None:
                         self.open_relation_graph(profile)
+                elif tab.kind == "querybuilder":
+                    if profile is not None:
+                        self.open_query_builder(profile, tab.table)
                 elif tab.kind == "query":
                     # Restore the console even if its connection is gone.
                     self.new_query(profile, sql=tab.sql)
@@ -710,6 +719,36 @@ class MainWindow(Adw.ApplicationWindow):
             key,
             f"{name} · function",
             f"Definition of {name} on {profile.name}",
+        )
+
+    def _new_query_builder(self, *_args) -> None:
+        profile = self._default_query_profile()
+        if profile is None:
+            self.show_error("Add a connection first")
+            return
+        self.open_query_builder(profile)
+
+    def open_query_builder(
+        self, profile: ConnectionProfile, table: str = ""
+    ) -> None:
+        # Not deduplicated by tab_key: several builders on the same
+        # connection are fine, like query consoles.
+        tab = QueryBuilderTab(
+            profile,
+            self.ensure_connector,
+            self.show_error,
+            table=table,
+            on_aggregate=self.show_aggregate,
+            on_open_console=lambda p, sql: self.new_query(p, sql=sql),
+        )
+        page = self._append_tab(
+            tab,
+            ("querybuilder", profile.name, id(tab)),
+            f"builder · {profile.name}",
+            f"Query builder on {profile.name}",
+        )
+        tab.on_ran = lambda sql, ok: self._query_ran(
+            page.get_title(), sql, profile.name, ok
         )
 
     def open_relation_graph(self, profile: ConnectionProfile) -> None:

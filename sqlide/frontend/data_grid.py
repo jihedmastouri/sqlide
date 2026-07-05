@@ -6,10 +6,13 @@ cells are Gtk.EditableLabel and committed edits go through a callback.
 Editing is locked until set_unlocked(True); mark_modified() highlights
 cells with uncommitted changes.
 
-Columns can be dragged to reorder and resized at their edges. Cells are
-selectable for copying: click selects a cell, dragging (or Shift+click)
-extends to a rectangular block, and the context menu selects a whole
-row or column.
+Columns can be dragged to reorder and resized at their edges; when the
+grid is sortable (on_header_sort), sorting is on the header's
+right-click menu — never on left-click, which stays free for the
+reorder drag — and sorted columns show an arrow in their title. Cells
+are selectable for copying: click selects a cell, dragging (or
+Shift+click) extends to a rectangular block, and the context menu
+selects a whole row or column.
 Ctrl+C (or the context menu's Copy) copies the selection as
 tab-separated text; row and block selections include a header line with
 the column names, following the current display order of the columns.
@@ -75,12 +78,13 @@ class ResultGrid(Gtk.ScrolledWindow):
         self.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self._on_edit = on_edit
         self._aggregate_cb = on_aggregate
-        # When set, column headers become clickable sort toggles: the
-        # grid never sorts locally (the model ignores the view sorter);
-        # it reports the clicked-together column list as (name,
-        # descending) pairs, primary first, so the owner can re-query.
+        # When set, each column header gets a right-click sort menu:
+        # the grid never sorts locally; it reports the composed column
+        # list as (name, descending) pairs, primary first, so the
+        # owner can re-query. Left-click on a header does nothing, so
+        # dragging it reorders columns without accidentally sorting.
         self._on_header_sort = on_header_sort
-        self._updating_columns = False
+        self._sort_order: list[tuple[str, bool]] = []
         # Used by "Copy As > INSERT Statement"; falls back to a placeholder.
         self.table_name = table_name
         self._store = Gio.ListStore(item_type=RowItem)
@@ -90,9 +94,10 @@ class ResultGrid(Gtk.ScrolledWindow):
         self._view.add_css_class("data-table")
         self._view.set_show_row_separators(True)
         self._view.set_show_column_separators(True)
-        self._view.set_reorderable(True)
-        if on_header_sort is not None:
-            self._view.get_sorter().connect("changed", self._sorter_changed)
+        # Column reordering is implemented by hand below (see the
+        # header drag gesture); the built-in DnD never engages
+        # reliably, so take over completely.
+        self._view.set_reorderable(False)
         self.set_child(self._view)
 
         self._column_names: list[str] = []
@@ -129,6 +134,11 @@ class ResultGrid(Gtk.ScrolledWindow):
             "activate", lambda _a, param: self.copy_selection(param.get_string())
         )
         actions.add_action(copy_as)
+        header_sort = Gio.SimpleAction.new(
+            "header-sort", GLib.VariantType.new("s")
+        )
+        header_sort.connect("activate", self._on_header_sort_action)
+        actions.add_action(header_sort)
         self._view.insert_action_group("grid", actions)
 
         menu = Gio.Menu()
@@ -173,6 +183,20 @@ class ResultGrid(Gtk.ScrolledWindow):
         drag.connect("drag-update", self._on_drag_update)
         self._view.add_controller(drag)
 
+        # Drag a column header to reorder: begun over a header title
+        # (away from its edges, which stay free for column resizing),
+        # the dragged column live-swaps with the neighbor the pointer
+        # crosses into. Inert over cells, so it coexists with the
+        # block-selection drag above.
+        self._header_drag_pos: int | None = None  # display position
+        self._header_drag_start = (0.0, 0.0)
+        header_drag = Gtk.GestureDrag(button=Gdk.BUTTON_PRIMARY)
+        header_drag.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        header_drag.connect("drag-begin", self._on_header_drag_begin)
+        header_drag.connect("drag-update", self._on_header_drag_update)
+        header_drag.connect("drag-end", self._on_header_drag_end)
+        self._view.add_controller(header_drag)
+
         shortcuts = Gtk.ShortcutController()
         shortcuts.set_scope(Gtk.ShortcutScope.LOCAL)
         shortcuts.add_shortcut(
@@ -189,17 +213,15 @@ class ResultGrid(Gtk.ScrolledWindow):
     def set_result(
         self, columns: list[str], rows: list[tuple], editable: bool = False
     ) -> None:
-        # Rebuilding columns disturbs the view sorter; those changes
-        # are not header clicks, so keep them out of on_header_sort.
-        self._updating_columns = True
-        try:
-            self._set_result(columns, rows, editable)
-        finally:
-            self._updating_columns = False
-
-    def _set_result(
-        self, columns: list[str], rows: list[tuple], editable: bool
-    ) -> None:
+        # A re-query with the same columns (sort, filter, paging,
+        # refresh) must not undo the user's drag-reorder: remember the
+        # display order and rebuild the new columns in it.
+        display_order: list[int] | None = None
+        if (
+            list(columns) == self._column_names
+            and len(self._column_objs) == len(columns)
+        ):
+            display_order = self._display_order()
         old = self._view.get_columns()
         for col in [old.get_item(i) for i in range(old.get_n_items())]:
             self._view.remove_column(col)
@@ -212,6 +234,7 @@ class ResultGrid(Gtk.ScrolledWindow):
         self._sel_kind = None
         self._anchor = None
         self._modified = set()
+        self._sort_order = []
 
         editable = editable and self._on_edit is not None
         self._editable_grid = editable
@@ -228,12 +251,14 @@ class ResultGrid(Gtk.ScrolledWindow):
             column.set_resizable(True)
             column.set_expand(True)
             if self._on_header_sort is not None:
-                # A no-op sorter: it only makes the header clickable and
-                # the sort arrow visible; the data order comes from the
-                # owner's re-query, never from a local sort.
-                column.set_sorter(Gtk.CustomSorter.new(None))
+                # Sorting lives in the header's right-click menu (and
+                # the owner's sort panel) — never on left-click, which
+                # stays free for drag-reordering the column.
+                column.set_header_menu(self._header_menu(index))
             self._column_objs.append(column)
-            self._view.append_column(column)
+
+        for index in display_order or range(len(self._column_objs)):
+            self._view.append_column(self._column_objs[index])
 
         for row in rows:
             self._store.append(RowItem(row))
@@ -244,35 +269,52 @@ class ResultGrid(Gtk.ScrolledWindow):
         state survives the column rebuild. Unknown names are skipped."""
         if self._on_header_sort is None:
             return
-        self._updating_columns = True
-        try:
-            self._view.sort_by_column(None, Gtk.SortType.ASCENDING)
-            # Least-significant first: each call makes its column the
-            # primary and demotes the previous ones, like user clicks.
-            for name, descending in reversed(order):
-                if name not in self._column_names:
-                    continue
-                self._view.sort_by_column(
-                    self._column_objs[self._column_names.index(name)],
-                    Gtk.SortType.DESCENDING
-                    if descending
-                    else Gtk.SortType.ASCENDING,
-                )
-        finally:
-            self._updating_columns = False
-
-    def _sorter_changed(self, sorter, _change) -> None:
-        if self._updating_columns:
-            return
-        pairs = [
-            (
-                column.get_title(),
-                order == Gtk.SortType.DESCENDING,
-            )
-            for i in range(sorter.get_n_sort_columns())
-            for column, order in (sorter.get_nth_sort_column(i),)
+        self._sort_order = [
+            (name, descending)
+            for name, descending in order
+            if name in self._column_names
         ]
-        self._on_header_sort(pairs)
+        self._update_header_titles()
+
+    def _update_header_titles(self) -> None:
+        """Decorate sorted columns' titles with a direction arrow (the
+        headers carry no sorter, so GTK draws no indicator itself)."""
+        arrows = {name: "↓" if desc else "↑" for name, desc in self._sort_order}
+        for name, column in zip(self._column_names, self._column_objs):
+            arrow = arrows.get(name)
+            column.set_title(f"{name} {arrow}" if arrow else name)
+
+    def _header_menu(self, index: int) -> Gio.Menu:
+        """Right-click menu of one column header: sort this column
+        (made primary, previous columns demoted), stop sorting by it,
+        or clear the whole order."""
+        menu = Gio.Menu()
+        menu.append("Sort Ascending", f"grid.header-sort::{index}|asc")
+        menu.append("Sort Descending", f"grid.header-sort::{index}|desc")
+        menu.append("Don't Sort", f"grid.header-sort::{index}|none")
+        menu.append("Clear Sort", f"grid.header-sort::{index}|clear")
+        return menu
+
+    def _on_header_sort_action(self, _action, param) -> None:
+        if self._on_header_sort is None:
+            return
+        index_text, _, direction = param.get_string().partition("|")
+        index = int(index_text)
+        if not 0 <= index < len(self._column_names):
+            return
+        name = self._column_names[index]
+        if direction == "clear":
+            order = []
+        elif direction == "none":
+            order = [(n, d) for n, d in self._sort_order if n != name]
+        else:
+            order = [(name, direction == "desc")] + [
+                (n, d) for n, d in self._sort_order if n != name
+            ]
+        self._sort_order = order
+        # The owner re-queries and calls set_sort_state, which redraws
+        # the header arrows.
+        self._on_header_sort(order)
 
     # Read-only cells
 
@@ -440,6 +482,104 @@ class ResultGrid(Gtk.ScrolledWindow):
         self._anchor = self._drag_anchor
         self._select_block(self._drag_anchor, cell)
 
+    # Header drag-reorder
+
+    _RESIZE_EDGE = 8.0  # px near a header edge left to column resizing
+
+    def _header_title_at(self, x: float, y: float) -> Gtk.Widget | None:
+        """The GtkColumnViewTitle under view coordinates, if any (GTK
+        has no public API for header widgets; matching the type name
+        degrades to 'drag does nothing' if it ever changes)."""
+        widget = self._view.pick(x, y, Gtk.PickFlags.DEFAULT)
+        while widget is not None and widget is not self._view:
+            if widget.__gtype__.name == "GtkColumnViewTitle":
+                return widget
+            widget = widget.get_parent()
+        return None
+
+    def _header_spans(self) -> list[tuple[float, float]]:
+        """(start x, end x) of each column header in display order,
+        in view coordinates."""
+        title = self._header_title_at(2.0, 2.0)
+        # Fall back to probing across the top edge: the first column
+        # can start beyond x=2 when scrolled horizontally.
+        if title is None:
+            width = self._view.get_width()
+            step = 40
+            for x in range(step, max(width, step), step):
+                title = self._header_title_at(float(x), 2.0)
+                if title is not None:
+                    break
+        if title is None:
+            return []
+        spans = []
+        sibling = title.get_parent().get_first_child()
+        while sibling is not None:
+            if sibling.__gtype__.name == "GtkColumnViewTitle":
+                ok, bounds = sibling.compute_bounds(self._view)
+                if ok:
+                    spans.append(
+                        (bounds.origin.x, bounds.origin.x + bounds.size.width)
+                    )
+            sibling = sibling.get_next_sibling()
+        spans.sort()
+        return spans
+
+    @staticmethod
+    def _span_at(spans: list[tuple[float, float]], x: float) -> int | None:
+        for i, (start, end) in enumerate(spans):
+            if start <= x < end:
+                return i
+        return None
+
+    def _begin_header_drag(self, x: float, y: float) -> bool:
+        """Start a reorder if (x, y) presses a header title away from
+        its resize edges; returns whether the drag begins."""
+        self._header_drag_pos = None
+        if self._header_title_at(x, y) is None:
+            return False
+        spans = self._header_spans()
+        position = self._span_at(spans, x)
+        if position is None:
+            return False
+        start, end = spans[position]
+        if x - start < self._RESIZE_EDGE or end - x < self._RESIZE_EDGE:
+            return False  # leave the edge to GTK's column resize
+        self._header_drag_pos = position
+        self._header_drag_start = (x, y)
+        return True
+
+    def _update_header_drag(self, x: float) -> None:
+        if self._header_drag_pos is None:
+            return
+        spans = self._header_spans()
+        target = self._span_at(spans, x)
+        if target is None:
+            target = 0 if spans and x < spans[0][0] else len(spans) - 1
+        if target < 0 or target == self._header_drag_pos:
+            return
+        order = self._display_order()
+        if not 0 <= self._header_drag_pos < len(order):
+            return
+        column = self._column_objs[order[self._header_drag_pos]]
+        self._view.remove_column(column)
+        self._view.insert_column(target, column)
+        self._header_drag_pos = target
+
+    def _on_header_drag_begin(self, gesture, x, y) -> None:
+        if self._begin_header_drag(x, y):
+            # Plain left-click on a header does nothing else (sorting
+            # is on right-click), so claiming the press is free.
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            self._view.set_cursor(Gdk.Cursor.new_from_name("grabbing"))
+
+    def _on_header_drag_update(self, _gesture, dx, _dy) -> None:
+        self._update_header_drag(self._header_drag_start[0] + dx)
+
+    def _on_header_drag_end(self, _gesture, _dx, _dy) -> None:
+        self._header_drag_pos = None
+        self._view.set_cursor(None)
+
     def _select_block(self, anchor: tuple[int, int], end: tuple[int, int]) -> None:
         rows = set(range(min(anchor[0], end[0]), max(anchor[0], end[0]) + 1))
         # Column span is visual: use display positions, then map the
@@ -494,13 +634,8 @@ class ResultGrid(Gtk.ScrolledWindow):
         if not 0 <= target < len(order):
             return
         column = self._column_objs[col]
-        # Re-inserting rebuilds header sort state; not a header click.
-        self._updating_columns = True
-        try:
-            self._view.remove_column(column)
-            self._view.insert_column(target, column)
-        finally:
-            self._updating_columns = False
+        self._view.remove_column(column)
+        self._view.insert_column(target, column)
 
     def _on_copy_shortcut(self, _widget, _args) -> bool:
         return self.copy_selection()
@@ -668,6 +803,7 @@ class _FilterRow(Gtk.Box):
         columns: list[str],
         on_remove: Callable[["_FilterRow"], None],
         on_activate: Callable[[], None],
+        on_change: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self._conjunction = Gtk.DropDown(
@@ -678,6 +814,12 @@ class _FilterRow(Gtk.Box):
         self._op.connect("notify::selected", self._on_op_changed)
         self._value = Gtk.Entry(hexpand=True, placeholder_text="value")
         self._value.connect("activate", lambda *_: on_activate())
+        if on_change is not None:
+            # Live consumers (the query builder's SQL preview) want to
+            # know about every tweak, not just Apply/Enter.
+            for dropdown in (self._conjunction, self._column, self._op):
+                dropdown.connect("notify::selected", lambda *_: on_change())
+            self._value.connect("changed", lambda *_: on_change())
         remove = Gtk.Button(icon_name="list-remove-symbolic")
         remove.add_css_class("flat")
         remove.set_tooltip_text("Remove condition")
@@ -721,6 +863,7 @@ class _SortRow(Gtk.Box):
         columns: list[str],
         on_remove: Callable[["_SortRow"], None],
         on_move: Callable[["_SortRow", int], None],
+        on_change: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self._column = Gtk.DropDown(
@@ -729,6 +872,9 @@ class _SortRow(Gtk.Box):
         self._direction = Gtk.DropDown(
             model=Gtk.StringList.new(["Ascending", "Descending"])
         )
+        if on_change is not None:
+            for dropdown in (self._column, self._direction):
+                dropdown.connect("notify::selected", lambda *_: on_change())
         up = Gtk.Button(icon_name="go-up-symbolic")
         up.add_css_class("flat")
         up.set_tooltip_text("Sort by this column earlier")
@@ -1135,7 +1281,7 @@ class TableTab(Gtk.Box):
             self.reload()
 
     def _on_header_sort(self, pairs: list[tuple[str, bool]]) -> None:
-        """A header click changed the view's sort columns: adopt them
+        """The header sort menu changed the sort columns: adopt them
         (primary first) as the order list and re-query."""
         self._order_by = [
             SortSpec(column=name, descending=descending)

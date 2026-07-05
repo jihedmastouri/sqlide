@@ -13,6 +13,7 @@ from sqlide.backend.db.base import (
     ConnectorError,
     FilterCondition,
     FunctionInfo,
+    RelationInfo,
     ResultSet,
     SortSpec,
     TableInfo,
@@ -122,6 +123,37 @@ class SqliteConnector(Connector):
             for _cid, name, ctype, notnull, _default, pk in rows
         ]
 
+    def list_relations(self) -> list[RelationInfo]:
+        relations = []
+        for table in self.list_tables():
+            if table.kind == "view":
+                continue
+            _, rows, _ = self._run(
+                f"PRAGMA foreign_key_list({self.quote_ident(table.name)})"
+            )
+            for _id, _seq, ref_table, column, ref_column, *_rest in rows:
+                relations.append(RelationInfo(
+                    table=table.name,
+                    column=column,
+                    # ref_column is NULL when the FK targets the
+                    # referenced table's primary key implicitly.
+                    ref_table=ref_table,
+                    ref_column=ref_column or "",
+                ))
+        return relations
+
+    def in_transaction(self) -> bool:
+        return self._conn is not None and self._conn.in_transaction
+
+    def rollback(self) -> None:
+        if self._conn is None:
+            return
+        try:
+            with self._lock:
+                self._conn.rollback()
+        except sqlite3.Error as exc:
+            raise ConnectorError(str(exc)) from exc
+
     def get_ddl(self, name: str) -> str:
         # sqlite_master.sql is NULL for some internal objects.
         _, rows, _ = self._run(
@@ -145,6 +177,23 @@ class SqliteConnector(Connector):
 
     def drop_function_sql(self, name: str) -> str:
         return f"DROP TRIGGER IF EXISTS {self.quote_ident(name)}"
+
+    def rebuild_table_statements(
+        self, table: str, new_ddl: str, copy_columns: list[tuple[str, str]]
+    ) -> list[str]:
+        # Since 3.25, RENAME rewrites REFERENCES clauses in *other*
+        # tables to follow the renamed table — they would end up
+        # pointing at the dropped backup. legacy_alter_table keeps the
+        # rename local while the backup name exists.
+        statements = super().rebuild_table_statements(
+            table, new_ddl, copy_columns
+        )
+        return [
+            "PRAGMA legacy_alter_table = ON",
+            statements[0],  # the RENAME
+            "PRAGMA legacy_alter_table = OFF",
+            *statements[1:],
+        ]
 
     def fetch_rows(
         self,

@@ -26,6 +26,16 @@ class FunctionInfo:
     name: str
 
 
+@dataclass(frozen=True)
+class RelationInfo:
+    """One foreign-key column: table.column references ref_table.ref_column."""
+
+    table: str
+    column: str
+    ref_table: str
+    ref_column: str
+
+
 FILTER_OPERATORS = (
     "=", "!=", "<", "<=", ">", ">=",
     "LIKE", "NOT LIKE", "IS NULL", "IS NOT NULL",
@@ -141,6 +151,29 @@ class Connector(ABC):
         """
         return []
 
+    def list_relations(self) -> list[RelationInfo]:
+        """Foreign-key relations between the connected database's
+        tables, for the relation graph.
+
+        Concrete default (not abstract) so adapters without a
+        foreign-key catalog need no override.
+        """
+        return []
+
+    def in_transaction(self) -> bool:
+        """Whether an explicit transaction (user-issued BEGIN) is open
+        on this connection. Drives the console's transaction badge and
+        the close-time warnings.
+
+        Concrete default (not abstract) for adapters that cannot tell.
+        """
+        return False
+
+    def rollback(self) -> None:
+        """Roll back the open transaction, if any. Used when the user
+        force-closes a console or the window despite the warning."""
+        self.execute("ROLLBACK")
+
     def get_ddl(self, name: str) -> str:
         """CREATE statement for a table or view, for the sidebar's
         hover preview. Empty string when unknown or unsupported.
@@ -162,6 +195,47 @@ class Connector(ABC):
         string when the adapter doesn't support replacing functions.
         """
         return ""
+
+    # DDL editing (definition tab). All return SQL for the user to
+    # review — nothing here executes anything.
+
+    def rename_column_sql(self, table: str, old: str, new: str) -> str:
+        """ALTER statement renaming one column (SQLite ≥3.25 and
+        MySQL 8 share the syntax)."""
+        return (
+            f"ALTER TABLE {self.quote_ident(table)} "
+            f"RENAME COLUMN {self.quote_ident(old)} "
+            f"TO {self.quote_ident(new)}"
+        )
+
+    def modify_column_sql(self, table: str, column: ColumnInfo) -> str:
+        """Statement changing a column's type/nullability in place.
+        Empty string when the dialect has no in-place form (SQLite) —
+        the caller falls back to a table rebuild."""
+        return ""
+
+    def rebuild_table_statements(
+        self, table: str, new_ddl: str, copy_columns: list[tuple[str, str]]
+    ) -> list[str]:
+        """The rename-old / create-new / copy / drop-old sequence that
+        applies an edited CREATE statement to an existing table.
+        `copy_columns` maps each surviving column as (new name, old
+        name) — identical when the column wasn't renamed."""
+        backup = f"{table}__old"
+        new_cols = ", ".join(self.quote_ident(n) for n, _o in copy_columns)
+        old_cols = ", ".join(self.quote_ident(o) for _n, o in copy_columns)
+        statements = [
+            f"ALTER TABLE {self.quote_ident(table)} "
+            f"RENAME TO {self.quote_ident(backup)}",
+            new_ddl.rstrip().rstrip(";"),
+        ]
+        if copy_columns:
+            statements.append(
+                f"INSERT INTO {self.quote_ident(table)} ({new_cols}) "
+                f"SELECT {old_cols} FROM {self.quote_ident(backup)}"
+            )
+        statements.append(f"DROP TABLE {self.quote_ident(backup)}")
+        return statements
 
     @abstractmethod
     def fetch_rows(

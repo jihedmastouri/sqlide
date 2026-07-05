@@ -15,7 +15,7 @@ function (or its Edit Definition context item) opens its definition
 in an editable tab. Right-clicking a table or view opens View Data /
 Query Console / Table Definition; right-clicking a connection offers
 a new query console (new consoles otherwise come from the header-bar
-button). Hovering a table/view shows its DDL in a tooltip (fetched
+button) and the connection's relation graph. Hovering a table/view shows its DDL in a tooltip (fetched
 lazily, cached on the node); hovering a connection shows a short
 summary.
 
@@ -97,6 +97,7 @@ class Sidebar(Gtk.ScrolledWindow):
         on_new_query: Callable[..., None],  # (profile, sql="")
         on_open_definition: Callable[[ConnectionProfile, str], None],
         on_open_function: Callable[[ConnectionProfile, str], None],
+        on_relation_graph: Callable[[ConnectionProfile], None],
         show_error: Callable[[str], None],
     ) -> None:
         super().__init__(vexpand=True)
@@ -105,6 +106,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_new_query = on_new_query
         self._on_open_definition = on_open_definition
         self._on_open_function = on_open_function
+        self._on_relation_graph = on_relation_graph
         self._show_error = show_error
         # Currently bound status dot per connection name, so
         # set_connected() can restyle a visible row.
@@ -138,6 +140,7 @@ class Sidebar(Gtk.ScrolledWindow):
             ("query-console", self._menu_query_console),
             ("definition", self._menu_definition),
             ("edit-function", self._menu_edit_function),
+            ("relation-graph", self._menu_relation_graph),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", callback)
@@ -151,6 +154,9 @@ class Sidebar(Gtk.ScrolledWindow):
         self._connection_menu = Gio.Menu()
         self._connection_menu.append(
             "New Query Console", "schema.query-console"
+        )
+        self._connection_menu.append(
+            "Relation Graph", "schema.relation-graph"
         )
         self._function_menu = Gio.Menu()
         self._function_menu.append("Edit Definition", "schema.edit-function")
@@ -478,6 +484,11 @@ class Sidebar(Gtk.ScrolledWindow):
         node = self._menu_node
         if node is not None and node.kind == "function" and node.profile:
             self._on_open_function(node.profile, node.label)
+
+    def _menu_relation_graph(self, *_args) -> None:
+        node = self._menu_node
+        if node is not None and node.profile is not None:
+            self._on_relation_graph(node.profile)
 
     def _query_tooltip(
         self, _widget, _x, _y, _keyboard, tooltip: Gtk.Tooltip,

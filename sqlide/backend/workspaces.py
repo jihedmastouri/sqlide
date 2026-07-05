@@ -29,7 +29,7 @@ MAX_HISTORY = 200
 
 @dataclass
 class TabState:
-    kind: str  # "table" | "query" | "definition" | "function"
+    kind: str  # "table" | "query" | "definition" | "function" | "relations"
     connection: str  # ConnectionProfile.name within the workspace
     table: str = ""  # table/definition/function tabs: object name
     sql: str = ""  # query tabs only

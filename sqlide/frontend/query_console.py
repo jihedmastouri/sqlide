@@ -30,9 +30,12 @@ statement's outcome, timing and SQL), then one result tab per
 statement.
 
 The toolbar also has Begin/Commit/Rollback buttons that run the bare
-transaction statements over the console's connection, and open/save
-buttons that load any text file into the editor and write the editor
-back to a file (the first save asks where; later saves reuse it).
+transaction statements over the console's connection — a warning
+badge sits next to them while that connection has an open transaction
+(the window additionally guards closing such a console) — and
+open/save buttons that load any text file into the editor and write
+the editor back to a file (the first save asks where; later saves
+reuse it).
 """
 
 from __future__ import annotations
@@ -68,10 +71,14 @@ class QueryConsole(Gtk.Box):
         connection: str = "",
         on_ran: Callable[[str, str, bool], None] | None = None,
         on_aggregate: Callable[[list[str]], None] | None = None,
+        transaction_active: Callable[[str], bool] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._find_connection = find_connection
         self._ensure = ensure_connector
+        # Non-blocking peek (window-provided): is there an open
+        # transaction on the named connection? Drives the badge.
+        self._transaction_active = transaction_active
         # Public: the window rebinds it after the tab page exists so
         # history entries carry the panel (tab) name.
         self.on_ran = on_ran
@@ -143,6 +150,15 @@ class QueryConsole(Gtk.Box):
             )
             tx_box.append(button)
 
+        # Visible while this console's connection has an open
+        # transaction (refreshed after every run and selection change).
+        self._tx_badge = Gtk.Label(label="⏺ transaction open", visible=False)
+        self._tx_badge.add_css_class("warning")
+        self._tx_badge.set_tooltip_text(
+            "An explicit transaction is open on this connection — "
+            "Commit or Rollback to end it"
+        )
+
         self._file_path: Path | None = None  # target of the Save button
         open_button = Gtk.Button(icon_name="document-open-symbolic")
         open_button.add_css_class("flat")
@@ -161,6 +177,7 @@ class QueryConsole(Gtk.Box):
         toolbar.append(self._dropdown)
         toolbar.append(self._db_dropdown)
         toolbar.append(tx_box)
+        toolbar.append(self._tx_badge)
         toolbar.append(hint)
         toolbar.append(Gtk.Box(hexpand=True))
         toolbar.append(open_button)
@@ -186,6 +203,7 @@ class QueryConsole(Gtk.Box):
         )
         self._refresh_databases()
         self._lsp_provider.set_profile(self._active_profile())
+        self.refresh_transaction_badge()
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self._on_key_pressed)
         self._editor.view.add_controller(keys)
@@ -284,11 +302,30 @@ class QueryConsole(Gtk.Box):
         name = self.selected_connection()
         self._refresh_databases()
         self._lsp_provider.set_profile(self._active_profile())
+        self.refresh_transaction_badge()
         if self.on_connection_changed is not None:
             self.on_connection_changed(name)
 
     def _database_selected(self, *_args) -> None:
         self._lsp_provider.set_profile(self._active_profile())
+        self.refresh_transaction_badge()
+
+    # Transactions
+
+    def open_transaction_connection(self) -> str:
+        """Name of this console's connection when it has an open
+        transaction, else "" — the window's close guards ask this."""
+        profile = self._active_profile()
+        if (
+            profile is not None
+            and self._transaction_active is not None
+            and self._transaction_active(profile.name)
+        ):
+            return profile.name
+        return ""
+
+    def refresh_transaction_badge(self) -> None:
+        self._tx_badge.set_visible(bool(self.open_transaction_connection()))
 
     def _lsp_selected(self, *_args) -> None:
         index = self._lsp_dropdown.get_selected()
@@ -388,12 +425,14 @@ class QueryConsole(Gtk.Box):
                 outcomes.append((sql, result, time.perf_counter() - started))
                 if isinstance(result, Exception):
                     break
-            return outcomes
+            return outcomes, connector.in_transaction()
 
-        def done(outcomes):
+        def done(work_result):
+            outcomes, in_transaction = work_result
             self._run_button.set_sensitive(True)
             self._run_all_button.set_sensitive(True)
             self._explain_button.set_sensitive(True)
+            self._tx_badge.set_visible(in_transaction)
             self._show_outcomes(
                 outcomes, planned=len(statements), json_view=explain
             )
@@ -406,6 +445,7 @@ class QueryConsole(Gtk.Box):
             self._run_button.set_sensitive(True)
             self._run_all_button.set_sensitive(True)
             self._explain_button.set_sensitive(True)
+            self.refresh_transaction_badge()
             self._set_status(str(exc), error=True)
             if self.on_ran is not None:
                 self.on_ran(statements[0], name, False)

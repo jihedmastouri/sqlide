@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import threading
 from datetime import datetime
+from typing import Callable
 
 from gi.repository import Adw, Gio, GLib, GObject, Gtk
 
@@ -43,6 +44,7 @@ from sqlide.frontend.connection_dialog import ConnectionDialog
 from sqlide.frontend.data_grid import ResultGrid, TableTab
 from sqlide.frontend.definition_tab import DefinitionTab, FunctionTab
 from sqlide.frontend.query_console import QueryConsole
+from sqlide.frontend.relation_graph import RelationGraphTab
 from sqlide.frontend.side_panel import SidePanel
 from sqlide.frontend.sidebar import Sidebar
 
@@ -123,6 +125,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_new_query=self.new_query,
             on_open_definition=self.open_definition,
             on_open_function=self.open_function,
+            on_relation_graph=self.open_relation_graph,
             show_error=self.show_error,
         )
         search = Gtk.SearchEntry(placeholder_text="Find tables…")
@@ -366,10 +369,48 @@ class MainWindow(Adw.ApplicationWindow):
             lambda _exc: None,  # tooltip-grade: fail silently
         )
 
-    def _on_close_page(self, _view, page: Adw.TabPage) -> bool:
-        """A tab is being closed: its entries leave the side panel's
-        history scopes (panel_closed) but stay in the workspace-wide
-        History tab."""
+    def _on_close_page(self, view, page: Adw.TabPage) -> bool:
+        """A tab is being closed. A query console whose connection has
+        an open transaction is held back behind a confirmation dialog;
+        forcing the close rolls the transaction back. Either way the
+        closed tab's entries leave the side panel's history scopes
+        (panel_closed) but stay in the workspace-wide History tab."""
+        child = page.get_child()
+        if isinstance(child, QueryConsole):
+            name = child.open_transaction_connection()
+            if name:
+                self._confirm_console_close(view, page, name)
+                return True  # close_page_finish decides later
+        self._mark_panel_closed(page)
+        return False  # let the default handler close the page
+
+    def _confirm_console_close(
+        self, view: Adw.TabView, page: Adw.TabPage, name: str
+    ) -> None:
+        dialog = Adw.AlertDialog(
+            heading="Open Transaction",
+            body=f"The connection “{name}” has an open transaction. "
+            "Close the console anyway and roll it back?",
+        )
+        dialog.add_response("cancel", "Keep Open")
+        dialog.add_response("rollback", "Roll Back and Close")
+        dialog.set_response_appearance(
+            "rollback", Adw.ResponseAppearance.DESTRUCTIVE
+        )
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def respond(_dialog, response: str) -> None:
+            force = response == "rollback"
+            if force:
+                self._rollback_connections([name])
+                self._mark_panel_closed(page)
+            view.close_page_finish(page, force)
+
+        dialog.connect("response", respond)
+        dialog.present(self)
+
+    def _mark_panel_closed(self, page: Adw.TabPage) -> None:
         title = page.get_title()
         changed = False
         for entry in self.workspace.history:
@@ -380,7 +421,6 @@ class MainWindow(Adw.ApplicationWindow):
             self._side_panel.set_entries(self.workspace.history)
             if not self._restoring:
                 self._save_state()
-        return False  # let the default handler close the page
 
     def _on_pane_pressed(self, _gesture, _n, _x, _y, pane: _TabPane) -> None:
         if pane is not self._active_pane:
@@ -425,6 +465,53 @@ class MainWindow(Adw.ApplicationWindow):
         with self._connectors_lock:
             return name in self._connectors
 
+    # Transactions
+
+    def transaction_active(self, name: str) -> bool:
+        """Non-blocking peek: does the cached connector for `name` have
+        an open transaction? in_transaction() only reads driver state,
+        so it is safe on the main thread."""
+        with self._connectors_lock:
+            connector = self._connectors.get(name)
+        try:
+            return connector is not None and connector.in_transaction()
+        except Exception:
+            return False
+
+    def _open_transactions(self) -> list[str]:
+        """Names of all cached connections with an open transaction."""
+        with self._connectors_lock:
+            names = list(self._connectors)
+        return [name for name in names if self.transaction_active(name)]
+
+    def _rollback_connections(
+        self, names: list[str], then: Callable[[], None] | None = None
+    ) -> None:
+        """Roll back the open transaction on each named connection (on
+        a worker thread), then run `then` on the main loop."""
+        def work():
+            for name in names:
+                with self._connectors_lock:
+                    connector = self._connectors.get(name)
+                if connector is not None:
+                    connector.rollback()
+
+        def done(_result):
+            for pane in self._panes:
+                for i in range(pane.view.get_n_pages()):
+                    child = pane.view.get_nth_page(i).get_child()
+                    if isinstance(child, QueryConsole):
+                        child.refresh_transaction_badge()
+            if then is not None:
+                then()
+
+        def failed(exc):
+            self.show_error(f"Rollback failed: {exc}")
+            if then is not None:
+                then()
+
+        run_async(work, done, failed)
+
     # Workspace persistence
 
     def _restore_tabs(self) -> None:
@@ -441,6 +528,9 @@ class MainWindow(Adw.ApplicationWindow):
                 elif tab.kind == "function" and tab.table:
                     if profile is not None:
                         self.open_function(profile, tab.table)
+                elif tab.kind == "relations":
+                    if profile is not None:
+                        self.open_relation_graph(profile)
                 elif tab.kind == "query":
                     # Restore the console even if its connection is gone.
                     self.new_query(profile, sql=tab.sql)
@@ -488,26 +578,45 @@ class MainWindow(Adw.ApplicationWindow):
             return False
         # Keep the window and ask; a confirming response closes it for
         # real (the flag makes the second close-request pass through).
-        dialog = Adw.AlertDialog(
-            heading="Close Workspace?",
-            body=f"Close “{self.workspace.name}”? Open tabs are saved "
-            "and restored next time.",
+        # Open transactions are called out and rolled back on confirm.
+        transactions = self._open_transactions()
+        body = (
+            f"Close “{self.workspace.name}”? Open tabs are saved "
+            "and restored next time."
         )
+        if transactions:
+            body += (
+                "\n\nOpen transaction(s) on "
+                + ", ".join(f"“{name}”" for name in transactions)
+                + " will be rolled back."
+            )
+        dialog = Adw.AlertDialog(heading="Close Workspace?", body=body)
         dialog.add_response("cancel", "Cancel")
-        dialog.add_response("close", "Close")
+        dialog.add_response(
+            "close", "Roll Back and Close" if transactions else "Close"
+        )
         dialog.set_response_appearance(
             "close", Adw.ResponseAppearance.DESTRUCTIVE
         )
-        dialog.set_default_response("close")
+        dialog.set_default_response("close" if not transactions else "cancel")
         dialog.set_close_response("cancel")
         dialog.connect("response", self._close_confirmed_response)
         dialog.present(self)
         return True
 
     def _close_confirmed_response(self, _dialog, response: str) -> None:
-        if response == "close":
+        if response != "close":
+            return
+
+        def finish() -> None:
             self._close_confirmed = True
             self.close()
+
+        transactions = self._open_transactions()
+        if transactions:
+            self._rollback_connections(transactions, then=finish)
+        else:
+            finish()
 
     # UI actions (main thread)
 
@@ -603,6 +712,18 @@ class MainWindow(Adw.ApplicationWindow):
             f"Definition of {name} on {profile.name}",
         )
 
+    def open_relation_graph(self, profile: ConnectionProfile) -> None:
+        key = ("relations", profile.name)
+        if self._focus_tab(key):
+            return
+        tab = RelationGraphTab(profile, self.ensure_connector, self.show_error)
+        self._append_tab(
+            tab,
+            key,
+            f"{profile.name} ▸ relations",
+            f"Table relations of {profile.name}",
+        )
+
     def open_history_tab(self) -> None:
         key = ("history",)
         if self._focus_tab(key):
@@ -624,6 +745,7 @@ class MainWindow(Adw.ApplicationWindow):
             sql=sql,
             connection=profile.name if profile is not None else "",
             on_aggregate=self.show_aggregate,
+            transaction_active=self.transaction_active,
         )
         view = self._active_pane.view
         page = view.append(console)

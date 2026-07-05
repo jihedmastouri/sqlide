@@ -9,11 +9,16 @@ from typing import Any
 from gi.repository import Gio, GLib, Gtk
 
 
-def main_menu_button() -> Gtk.MenuButton:
-    """Hamburger button for a header bar: Preferences and About, both
-    backed by application-level actions (see application.py)."""
+def main_menu_button(with_history: bool = False) -> Gtk.MenuButton:
+    """Hamburger button for a header bar: Preferences, Help and About
+    (application-level actions, see application.py). Main windows also
+    get Query History, backed by the window-level "win.history" action
+    (the launcher has no workspace, hence the flag)."""
     menu = Gio.Menu()
     menu.append("Preferences", "app.preferences")
+    if with_history:
+        menu.append("Query History", "win.history")
+    menu.append("Help", "app.help")
     menu.append("About sqlide", "app.about")
     button = Gtk.MenuButton(
         icon_name="open-menu-symbolic", menu_model=menu

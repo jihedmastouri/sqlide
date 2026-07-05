@@ -23,6 +23,7 @@ from gi.repository import Adw, Gdk, Gio, Gtk  # noqa: E402
 from sqlide import APP_ID
 from sqlide.backend import settings as app_settings
 from sqlide.backend.workspaces import Workspace, WorkspaceStore
+from sqlide.frontend.help import help_dialog
 from sqlide.frontend.launcher import WorkspaceLauncher
 from sqlide.frontend.preferences import PreferencesDialog, about_dialog
 from sqlide.frontend.window import MainWindow
@@ -75,6 +76,7 @@ class SqlideApplication(Adw.Application):
 
         for name, callback, accels in (
             ("preferences", self._show_preferences, ["<primary>comma"]),
+            ("help", self._show_help, ["F1"]),
             ("about", self._show_about, []),
         ):
             action = Gio.SimpleAction.new(name, None)
@@ -94,6 +96,9 @@ class SqlideApplication(Adw.Application):
 
     def _show_preferences(self, *_args) -> None:
         PreferencesDialog().present(self.get_active_window())
+
+    def _show_help(self, *_args) -> None:
+        help_dialog().present(self.get_active_window())
 
     def _show_about(self, *_args) -> None:
         about_dialog().present(self.get_active_window())

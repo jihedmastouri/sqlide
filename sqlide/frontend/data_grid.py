@@ -7,8 +7,9 @@ Editing is locked until set_unlocked(True); mark_modified() highlights
 cells with uncommitted changes.
 
 Columns can be dragged to reorder and resized at their edges. Cells are
-selectable for copying: click selects a cell, Shift+click extends to a
-rectangular block, and the context menu selects a whole row or column.
+selectable for copying: click selects a cell, dragging (or Shift+click)
+extends to a rectangular block, and the context menu selects a whole
+row or column.
 Ctrl+C (or the context menu's Copy) copies the selection as
 tab-separated text; row and block selections include a header line with
 the column names, following the current display order of the columns.
@@ -31,6 +32,7 @@ from typing import Any, Callable
 
 import csv
 import io
+import json
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
@@ -67,11 +69,18 @@ class ResultGrid(Gtk.ScrolledWindow):
         on_edit: EditCallback | None = None,
         table_name: str | None = None,
         on_aggregate: Callable[[list[str]], None] | None = None,
+        on_header_sort: Callable[[list[tuple[str, bool]]], None] | None = None,
     ) -> None:
         super().__init__(vexpand=True, hexpand=True)
         self.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self._on_edit = on_edit
         self._aggregate_cb = on_aggregate
+        # When set, column headers become clickable sort toggles: the
+        # grid never sorts locally (the model ignores the view sorter);
+        # it reports the clicked-together column list as (name,
+        # descending) pairs, primary first, so the owner can re-query.
+        self._on_header_sort = on_header_sort
+        self._updating_columns = False
         # Used by "Copy As > INSERT Statement"; falls back to a placeholder.
         self.table_name = table_name
         self._store = Gio.ListStore(item_type=RowItem)
@@ -82,6 +91,8 @@ class ResultGrid(Gtk.ScrolledWindow):
         self._view.set_show_row_separators(True)
         self._view.set_show_column_separators(True)
         self._view.set_reorderable(True)
+        if on_header_sort is not None:
+            self._view.get_sorter().connect("changed", self._sorter_changed)
         self.set_child(self._view)
 
         self._column_names: list[str] = []
@@ -107,6 +118,8 @@ class ResultGrid(Gtk.ScrolledWindow):
             ("select-column", self._on_select_column),
             ("copy", lambda *_: self.copy_selection()),
             ("aggregate", self._on_aggregate),
+            ("move-left", lambda *_: self._move_menu_column(-1)),
+            ("move-right", lambda *_: self._move_menu_column(1)),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", callback)
@@ -127,6 +140,7 @@ class ResultGrid(Gtk.ScrolledWindow):
         for label, fmt in (
             ("CSV", "csv"),
             ("INSERT Statement", "insert"),
+            ("JSON", "json"),
             ("Pretty", "pretty"),
             ("Markdown", "markdown"),
         ):
@@ -134,11 +148,30 @@ class ResultGrid(Gtk.ScrolledWindow):
         copy_section.append_submenu("Copy As", copy_as_menu)
         copy_section.append("Aggregate", "grid.aggregate")
         menu.append_section(None, copy_section)
+        # Columns can also be reordered by dragging their headers; the
+        # menu items cover the cell-menu path.
+        move_section = Gio.Menu()
+        move_section.append("Move Column Left", "grid.move-left")
+        move_section.append("Move Column Right", "grid.move-right")
+        menu.append_section(None, move_section)
         self._popover = Gtk.PopoverMenu.new_from_model(menu)
         self._popover.set_parent(self._view)
         self._popover.set_has_arrow(False)
 
         self._view.connect("destroy", self._on_view_destroy)
+
+        # Drag with the primary button to select a rectangular block
+        # (mouse-only alternative to Shift+click). The gesture sits on
+        # the view; it stays unclaimed until the pointer crosses into a
+        # different cell, so plain clicks, in-cell edits and header
+        # drags (reorder/resize) are unaffected.
+        self._drag_anchor: tuple[int, int] | None = None
+        self._drag_start = (0.0, 0.0)
+        drag = Gtk.GestureDrag(button=Gdk.BUTTON_PRIMARY)
+        drag.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        drag.connect("drag-begin", self._on_drag_begin)
+        drag.connect("drag-update", self._on_drag_update)
+        self._view.add_controller(drag)
 
         shortcuts = Gtk.ShortcutController()
         shortcuts.set_scope(Gtk.ShortcutScope.LOCAL)
@@ -155,6 +188,17 @@ class ResultGrid(Gtk.ScrolledWindow):
 
     def set_result(
         self, columns: list[str], rows: list[tuple], editable: bool = False
+    ) -> None:
+        # Rebuilding columns disturbs the view sorter; those changes
+        # are not header clicks, so keep them out of on_header_sort.
+        self._updating_columns = True
+        try:
+            self._set_result(columns, rows, editable)
+        finally:
+            self._updating_columns = False
+
+    def _set_result(
+        self, columns: list[str], rows: list[tuple], editable: bool
     ) -> None:
         old = self._view.get_columns()
         for col in [old.get_item(i) for i in range(old.get_n_items())]:
@@ -183,11 +227,52 @@ class ResultGrid(Gtk.ScrolledWindow):
             column = Gtk.ColumnViewColumn(title=name, factory=factory)
             column.set_resizable(True)
             column.set_expand(True)
+            if self._on_header_sort is not None:
+                # A no-op sorter: it only makes the header clickable and
+                # the sort arrow visible; the data order comes from the
+                # owner's re-query, never from a local sort.
+                column.set_sorter(Gtk.CustomSorter.new(None))
             self._column_objs.append(column)
             self._view.append_column(column)
 
         for row in rows:
             self._store.append(RowItem(row))
+
+    def set_sort_state(self, order: list[tuple[str, bool]]) -> None:
+        """Show sort arrows matching (column name, descending) pairs,
+        primary first — the owner calls this after a re-query so header
+        state survives the column rebuild. Unknown names are skipped."""
+        if self._on_header_sort is None:
+            return
+        self._updating_columns = True
+        try:
+            self._view.sort_by_column(None, Gtk.SortType.ASCENDING)
+            # Least-significant first: each call makes its column the
+            # primary and demotes the previous ones, like user clicks.
+            for name, descending in reversed(order):
+                if name not in self._column_names:
+                    continue
+                self._view.sort_by_column(
+                    self._column_objs[self._column_names.index(name)],
+                    Gtk.SortType.DESCENDING
+                    if descending
+                    else Gtk.SortType.ASCENDING,
+                )
+        finally:
+            self._updating_columns = False
+
+    def _sorter_changed(self, sorter, _change) -> None:
+        if self._updating_columns:
+            return
+        pairs = [
+            (
+                column.get_title(),
+                order == Gtk.SortType.DESCENDING,
+            )
+            for i in range(sorter.get_n_sort_columns())
+            for column, order in (sorter.get_nth_sort_column(i),)
+        ]
+        self._on_header_sort(pairs)
 
     # Read-only cells
 
@@ -327,6 +412,34 @@ class ResultGrid(Gtk.ScrolledWindow):
                 self._anchor = (row, index)
                 self._select({row}, {index}, "cell")
 
+    def _cell_at(self, x: float, y: float) -> tuple[int, int] | None:
+        """(row, data column) of the bound cell at view coordinates."""
+        widget = self._view.pick(x, y, Gtk.PickFlags.DEFAULT)
+        while widget is not None and widget not in self._bound_cells:
+            widget = widget.get_parent()
+        if widget is None:
+            return None
+        list_item, index = self._bound_cells[widget]
+        row = list_item.get_position()
+        if row == Gtk.INVALID_LIST_POSITION:
+            return None
+        return (row, index)
+
+    def _on_drag_begin(self, _gesture, x, y) -> None:
+        self._drag_start = (x, y)
+        self._drag_anchor = self._cell_at(x, y)
+
+    def _on_drag_update(self, gesture, dx, dy) -> None:
+        if self._drag_anchor is None:
+            return
+        x, y = self._drag_start
+        cell = self._cell_at(x + dx, y + dy)
+        if cell is None or cell == self._drag_anchor:
+            return
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        self._anchor = self._drag_anchor
+        self._select_block(self._drag_anchor, cell)
+
     def _select_block(self, anchor: tuple[int, int], end: tuple[int, int]) -> None:
         rows = set(range(min(anchor[0], end[0]), max(anchor[0], end[0]) + 1))
         # Column span is visual: use display positions, then map the
@@ -369,6 +482,26 @@ class ResultGrid(Gtk.ScrolledWindow):
             for i in range(columns.get_n_items())
         ]
 
+    def _move_menu_column(self, delta: int) -> None:
+        """Move the right-clicked column one display position left or
+        right (same effect as dragging its header)."""
+        _row, col = self._menu_cell
+        if not 0 <= col < len(self._column_objs):
+            return
+        order = self._display_order()
+        position = order.index(col)
+        target = position + delta
+        if not 0 <= target < len(order):
+            return
+        column = self._column_objs[col]
+        # Re-inserting rebuilds header sort state; not a header click.
+        self._updating_columns = True
+        try:
+            self._view.remove_column(column)
+            self._view.insert_column(target, column)
+        finally:
+            self._updating_columns = False
+
     def _on_copy_shortcut(self, _widget, _args) -> bool:
         return self.copy_selection()
 
@@ -381,6 +514,7 @@ class ResultGrid(Gtk.ScrolledWindow):
             "default": self._format_default,
             "csv": _format_csv,
             "insert": self._format_insert,
+            "json": _format_json,
             "pretty": _format_pretty,
             "markdown": _format_markdown,
         }[fmt]
@@ -471,6 +605,24 @@ def _format_number(value: float) -> str:
     return str(value)
 
 
+def _format_json(headers: list[str], rows: list[list[Any]]) -> str:
+    return json.dumps(
+        [
+            {
+                header: value if _json_safe(value) else str(value)
+                for header, value in zip(headers, row)
+            }
+            for row in rows
+        ],
+        indent=2,
+        ensure_ascii=False,
+    )
+
+
+def _json_safe(value: Any) -> bool:
+    return value is None or isinstance(value, (bool, int, float, str))
+
+
 def _format_csv(headers: list[str], rows: list[list[Any]]) -> str:
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
@@ -559,6 +711,63 @@ class _FilterRow(Gtk.Box):
         )
 
 
+class _SortRow(Gtk.Box):
+    """One line of the sort panel: column, direction, and controls to
+    move the line up/down (ORDER BY priority follows the line order)
+    or remove it."""
+
+    def __init__(
+        self,
+        columns: list[str],
+        on_remove: Callable[["_SortRow"], None],
+        on_move: Callable[["_SortRow", int], None],
+    ) -> None:
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._column = Gtk.DropDown(
+            model=Gtk.StringList.new(columns), hexpand=True
+        )
+        self._direction = Gtk.DropDown(
+            model=Gtk.StringList.new(["Ascending", "Descending"])
+        )
+        up = Gtk.Button(icon_name="go-up-symbolic")
+        up.add_css_class("flat")
+        up.set_tooltip_text("Sort by this column earlier")
+        up.connect("clicked", lambda *_: on_move(self, -1))
+        down = Gtk.Button(icon_name="go-down-symbolic")
+        down.add_css_class("flat")
+        down.set_tooltip_text("Sort by this column later")
+        down.connect("clicked", lambda *_: on_move(self, 1))
+        remove = Gtk.Button(icon_name="list-remove-symbolic")
+        remove.add_css_class("flat")
+        remove.set_tooltip_text("Remove sort column")
+        remove.connect("clicked", lambda *_: on_remove(self))
+        for widget in (self._column, self._direction, up, down, remove):
+            self.append(widget)
+
+    def set_columns(self, names: list[str]) -> None:
+        selected = self.selected_column()
+        self._column.set_model(Gtk.StringList.new(names))
+        if selected in names:
+            self._column.set_selected(names.index(selected))
+
+    def selected_column(self) -> str:
+        return _selected_string(self._column)
+
+    def spec(self) -> SortSpec:
+        return SortSpec(
+            column=self.selected_column(),
+            descending=self._direction.get_selected() == 1,
+        )
+
+    def set_spec(self, spec: SortSpec) -> None:
+        model = self._column.get_model()
+        for i in range(model.get_n_items()):
+            if model.get_string(i) == spec.column:
+                self._column.set_selected(i)
+                break
+        self._direction.set_selected(1 if spec.descending else 0)
+
+
 def _selected_string(dropdown: Gtk.DropDown) -> str:
     item = dropdown.get_selected_item()
     return item.get_string() if item is not None else ""
@@ -569,7 +778,12 @@ class UpdatePreviewDialog(Adw.Dialog):
     that will run, with Cancel / Execute. Values are bound as parameters
     at execution time; the preview renders them as SQL literals."""
 
-    def __init__(self, statements: list[str], on_execute: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        statements: list[str],
+        on_execute: Callable[[], None],
+        caption: str = "Values are bound as parameters when executed.",
+    ) -> None:
         super().__init__(
             title=f"Review Changes ({len(statements)})",
             content_width=560,
@@ -601,7 +815,7 @@ class UpdatePreviewDialog(Adw.Dialog):
         scroller = Gtk.ScrolledWindow(child=text, vexpand=True)
 
         caption = Gtk.Label(
-            label="Values are bound as parameters when executed.",
+            label=caption,
             xalign=0,
             margin_start=12,
             margin_end=12,
@@ -642,6 +856,10 @@ class TableTab(Gtk.Box):
         self.table = table
         self._ensure = ensure_connector
         self._show_error = show_error
+        # Public: the window rebinds it after the tab page exists so
+        # every grid load (select, filter, sort, paging) lands in the
+        # query history under this tab's panel name.
+        self.on_ran: Callable[[str, bool], None] | None = None
         self._offset = 0
         self._columns: list[ColumnInfo] = []
         self._result_names: list[str] = []
@@ -649,17 +867,23 @@ class TableTab(Gtk.Box):
         self._filters: list[FilterCondition] = []
         self._order_by: list[SortSpec] = []
         self._filter_rows: list[_FilterRow] = []
+        self._sort_rows: list[_SortRow] = []
         # Pending (unsaved) edits per row: pk values snapshotted at the
         # first edit of the row, then {column name: new text}.
         self._pending: dict[RowItem, tuple[dict[str, Any], dict[str, str]]] = {}
 
+        # Filter and sort are separate panels behind separate toggles;
+        # both can be revealed at the same time.
         self._filter_revealer = Gtk.Revealer(child=self._build_filter_panel())
         self.append(self._filter_revealer)
+        self._sort_revealer = Gtk.Revealer(child=self._build_sort_panel())
+        self.append(self._sort_revealer)
 
         self._grid = ResultGrid(
             on_edit=self._commit_edit,
             table_name=table,
             on_aggregate=on_aggregate,
+            on_header_sort=self._on_header_sort,
         )
         self.append(self._grid)
 
@@ -679,8 +903,13 @@ class TableTab(Gtk.Box):
         refresh.set_tooltip_text("Refresh (discards unsaved edits)")
         refresh.connect("clicked", lambda *_: self.reload())
         self._filter_toggle = Gtk.ToggleButton(icon_name="edit-find-symbolic")
-        self._filter_toggle.set_tooltip_text("Filter and sort")
+        self._filter_toggle.set_tooltip_text("Filter rows")
         self._filter_toggle.connect("toggled", self._on_filter_toggled)
+        self._sort_toggle = Gtk.ToggleButton(
+            icon_name="view-sort-descending-symbolic"
+        )
+        self._sort_toggle.set_tooltip_text("Sort rows")
+        self._sort_toggle.connect("toggled", self._on_sort_toggled)
         self._edit_toggle = Gtk.ToggleButton(icon_name="document-edit-symbolic")
         self._edit_toggle.set_tooltip_text("Unlock editing")
         self._edit_toggle.set_sensitive(False)
@@ -693,6 +922,7 @@ class TableTab(Gtk.Box):
         self._mode_label.add_css_class("dim-label")
         bar.pack_end(refresh)
         bar.pack_end(self._filter_toggle)
+        bar.pack_end(self._sort_toggle)
         bar.pack_end(self._edit_toggle)
         bar.pack_end(self._save)
         bar.pack_end(self._mode_label)
@@ -707,10 +937,33 @@ class TableTab(Gtk.Box):
             kind="table", connection=self.profile.name, table=self.table
         )
 
+    def _describe_query(self, offset: int) -> str:
+        """The SELECT this tab's current state stands for, with filter
+        values inlined as literals — recorded in the query history (the
+        adapters bind the real values as parameters)."""
+        where = ""
+        for cond in self._filters:
+            clause = f"{cond.column} {cond.op}"
+            if cond.op not in NO_VALUE_OPERATORS:
+                clause += f" {_sql_literal(cond.value)}"
+            where = (
+                f"({where}) {cond.conjunction} {clause}" if where else clause
+            )
+        sql = f"SELECT * FROM {self.table}"
+        if where:
+            sql += f" WHERE {where}"
+        if self._order_by:
+            sql += " ORDER BY " + ", ".join(
+                f"{s.column} {'DESC' if s.descending else 'ASC'}"
+                for s in self._order_by
+            )
+        return sql + f" LIMIT {PAGE_SIZE} OFFSET {offset};"
+
     def reload(self) -> None:
         offset = self._offset
         filters = self._filters
         order_by = self._order_by
+        history_sql = self._describe_query(offset)
 
         def work():
             connector = self._ensure(self.profile)
@@ -728,20 +981,32 @@ class TableTab(Gtk.Box):
             self._pending.clear()
             self._update_save_button()
             self._grid.set_result(result.columns, result.rows, editable=editable)
+            self._grid.set_sort_state(
+                [(s.column, s.descending) for s in order_by]
+            )
             self._edit_toggle.set_sensitive(editable)
             self._grid.set_unlocked(editable and self._edit_toggle.get_active())
             count = len(result)
             page = f"{offset + 1}–{offset + count}" if count else "no rows"
             if filters:
                 page += " (filtered)"
+            if order_by:
+                page += " (sorted)"
             self._page_label.set_text(page)
             self._prev.set_sensitive(offset > 0)
             self._next.set_sensitive(count == PAGE_SIZE)
             self._mode_label.set_text(
                 "" if editable else "read-only (no primary key)"
             )
+            if self.on_ran is not None:
+                self.on_ran(history_sql, True)
 
-        run_async(work, done, lambda exc: self._show_error(str(exc)))
+        def failed(exc):
+            self._show_error(str(exc))
+            if self.on_ran is not None:
+                self.on_ran(history_sql, False)
+
+        run_async(work, done, failed)
 
     # Filter panel
 
@@ -764,16 +1029,6 @@ class TableTab(Gtk.Box):
         add.connect("clicked", lambda *_: self._add_filter_row())
         controls.append(add)
 
-        order_label = Gtk.Label(label="Order by", margin_start=12)
-        order_label.add_css_class("dim-label")
-        controls.append(order_label)
-        self._sort_column = Gtk.DropDown(model=Gtk.StringList.new(["(none)"]))
-        controls.append(self._sort_column)
-        self._sort_direction = Gtk.DropDown(
-            model=Gtk.StringList.new(["Ascending", "Descending"])
-        )
-        controls.append(self._sort_direction)
-
         controls.append(Gtk.Box(hexpand=True))
         clear = Gtk.Button(label="Clear")
         clear.connect("clicked", lambda *_: self._clear_filters())
@@ -789,6 +1044,107 @@ class TableTab(Gtk.Box):
         if toggle.get_active() and not self._filter_rows:
             self._add_filter_row()
         self._filter_revealer.set_reveal_child(toggle.get_active())
+
+    # Sort panel
+
+    def _build_sort_panel(self) -> Gtk.Box:
+        panel = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=6,
+            margin_top=6,
+            margin_bottom=6,
+            margin_start=6,
+            margin_end=6,
+        )
+        self._sort_rows_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=6
+        )
+        panel.append(self._sort_rows_box)
+
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        add = Gtk.Button(label="Add sort column")
+        add.connect("clicked", lambda *_: self._add_sort_row())
+        controls.append(add)
+        controls.append(Gtk.Box(hexpand=True))
+        clear = Gtk.Button(label="Clear")
+        clear.connect("clicked", lambda *_: self._clear_sort())
+        controls.append(clear)
+        apply = Gtk.Button(label="Apply")
+        apply.add_css_class("suggested-action")
+        apply.connect("clicked", lambda *_: self._apply_sort())
+        controls.append(apply)
+        panel.append(controls)
+        return panel
+
+    def _on_sort_toggled(self, toggle: Gtk.ToggleButton) -> None:
+        if toggle.get_active() and not self._sort_rows:
+            self._add_sort_row()
+        self._sort_revealer.set_reveal_child(toggle.get_active())
+
+    def _add_sort_row(self, spec: SortSpec | None = None) -> None:
+        row = _SortRow(
+            self._column_names, self._remove_sort_row, self._move_sort_row
+        )
+        if spec is not None:
+            row.set_spec(spec)
+        self._sort_rows.append(row)
+        self._sort_rows_box.append(row)
+
+    def _remove_sort_row(self, row: _SortRow) -> None:
+        self._sort_rows.remove(row)
+        self._sort_rows_box.remove(row)
+
+    def _move_sort_row(self, row: _SortRow, delta: int) -> None:
+        index = self._sort_rows.index(row)
+        target = index + delta
+        if not 0 <= target < len(self._sort_rows):
+            return
+        self._sort_rows.insert(target, self._sort_rows.pop(index))
+        for widget in self._sort_rows:
+            self._sort_rows_box.remove(widget)
+        for widget in self._sort_rows:
+            self._sort_rows_box.append(widget)
+
+    def _set_sort_rows(self, specs: list[SortSpec]) -> None:
+        """Mirror an order list (e.g. from header clicks) in the panel."""
+        for row in list(self._sort_rows):
+            self._remove_sort_row(row)
+        for spec in specs:
+            self._add_sort_row(spec)
+
+    def _apply_sort(self) -> None:
+        # Line order is the ORDER BY priority; duplicate columns keep
+        # their first line.
+        seen: set[str] = set()
+        order = []
+        for row in self._sort_rows:
+            spec = row.spec()
+            if spec.column and spec.column not in seen:
+                seen.add(spec.column)
+                order.append(spec)
+        self._order_by = order
+        self._offset = 0
+        self.reload()
+
+    def _clear_sort(self) -> None:
+        for row in list(self._sort_rows):
+            self._remove_sort_row(row)
+        if self._order_by:
+            self._order_by = []
+            self._offset = 0
+            self.reload()
+
+    def _on_header_sort(self, pairs: list[tuple[str, bool]]) -> None:
+        """A header click changed the view's sort columns: adopt them
+        (primary first) as the order list and re-query."""
+        self._order_by = [
+            SortSpec(column=name, descending=descending)
+            for name, descending in pairs
+            if name in self._column_names
+        ]
+        self._set_sort_rows(self._order_by)
+        self._offset = 0
+        self.reload()
 
     def _add_filter_row(self) -> None:
         row = _FilterRow(
@@ -813,38 +1169,21 @@ class TableTab(Gtk.Box):
         self._column_names = names
         for row in self._filter_rows:
             row.set_columns(names)
-        selected = _selected_string(self._sort_column)
-        choices = ["(none)"] + names
-        self._sort_column.set_model(Gtk.StringList.new(choices))
-        if selected in choices:
-            self._sort_column.set_selected(choices.index(selected))
+        for row in self._sort_rows:
+            row.set_columns(names)
 
     def _apply_filters(self) -> None:
         self._filters = [
             row.condition() for row in self._filter_rows if row.selected_column()
         ]
-        sort_column = _selected_string(self._sort_column)
-        self._order_by = (
-            [
-                SortSpec(
-                    column=sort_column,
-                    descending=self._sort_direction.get_selected() == 1,
-                )
-            ]
-            if sort_column and sort_column != "(none)"
-            else []
-        )
         self._offset = 0
         self.reload()
 
     def _clear_filters(self) -> None:
         for row in list(self._filter_rows):
             self._remove_filter_row(row)
-        self._sort_column.set_selected(0)
-        self._sort_direction.set_selected(0)
-        if self._filters or self._order_by:
+        if self._filters:
             self._filters = []
-            self._order_by = []
             self._offset = 0
             self.reload()
 

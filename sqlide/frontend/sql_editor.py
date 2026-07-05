@@ -58,9 +58,10 @@ _PALETTES = {
 
 class SqlEditor(Gtk.ScrolledWindow):
     """Scrollable SQL editor; the text view is exposed as `.view` so the
-    console can attach its key controller."""
+    console can attach its key controller. With editable=False it is a
+    highlighted read-only SQL viewer (definition tab, side panel)."""
 
-    def __init__(self, sql: str = "") -> None:
+    def __init__(self, sql: str = "", editable: bool = True) -> None:
         super().__init__()
         style_manager = Adw.StyleManager.get_default()
         if GtkSource is not None:
@@ -95,9 +96,16 @@ class SqlEditor(Gtk.ScrolledWindow):
         self.view.set_monospace(True)
         self.view.set_left_margin(8)
         self.view.set_top_margin(8)
+        if not editable:
+            self.view.set_editable(False)
+            self.view.set_cursor_visible(False)
+            if GtkSource is not None:
+                self.view.set_show_line_numbers(False)
+                self.view.set_highlight_current_line(False)
         self.set_child(self.view)
         self._completion = CompletionController(self.view)
-        self._completion.add_provider(KeywordCompletionProvider(_KEYWORDS))
+        if editable:
+            self._completion.add_provider(KeywordCompletionProvider(_KEYWORDS))
         self.set_text(sql)
 
     def add_completion_provider(self, provider: CompletionProvider) -> None:

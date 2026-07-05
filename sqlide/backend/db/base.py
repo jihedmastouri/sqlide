@@ -150,6 +150,19 @@ class Connector(ABC):
         """
         return ""
 
+    def explain_prefix(self) -> str:
+        """Prefix that turns a statement into its plan query, for the
+        console's Explain button (dialects override: SQLite uses
+        EXPLAIN QUERY PLAN)."""
+        return "EXPLAIN "
+
+    def drop_function_sql(self, name: str) -> str:
+        """Statement that removes the stored object `name` so its
+        CREATE can be re-run when saving an edited definition. Empty
+        string when the adapter doesn't support replacing functions.
+        """
+        return ""
+
     @abstractmethod
     def fetch_rows(
         self,

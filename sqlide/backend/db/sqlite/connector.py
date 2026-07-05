@@ -12,6 +12,7 @@ from sqlide.backend.db.base import (
     Connector,
     ConnectorError,
     FilterCondition,
+    FunctionInfo,
     ResultSet,
     SortSpec,
     TableInfo,
@@ -37,7 +38,15 @@ class SqliteConnector(Connector):
         if not os.path.isfile(self.file_path):
             raise ConnectorError(f"No such database file: {self.file_path}")
         try:
-            self._conn = sqlite3.connect(self.file_path, check_same_thread=False)
+            # isolation_level=None: the module never opens implicit
+            # transactions, so statements autocommit unless the user
+            # runs an explicit BEGIN (the console's transaction
+            # buttons) — which then stays open across statements.
+            self._conn = sqlite3.connect(
+                self.file_path,
+                check_same_thread=False,
+                isolation_level=None,
+            )
         except sqlite3.Error as exc:
             raise ConnectorError(str(exc)) from exc
 
@@ -51,27 +60,44 @@ class SqliteConnector(Connector):
     ) -> tuple[list[str], list[tuple], int]:
         """Execute one statement; returns (columns, rows, rowcount).
 
-        With expect_rowcount set, a mismatch rolls the statement back
-        instead of committing it — the check must happen before commit
-        or an over-broad UPDATE is already durable when it fails.
+        The connection autocommits (isolation_level=None), so nothing
+        is committed here; a user-issued BEGIN keeps its transaction
+        open across calls. With expect_rowcount set, the statement is
+        wrapped in its own transaction (unless one is already open) so
+        a mismatch rolls back before the change is durable.
         """
         if self._conn is None:
             raise ConnectorError("Not connected")
         try:
             with self._lock:
-                cur = self._conn.execute(sql, params)
-                if cur.description is not None:
-                    columns = [d[0] for d in cur.description]
-                    rows = cur.fetchall()
-                else:
-                    columns, rows = [], []
-                if expect_rowcount is not None and cur.rowcount != expect_rowcount:
-                    self._conn.rollback()
-                    raise ConnectorError(
-                        f"Expected to modify {expect_rowcount} row(s), "
-                        f"matched {cur.rowcount}; rolled back"
-                    )
-                self._conn.commit()
+                own_tx = (
+                    expect_rowcount is not None
+                    and not self._conn.in_transaction
+                )
+                if own_tx:
+                    self._conn.execute("BEGIN")
+                try:
+                    cur = self._conn.execute(sql, params)
+                    if cur.description is not None:
+                        columns = [d[0] for d in cur.description]
+                        rows = cur.fetchall()
+                    else:
+                        columns, rows = [], []
+                    if (
+                        expect_rowcount is not None
+                        and cur.rowcount != expect_rowcount
+                    ):
+                        self._conn.rollback()
+                        raise ConnectorError(
+                            f"Expected to modify {expect_rowcount} row(s), "
+                            f"matched {cur.rowcount}; rolled back"
+                        )
+                except sqlite3.Error:
+                    if own_tx and self._conn.in_transaction:
+                        self._conn.rollback()
+                    raise
+                if own_tx and self._conn.in_transaction:
+                    self._conn.commit()
                 return columns, rows, cur.rowcount
         except sqlite3.Error as exc:
             raise ConnectorError(str(exc)) from exc
@@ -102,6 +128,23 @@ class SqliteConnector(Connector):
             "SELECT sql FROM sqlite_master WHERE name = ?", (name,)
         )
         return (rows[0][0] or "") if rows else ""
+
+    def list_functions(self) -> list[FunctionInfo]:
+        # SQLite has no stored functions or procedures; triggers are
+        # its programmable objects, so they populate Functions.
+        _, rows, _ = self._run(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+            "ORDER BY name"
+        )
+        return [FunctionInfo(name=name) for (name,) in rows]
+
+    def explain_prefix(self) -> str:
+        # Plain EXPLAIN dumps VDBE opcodes; the query plan is the
+        # readable form.
+        return "EXPLAIN QUERY PLAN "
+
+    def drop_function_sql(self, name: str) -> str:
+        return f"DROP TRIGGER IF EXISTS {self.quote_ident(name)}"
 
     def fetch_rows(
         self,

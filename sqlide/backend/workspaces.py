@@ -29,9 +29,9 @@ MAX_HISTORY = 200
 
 @dataclass
 class TabState:
-    kind: str  # "table" | "query"
+    kind: str  # "table" | "query" | "definition" | "function"
     connection: str  # ConnectionProfile.name within the workspace
-    table: str = ""  # table tabs only
+    table: str = ""  # table/definition/function tabs: object name
     sql: str = ""  # query tabs only
 
 
@@ -41,6 +41,11 @@ class HistoryEntry:
     connection: str  # ConnectionProfile.name at run time
     timestamp: str  # local time, ISO format
     ok: bool = True  # failed runs are recorded too
+    panel: str = ""  # tab title that ran it ("" in pre-panel history)
+    # Set when the tab that ran the query is closed: the side panel's
+    # per-panel history drops the entry, the workspace-wide History
+    # tab keeps it.
+    panel_closed: bool = False
 
 
 @dataclass

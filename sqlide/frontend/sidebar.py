@@ -10,10 +10,19 @@ Rows lead with a per-kind icon (connections also get a connection
 status dot) and expandable rows end with a caret; the built-in
 expander arrow is hidden. Activating a table/view opens a data tab;
 activating a connection or category toggles it; clicking the caret on
-a table/view expands its columns without opening a tab; each
-connection row keeps its "new query console" button. Hovering a
-table/view shows its DDL in a tooltip (fetched lazily, cached on the
-node); hovering a connection shows a short summary.
+a table/view expands its columns without opening a tab. Activating a
+function (or its Edit Definition context item) opens its definition
+in an editable tab. Right-clicking a table or view opens View Data /
+Query Console / Table Definition; right-clicking a connection offers
+a new query console (new consoles otherwise come from the header-bar
+button). Hovering a table/view shows its DDL in a tooltip (fetched
+lazily, cached on the node); hovering a connection shows a short
+summary.
+
+set_filter() switches the view to fuzzy-find mode: a flat list of the
+tables, views and functions whose names loosely match the query
+(subsequence match), across every connection whose schema has already
+been loaded. Clearing the query restores the tree.
 
 Lazy loading: GTK probes create_func just to decide whether a row gets
 an expander arrow, so it must stay cheap — it only creates (and caches)
@@ -28,7 +37,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from gi.repository import Gio, GObject, Gtk, Pango
+from gi.repository import Gdk, Gio, GObject, Gtk, Pango
 
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import Connector
@@ -85,13 +94,17 @@ class Sidebar(Gtk.ScrolledWindow):
         self,
         ensure_connector: Callable[[ConnectionProfile], Connector],
         on_open_table: Callable[[ConnectionProfile, str], None],
-        on_new_query: Callable[[ConnectionProfile], None],
+        on_new_query: Callable[..., None],  # (profile, sql="")
+        on_open_definition: Callable[[ConnectionProfile, str], None],
+        on_open_function: Callable[[ConnectionProfile, str], None],
         show_error: Callable[[str], None],
     ) -> None:
         super().__init__(vexpand=True)
         self._ensure = ensure_connector
         self._on_open_table = on_open_table
         self._on_new_query = on_new_query
+        self._on_open_definition = on_open_definition
+        self._on_open_function = on_open_function
         self._show_error = show_error
         # Currently bound status dot per connection name, so
         # set_connected() can restyle a visible row.
@@ -117,6 +130,35 @@ class Sidebar(Gtk.ScrolledWindow):
         self._view.connect("activate", self._on_activate)
         self.set_child(self._view)
 
+        # Context menu (right-click on a table/view or connection row).
+        self._menu_node: Node | None = None
+        actions = Gio.SimpleActionGroup()
+        for name, callback in (
+            ("view-data", self._menu_view_data),
+            ("query-console", self._menu_query_console),
+            ("definition", self._menu_definition),
+            ("edit-function", self._menu_edit_function),
+        ):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", callback)
+            actions.add_action(action)
+        self._view.insert_action_group("schema", actions)
+
+        self._object_menu = Gio.Menu()
+        self._object_menu.append("View Data", "schema.view-data")
+        self._object_menu.append("Query Console", "schema.query-console")
+        self._object_menu.append("Table Definition", "schema.definition")
+        self._connection_menu = Gio.Menu()
+        self._connection_menu.append(
+            "New Query Console", "schema.query-console"
+        )
+        self._function_menu = Gio.Menu()
+        self._function_menu.append("Edit Definition", "schema.edit-function")
+        self._popover = Gtk.PopoverMenu.new_from_model(self._object_menu)
+        self._popover.set_parent(self._view)
+        self._popover.set_has_arrow(False)
+        self._view.connect("destroy", lambda *_: self._popover.unparent())
+
     def add_profile(self, profile: ConnectionProfile) -> None:
         self._roots.append(
             Node("connection", profile.name, detail=profile.kind, profile=profile)
@@ -133,6 +175,60 @@ class Sidebar(Gtk.ScrolledWindow):
         dot = self._dots.get(name)
         if dot is not None:
             _style_dot(dot, connected)
+
+    def set_filter(self, text: str) -> None:
+        """Fuzzy-find mode: replace the tree with a flat list of the
+        matching tables/views/functions of every loaded connection;
+        an empty query restores the tree."""
+        text = text.strip().lower()
+        if not text:
+            self._view.set_model(Gtk.SingleSelection(model=self._tree))
+            return
+        matches = []
+        for node in self._search_candidates():
+            key = _fuzzy_key(text, node.label.lower())
+            if key is not None:
+                matches.append((key, node))
+        matches.sort(key=lambda pair: (pair[0], pair[1].label.lower()))
+        store = Gio.ListStore(item_type=Node)
+        for _key, node in matches:
+            store.append(node)
+        if not matches:
+            store.append(Node("note", "(no matches in loaded connections)"))
+        flat = Gtk.TreeListModel.new(
+            store,
+            passthrough=False,
+            autoexpand=False,
+            create_func=self._create_children,
+        )
+        self._view.set_model(Gtk.SingleSelection(model=flat))
+
+    def _search_candidates(self):
+        """Fresh table/view/function Nodes from every connection whose
+        schema has been loaded (detail carries the connection name)."""
+        for i in range(self._roots.get_n_items()):
+            conn = self._roots.get_item(i)
+            if conn.store is None:
+                continue
+            for j in range(conn.store.get_n_items()):
+                category = conn.store.get_item(j)
+                if category.kind != "category":
+                    continue
+                if category.category in ("tables", "views"):
+                    kind = "table" if category.category == "tables" else "view"
+                    for info in category.payload or []:
+                        yield Node(
+                            kind, info.name,
+                            detail=conn.label, profile=conn.profile,
+                        )
+                elif category.store is not None:
+                    for k in range(category.store.get_n_items()):
+                        child = category.store.get_item(k)
+                        if child.kind == "function":
+                            yield Node(
+                                "function", child.label,
+                                detail=conn.label, profile=conn.profile,
+                            )
 
     def expand_profile(self, name: str) -> None:
         """Expand (and thereby connect/load) the row for a profile."""
@@ -209,7 +305,9 @@ class Sidebar(Gtk.ScrolledWindow):
 
             def fill(functions):
                 for function in functions:
-                    store.append(Node("function", function.name))
+                    store.append(
+                        Node("function", function.name, profile=node.profile)
+                    )
                 if not functions:
                     store.append(Node("note", "(none)"))
         else:  # table | view
@@ -264,11 +362,6 @@ class Sidebar(Gtk.ScrolledWindow):
         detail = Gtk.Label()
         detail.add_css_class("dim-label")
         detail.add_css_class("caption")
-        button = Gtk.Button(icon_name="utilities-terminal-symbolic")
-        button.set_tooltip_text("New query console")
-        button.add_css_class("flat")
-        button.set_valign(Gtk.Align.CENTER)
-        button.connect("clicked", self._query_clicked, list_item)
         caret = Gtk.Image(icon_name="pan-end-symbolic")
         caret.add_css_class("dim-label")
         caret.set_visible(False)
@@ -278,7 +371,10 @@ class Sidebar(Gtk.ScrolledWindow):
         caret_click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         caret_click.connect("pressed", self._caret_pressed, list_item)
         caret.add_controller(caret_click)
-        for child in (dot, icon, label, pk, detail, button, caret):
+        menu_click = Gtk.GestureClick(button=Gdk.BUTTON_SECONDARY)
+        menu_click.connect("pressed", self._row_menu_pressed, list_item)
+        expander.add_controller(menu_click)
+        for child in (dot, icon, label, pk, detail, caret):
             box.append(child)
         expander.set_child(box)
         list_item.set_child(expander)
@@ -288,7 +384,6 @@ class Sidebar(Gtk.ScrolledWindow):
         list_item.label = label
         list_item.pk = pk
         list_item.detail = detail
-        list_item.button = button
         list_item.caret = caret
         list_item.row_handler = 0
 
@@ -315,7 +410,6 @@ class Sidebar(Gtk.ScrolledWindow):
         list_item.pk.set_visible(node.is_pk)
         list_item.detail.set_text(node.detail)
         list_item.detail.set_visible(bool(node.detail))
-        list_item.button.set_visible(node.kind == "connection")
         list_item.caret.set_visible(node.kind in _EXPANDABLE)
         _set_caret(list_item.caret, row.get_expanded())
         list_item.row_handler = row.connect(
@@ -333,8 +427,57 @@ class Sidebar(Gtk.ScrolledWindow):
                 del self._dots[list_item.dot_name]
             list_item.dot_name = ""
 
-    def _query_clicked(self, _button, list_item: Gtk.ListItem) -> None:
-        self._on_new_query(list_item.get_item().get_item().profile)
+    # Context menu
+
+    def _row_menu_pressed(
+        self, gesture, _n_press, x, y, list_item: Gtk.ListItem
+    ) -> None:
+        row = list_item.get_item()
+        if row is None:
+            return
+        node = row.get_item()
+        if node.kind in ("table", "view"):
+            menu = self._object_menu
+        elif node.kind == "connection":
+            menu = self._connection_menu
+        elif node.kind == "function" and node.profile is not None:
+            menu = self._function_menu
+        else:
+            return
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        self._menu_node = node
+        self._popover.set_menu_model(menu)
+        ok, bounds = gesture.get_widget().compute_bounds(self._view)
+        rect = Gdk.Rectangle()
+        rect.x = int(bounds.origin.x + x) if ok else 0
+        rect.y = int(bounds.origin.y + y) if ok else 0
+        rect.width = rect.height = 1
+        self._popover.set_pointing_to(rect)
+        self._popover.popup()
+
+    def _menu_view_data(self, *_args) -> None:
+        node = self._menu_node
+        if node is not None and node.kind in ("table", "view"):
+            self._on_open_table(node.profile, node.label)
+
+    def _menu_query_console(self, *_args) -> None:
+        node = self._menu_node
+        if node is None or node.profile is None:
+            return
+        if node.kind in ("table", "view"):
+            self._on_new_query(node.profile, f"SELECT * FROM {node.label};")
+        else:
+            self._on_new_query(node.profile)
+
+    def _menu_definition(self, *_args) -> None:
+        node = self._menu_node
+        if node is not None and node.kind in ("table", "view"):
+            self._on_open_definition(node.profile, node.label)
+
+    def _menu_edit_function(self, *_args) -> None:
+        node = self._menu_node
+        if node is not None and node.kind == "function" and node.profile:
+            self._on_open_function(node.profile, node.label)
 
     def _query_tooltip(
         self, _widget, _x, _y, _keyboard, tooltip: Gtk.Tooltip,
@@ -395,8 +538,30 @@ class Sidebar(Gtk.ScrolledWindow):
         node = row.get_item()
         if node.kind in ("table", "view"):
             self._on_open_table(node.profile, node.label)
+        elif node.kind == "function" and node.profile is not None:
+            self._on_open_function(node.profile, node.label)
         elif node.kind in ("connection", "category"):
             row.set_expanded(not row.get_expanded())
+
+
+def _fuzzy_key(query: str, name: str) -> tuple[int, int, int] | None:
+    """Subsequence match of query in name (both lowercase). None when
+    it doesn't match; otherwise a sort key — tighter, earlier, shorter
+    matches first."""
+    start = name.find(query)
+    if start != -1:  # contiguous: always beats scattered matches
+        return (0, start, len(name))
+    position = 0
+    first = -1
+    for char in query:
+        position = name.find(char, position)
+        if position == -1:
+            return None
+        if first == -1:
+            first = position
+        position += 1
+    spread = position - first - len(query)
+    return (1 + spread, first, len(name))
 
 
 def _set_caret(caret: Gtk.Image, expanded: bool) -> None:

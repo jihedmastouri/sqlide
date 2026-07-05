@@ -17,9 +17,10 @@ OverlaySplitView (query history, hidden by default) wraps the tab
 area — so the panel never reaches the window controls at the top.
 The tab area holds one or more panes (each an Adw.TabBar over an
 Adw.TabView) side by side in nested Gtk.Paned splitters: the Split
-button moves the current tab into a new pane, so e.g. two tables can
-be shown next to each other. New tabs open in the last-clicked pane;
-a pane whose last tab is closed or moved away is removed.
+button moves the current tab into a new pane (up to three panes,
+sized evenly), so e.g. two tables can be shown next to each other.
+New tabs open in the last-clicked pane; a pane whose last tab is
+closed or moved away is removed.
 The window owns the shared
 Gtk.StringList of connection names that every query console's dropdown
 observes, records each console run into the workspace history, and
@@ -83,7 +84,8 @@ class _TabPane(Gtk.Box):
             orientation=Gtk.Orientation.VERTICAL, hexpand=True, vexpand=True
         )
         self.view = Adw.TabView(vexpand=True)
-        self.append(Adw.TabBar(view=self.view))
+        self.bar = Adw.TabBar(view=self.view)
+        self.append(self.bar)
         self.append(self.view)
 
 
@@ -305,19 +307,54 @@ class MainWindow(Adw.ApplicationWindow):
             self._panes_root.remove(old)
         root: Gtk.Widget = self._panes[0]
         for pane in self._panes[1:]:
+            # shrink=True: a pane's minimum width (e.g. a console
+            # toolbar) must never lock the divider or force the window
+            # wider — scrollable content scrolls, the rest clips.
             paned = Gtk.Paned(
                 orientation=Gtk.Orientation.HORIZONTAL,
                 hexpand=True,
                 vexpand=True,
                 resize_start_child=True,
                 resize_end_child=True,
-                shrink_start_child=False,
-                shrink_end_child=False,
+                shrink_start_child=True,
+                shrink_end_child=True,
             )
             paned.set_start_child(root)
             paned.set_end_child(pane)
             root = paned
         self._panes_root.append(root)
+        # In a split, every pane keeps its tab bar even with a single
+        # tab, so each tab stays visible and closable.
+        single = len(self._panes) == 1
+        for pane in self._panes:
+            pane.bar.set_autohide(single)
+        if not single:
+            # Tick, not idle: waits out the frames before the rebuilt
+            # chain has its allocation, then sets positions once.
+            self._panes_root.add_tick_callback(self._equalize_tick)
+
+    def _equalize_tick(self, _widget, _clock) -> bool:
+        if self._panes_root.get_width() <= 0:
+            return GLib.SOURCE_CONTINUE
+        self._equalize_panes()
+        return GLib.SOURCE_REMOVE
+
+    def _equalize_panes(self) -> None:
+        """Place the Paned dividers so the panes share the width evenly
+        (a fresh Paned would otherwise size its children by their
+        natural widths, leaving e.g. a sliver next to a wide grid)."""
+        count = len(self._panes)
+        total = self._panes_root.get_width()
+        node = self._panes_root.get_first_child()
+        if count < 2 or total <= 0:
+            return
+        # The chain is left-heavy: the outermost Paned holds the last
+        # pane on the right and everything else on the left.
+        while isinstance(node, Gtk.Paned):
+            node.set_position(total * (count - 1) // count)
+            total = node.get_position()
+            count -= 1
+            node = node.get_start_child()
 
     def _prune_empty_panes(self) -> bool:
         """Idle callback: drop panes whose last tab was closed or moved
@@ -440,6 +477,9 @@ class MainWindow(Adw.ApplicationWindow):
             return
         if pane.view.get_n_pages() == 1 and len(self._panes) == 1:
             self.show_error("Open a second tab to split the view")
+            return
+        if len(self._panes) >= 3:
+            self.show_error("Split view is limited to 3 panes")
             return
         new_pane = self._add_pane()
         pane.view.transfer_page(page, new_pane.view, 0)

@@ -505,7 +505,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_query_builder(node.profile, table)
 
     def _query_tooltip(
-        self, _widget, _x, _y, _keyboard, tooltip: Gtk.Tooltip,
+        self, widget, _x, _y, _keyboard, tooltip: Gtk.Tooltip,
         list_item: Gtk.ListItem,
     ) -> bool:
         row = list_item.get_item()
@@ -518,10 +518,11 @@ class Sidebar(Gtk.ScrolledWindow):
         if node.kind not in ("table", "view"):
             return False
         if node.ddl is None:
-            # First hover: kick off the fetch; the tooltip shows from
-            # the cache on the next hover.
-            self._fetch_ddl(node)
-            return False
+            # First hover: kick off the fetch and show a placeholder;
+            # the widget re-queries the tooltip when the DDL arrives.
+            self._fetch_ddl(node, widget)
+            tooltip.set_text("Loading DDL…")
+            return True
         if not node.ddl:
             return False
         label = Gtk.Label(label=_clamp_lines(node.ddl, 30), xalign=0)
@@ -529,7 +530,7 @@ class Sidebar(Gtk.ScrolledWindow):
         tooltip.set_custom(label)
         return True
 
-    def _fetch_ddl(self, node: Node) -> None:
+    def _fetch_ddl(self, node: Node, widget: Gtk.Widget) -> None:
         if node.ddl_loading:
             return
         node.ddl_loading = True
@@ -537,6 +538,9 @@ class Sidebar(Gtk.ScrolledWindow):
         def done(ddl: str) -> None:
             node.ddl_loading = False
             node.ddl = ddl or ""
+            # Replace the "Loading…" placeholder if the pointer is
+            # still on the row (re-queries whatever is hovered now).
+            widget.trigger_tooltip_query()
 
         def failed(_exc: Exception) -> None:
             node.ddl_loading = False  # ddl stays None: re-hover retries

@@ -14,6 +14,7 @@ postgres = ["psycopg[binary]>=3.1"]
 jdbc = ["JayDeBeApi>=1.2"]
 ssh = ["sshtunnel>=0.4"]
 all = ["PyMySQL>=1.1", "psycopg[binary]>=3.1", "JayDeBeApi>=1.2", "sshtunnel>=0.4"]
+test = ["pytest>=8", "PyMySQL>=1.1", "psycopg[binary]>=3.1"]
 
 [project.scripts]
 sqlide = "sqlide.frontend.application:main"
@@ -27,3 +28,6 @@ include = ["sqlide*"]
 
 [tool.setuptools.package-data]
 "sqlide.frontend" = ["style.css"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

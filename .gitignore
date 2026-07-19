@@ -218,3 +218,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local databases (demo/test files created by scripts/make_demo_db.py etc.)
+*.db
+*.sqlite
+*.sqlite3

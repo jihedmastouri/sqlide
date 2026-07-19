@@ -1,0 +1,51 @@
+app-id: dev.jihed.sqlide
+runtime: org.gnome.Platform
+runtime-version: "49"
+sdk: org.gnome.Sdk
+command: sqlide
+
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.openjdk21
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  # Arbitrary SQLite files can live anywhere under the user's home; the
+  # document portal only grants access to the single chosen file, which
+  # breaks SQLite's -wal/-journal sibling files. Home access sidesteps that.
+  - --filesystem=home
+  - --env=JAVA_HOME=/app/jre
+  - --env=PATH=/app/bin:/usr/bin:/app/jre/bin
+
+modules:
+  # Copies the openjdk21 SDK extension into /app/jre so the JDBC connector
+  # (JayDeBeApi/JPype) has a JVM at runtime, without requiring the extension
+  # to be installed on the host.
+  - name: openjdk
+    buildsystem: simple
+    build-commands:
+      - /usr/lib/sdk/openjdk21/install.sh
+
+  - name: sqlide
+    buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
+    build-commands:
+      # PyGObject is already provided by the GNOME runtime (3.54, well above
+      # the >=3.46 requirement); installing our own package with its normal
+      # dependency list would rebuild it from sdist, which is unnecessary
+      # and would fail without system GI dev headers. Install the optional
+      # DB drivers separately (with normal dependency resolution — none of
+      # them depend on PyGObject), then install sqlide itself with --no-deps.
+      - pip3 install --prefix=/app pymysql "psycopg[binary]" sshtunnel JayDeBeApi
+      - pip3 install --no-deps --prefix=/app .
+      - install -Dm644 data/dev.jihed.sqlide.desktop /app/share/applications/dev.jihed.sqlide.desktop
+      - install -Dm644 data/dev.jihed.sqlide.metainfo.xml /app/share/metainfo/dev.jihed.sqlide.metainfo.xml
+      - install -Dm644 data/icons/dev.jihed.sqlide.svg /app/share/icons/hicolor/scalable/apps/dev.jihed.sqlide.svg
+    sources:
+      - type: dir
+        path: ../..

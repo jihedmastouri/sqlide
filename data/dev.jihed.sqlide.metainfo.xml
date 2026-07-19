@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.jihed.sqlide</id>
+  <name>sqlide</name>
+  <summary>A minimal SQL IDE for SQLite, MySQL, and PostgreSQL</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <!-- No LICENSE file in the repo yet — set this once one is chosen. -->
+  <project_license>LicenseRef-proprietary</project_license>
+  <description>
+    <p>
+      sqlide is a minimal, clean SQL IDE built with GTK4 and libadwaita.
+      Browse schemas, page through table data, edit cells, and run queries
+      against SQLite, MySQL, or PostgreSQL, with a generic JDBC bridge for
+      anything else.
+    </p>
+  </description>
+  <launchable type="desktop-id">dev.jihed.sqlide.desktop</launchable>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.0" date="2026-07-05" />
+  </releases>
+</component>

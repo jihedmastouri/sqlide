@@ -29,13 +29,21 @@ bottom panel always shows at least two tabs: a Status tab first (each
 statement's outcome, timing and SQL), then one result tab per
 statement.
 
-The toolbar also has Begin/Commit/Rollback buttons that run the bare
-transaction statements over the console's connection — a warning
-badge sits next to them while that connection has an open transaction
-(the window additionally guards closing such a console) — and
-open/save buttons that load any text file into the editor and write
-the editor back to a file (the first save asks where; later saves
-reuse it).
+The bottom bar (status line) also carries the transaction controls,
+which run the bare statements over the console's connection: Begin
+alone while no transaction is open; Commit/Rollback plus a warning
+badge while one is (the window additionally guards closing such a
+console). The toolbar keeps open/save buttons that load any text
+file into the editor and write the editor back to a file (the first
+save asks where; later saves reuse it).
+
+The results area below the editor stays hidden until a run produces
+output; its thin header has a minimize/expand toggle that collapses
+the result tabs down to that header line.
+
+Hovering a table name in the editor shows the table's DDL in a
+tooltip (catalog and DDLs fetched lazily, cached per connection and
+database choice).
 """
 
 from __future__ import annotations
@@ -45,8 +53,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
-from gi.repository import Gdk, GLib, Gtk
+from gi.repository import Adw, Gdk, GLib, Gtk
 
+from sqlide.backend import placeholders as sql_placeholders
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import Connector, ResultSet
 from sqlide.backend.sql_split import split_statements, statement_at
@@ -72,10 +81,23 @@ class QueryConsole(Gtk.Box):
         on_ran: Callable[[str, str, bool], None] | None = None,
         on_aggregate: Callable[[list[str]], None] | None = None,
         transaction_active: Callable[[str], bool] | None = None,
+        placeholders: dict[str, str] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._find_connection = find_connection
         self._ensure = ensure_connector
+        # Hover-DDL caches (reset on connection/database change, which
+        # can already fire while the widgets below are being built).
+        self._hover_seq = 0  # discards stale async results
+        self._hover_tables: set[str] | None = None
+        self._hover_loading = False
+        self._hover_ddl: dict[str, str] = {}
+        # The workspace's remembered placeholder values (":name" ->
+        # last value). Mutated in place by the placeholder prompt; the
+        # window persists the workspace after each run.
+        self._placeholder_values = (
+            placeholders if placeholders is not None else {}
+        )
         # Non-blocking peek (window-provided): is there an open
         # transaction on the named connection? Drives the badge.
         self._transaction_active = transaction_active
@@ -134,9 +156,11 @@ class QueryConsole(Gtk.Box):
         hint = Gtk.Label(label="Ctrl+Enter")
         hint.add_css_class("dim-label")
 
-        # Transaction statements over this console's connection.
-        tx_box = Gtk.Box()
-        tx_box.add_css_class("linked")
+        # Transaction statements over this console's connection. The
+        # buttons live in the bottom bar: Begin alone while no
+        # transaction is open, Commit/Rollback (and the badge) while
+        # one is.
+        self._tx_buttons: dict[str, Gtk.Button] = {}
         for label, tooltip in (
             ("Begin", "Start a transaction (BEGIN)"),
             ("Commit", "Commit the open transaction"),
@@ -148,7 +172,7 @@ class QueryConsole(Gtk.Box):
                 "clicked",
                 lambda _b, kw=label.upper(): self._run_statements([kw]),
             )
-            tx_box.append(button)
+            self._tx_buttons[label] = button
 
         # Visible while this console's connection has an open
         # transaction (refreshed after every run and selection change).
@@ -176,8 +200,6 @@ class QueryConsole(Gtk.Box):
         toolbar.append(self._explain_button)
         toolbar.append(self._dropdown)
         toolbar.append(self._db_dropdown)
-        toolbar.append(tx_box)
-        toolbar.append(self._tx_badge)
         toolbar.append(hint)
         toolbar.append(Gtk.Box(hexpand=True))
         toolbar.append(open_button)
@@ -208,24 +230,57 @@ class QueryConsole(Gtk.Box):
         keys.connect("key-pressed", self._on_key_pressed)
         self._editor.view.add_controller(keys)
 
+        # Hover DDL: pausing over a table name in the editor shows its
+        # CREATE statement. Catalog and DDLs are fetched lazily on
+        # first hover and cached until the connection/database changes.
+        self._editor.view.set_has_tooltip(True)
+        self._editor.view.connect("query-tooltip", self._on_editor_tooltip)
+
         self._results = Gtk.Notebook(vexpand=True)
         self._results.set_show_tabs(False)
         self._results.set_show_border(False)
         self._results.set_scrollable(True)
-        self._append_result_page(
-            ResultGrid(on_aggregate=on_aggregate), "Result"
+
+        # The results area is hidden until the first run produces
+        # something to show; its thin header carries a minimize/expand
+        # toggle that collapses the notebook to the header line.
+        results_header = Gtk.Box(
+            spacing=6, margin_start=8, margin_end=6,
+            margin_top=2, margin_bottom=2,
         )
+        results_title = Gtk.Label(label="Results", xalign=0, hexpand=True)
+        results_title.add_css_class("dim-label")
+        results_title.add_css_class("caption-heading")
+        self._results_toggle = Gtk.ToggleButton(
+            icon_name="go-down-symbolic", active=True
+        )
+        self._results_toggle.add_css_class("flat")
+        self._results_toggle.set_tooltip_text("Minimize or expand the results")
+        self._results_toggle.connect("toggled", self._on_results_toggled)
+        results_header.append(results_title)
+        results_header.append(self._results_toggle)
+        self._results_area = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, visible=False
+        )
+        self._results_area.append(results_header)
+        self._results_area.append(self._results)
 
-        paned = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL, vexpand=True)
-        paned.set_start_child(self._editor)
-        paned.set_end_child(self._results)
-        paned.set_shrink_start_child(False)
-        paned.set_shrink_end_child(False)
-        paned.set_position(160)
-        self.append(paned)
+        self._paned = Gtk.Paned(
+            orientation=Gtk.Orientation.VERTICAL, vexpand=True
+        )
+        self._paned.set_start_child(self._editor)
+        self._paned.set_end_child(self._results_area)
+        self._paned.set_shrink_start_child(False)
+        self._paned.set_shrink_end_child(False)
+        self._paned.set_position(160)
+        self.append(self._paned)
 
+        # Bottom bar: status line on the left, transaction controls on
+        # the right.
+        bottom = Gtk.Box(spacing=6, margin_end=6)
         self._status = Gtk.Label(
             xalign=0,
+            hexpand=True,
             margin_top=4,
             margin_bottom=4,
             margin_start=8,
@@ -233,7 +288,11 @@ class QueryConsole(Gtk.Box):
             selectable=True,
         )
         self._status.add_css_class("dim-label")
-        self.append(self._status)
+        bottom.append(self._status)
+        bottom.append(self._tx_badge)
+        for button in self._tx_buttons.values():
+            bottom.append(button)
+        self.append(bottom)
 
     def _settings_button(self) -> Gtk.MenuButton:
         """Gear menu at the right end of the toolbar: settings local to
@@ -271,6 +330,16 @@ class QueryConsole(Gtk.Box):
     def set_sql(self, sql: str) -> None:
         self._editor.set_text(sql)
 
+    def insert_sql(self, sql: str) -> None:
+        """Drop a snippet into the editor at the cursor."""
+        self._editor.insert_at_cursor(sql)
+        self._editor.view.grab_focus()
+
+    def current_sql(self) -> str:
+        """What "save this" should capture: the selection if there is
+        one, the whole editor otherwise."""
+        return self._editor.get_selection() or self._editor.get_text()
+
     def tab_state(self) -> TabState:
         return TabState(
             kind="query",
@@ -303,12 +372,120 @@ class QueryConsole(Gtk.Box):
         self._refresh_databases()
         self._lsp_provider.set_profile(self._active_profile())
         self.refresh_transaction_badge()
+        self._reset_hover_cache()
         if self.on_connection_changed is not None:
             self.on_connection_changed(name)
 
     def _database_selected(self, *_args) -> None:
         self._lsp_provider.set_profile(self._active_profile())
         self.refresh_transaction_badge()
+        self._reset_hover_cache()
+
+    # Hover DDL
+
+    def _reset_hover_cache(self) -> None:
+        self._hover_seq += 1
+        self._hover_tables = None
+        self._hover_loading = False
+        self._hover_ddl = {}
+
+    def _on_editor_tooltip(
+        self, view, x: int, y: int, keyboard: bool, tooltip: Gtk.Tooltip
+    ) -> bool:
+        if keyboard:
+            return False
+        word = self._word_at(view, x, y).lower()
+        if not word:
+            return False
+        profile = self._active_profile()
+        if profile is None:
+            return False
+        if self._hover_tables is None:
+            self._load_hover_catalog(profile)
+            return False
+        short = word.rsplit(".", 1)[-1]  # schema-qualified names too
+        table = next(
+            (t for t in (word, short) if t in self._hover_tables), None
+        )
+        if table is None:
+            return False
+        if table not in self._hover_ddl:
+            self._load_hover_ddl(profile, table)
+            return False
+        ddl = self._hover_ddl[table]
+        if not ddl:
+            return False  # still loading, or the adapter has no DDL
+        lines = ddl.splitlines()
+        if len(lines) > 40:
+            ddl = "\n".join(lines[:40]) + "\n…"
+        tooltip.set_text(ddl)
+        return True
+
+    @staticmethod
+    def _word_at(view, x: int, y: int) -> str:
+        """The identifier under widget coordinates (word chars plus
+        dots, so qualified names come out whole); "" over whitespace
+        or past the text."""
+        bx, by = view.window_to_buffer_coords(
+            Gtk.TextWindowType.WIDGET, x, y
+        )
+        over_text, it = view.get_iter_at_location(bx, by)
+        if not over_text:
+            return ""
+
+        def is_word(ch: str) -> bool:
+            return ch.isalnum() or ch in "_."
+
+        start = it.copy()
+        while not start.is_start():
+            prev = start.copy()
+            prev.backward_char()
+            if not is_word(prev.get_char()):
+                break
+            start = prev
+        end = it.copy()
+        while not end.is_end() and is_word(end.get_char()):
+            end.forward_char()
+        buffer = start.get_buffer()
+        return buffer.get_text(start, end, False).strip(".")
+
+    def _load_hover_catalog(self, profile: ConnectionProfile) -> None:
+        if self._hover_loading:
+            return
+        self._hover_loading = True
+        seq = self._hover_seq
+
+        def done(names: set[str]) -> None:
+            if seq == self._hover_seq:
+                self._hover_tables = names
+
+        def failed(_exc) -> None:
+            # No retries until the connection changes: hovering must
+            # not hammer a broken connection.
+            if seq == self._hover_seq:
+                self._hover_tables = set()
+
+        run_async(
+            lambda: {
+                t.name.lower() for t in self._ensure(profile).list_tables()
+            },
+            done,
+            failed,
+        )
+
+    def _load_hover_ddl(self, profile: ConnectionProfile, table: str) -> None:
+        self._hover_ddl[table] = ""  # in flight (or, on failure, absent)
+        seq = self._hover_seq
+
+        def done(ddl: str) -> None:
+            if seq == self._hover_seq:
+                self._hover_ddl[table] = ddl or ""
+
+        run_async(
+            lambda: self._ensure(profile).get_ddl(table),
+            done,
+            lambda _exc: None,  # tooltip-grade: fail silently
+        )
 
     # Transactions
 
@@ -325,7 +502,16 @@ class QueryConsole(Gtk.Box):
         return ""
 
     def refresh_transaction_badge(self) -> None:
-        self._tx_badge.set_visible(bool(self.open_transaction_connection()))
+        self._set_transaction_open(bool(self.open_transaction_connection()))
+
+    def _set_transaction_open(self, open_: bool) -> None:
+        """Flip the bottom bar's transaction controls: Begin alone
+        while nothing is open, Commit/Rollback and the badge while a
+        transaction is."""
+        self._tx_badge.set_visible(open_)
+        self._tx_buttons["Begin"].set_visible(not open_)
+        self._tx_buttons["Commit"].set_visible(open_)
+        self._tx_buttons["Rollback"].set_visible(open_)
 
     def _lsp_selected(self, *_args) -> None:
         index = self._lsp_dropdown.get_selected()
@@ -393,11 +579,34 @@ class QueryConsole(Gtk.Box):
     def _run_statements(
         self, statements: list[str], explain: bool = False
     ) -> None:
+        """Run statements, first asking for the value of any :name / ?
+        placeholders in them (prefilled with the values remembered in
+        the workspace)."""
+        if not statements:
+            return
+        names: list[str] = []
+        for sql in statements:
+            for ph in sql_placeholders.find_placeholders(sql):
+                if ph.name not in names:
+                    names.append(ph.name)
+        if not names:
+            self._execute_statements(statements, explain=explain)
+            return
+
+        def run(values: dict[str, str]) -> None:
+            self._execute_statements(
+                [sql_placeholders.substitute(s, values) for s in statements],
+                explain=explain,
+            )
+
+        PlaceholderDialog(names, self._placeholder_values, run).present(self)
+
+    def _execute_statements(
+        self, statements: list[str], explain: bool = False
+    ) -> None:
         """Execute statements (from the editor, a transaction button…)
         over the selected connection; with explain=True each one runs
         behind the adapter's explain prefix instead."""
-        if not statements:
-            return
         name = self.selected_connection()
         if not name:
             self._set_status("No connection selected", error=True)
@@ -432,7 +641,7 @@ class QueryConsole(Gtk.Box):
             self._run_button.set_sensitive(True)
             self._run_all_button.set_sensitive(True)
             self._explain_button.set_sensitive(True)
-            self._tx_badge.set_visible(in_transaction)
+            self._set_transaction_open(in_transaction)
             self._show_outcomes(
                 outcomes, planned=len(statements), json_view=explain
             )
@@ -497,6 +706,13 @@ class QueryConsole(Gtk.Box):
 
     # Result panel
 
+    def _on_results_toggled(self, toggle: Gtk.ToggleButton) -> None:
+        expanded = toggle.get_active()
+        self._results.set_visible(expanded)
+        toggle.set_icon_name(
+            "go-down-symbolic" if expanded else "go-up-symbolic"
+        )
+
     def _append_result_page(self, child: Gtk.Widget, title: str) -> None:
         label = Gtk.Label(label=title)
         label.set_max_width_chars(24)
@@ -508,6 +724,8 @@ class QueryConsole(Gtk.Box):
         planned: int,
         json_view: bool = False,
     ) -> None:
+        self._results_area.set_visible(True)
+        self._results_toggle.set_active(True)
         while self._results.get_n_pages():
             self._results.remove_page(-1)
 
@@ -658,6 +876,81 @@ def _with_json_view(grid: ResultGrid, result: ResultSet) -> Gtk.Widget:
     box.append(switcher)
     box.append(stack)
     return box
+
+
+class PlaceholderDialog(Adw.Dialog):
+    """Asks for the value of each placeholder in the statements about
+    to run. `values` is the workspace's remembered dict: entries are
+    prefilled from it, and Run writes the entered values back into it,
+    so the workspace file (saved after the run) remembers them and the
+    next run of a query with the same placeholder is prefilled."""
+
+    def __init__(
+        self,
+        names: list[str],
+        values: dict[str, str],
+        on_run: Callable[[dict[str, str]], None],
+    ) -> None:
+        super().__init__(title="Placeholder Values", content_width=420)
+        self._values = values
+        self._on_run = on_run
+
+        header = Adw.HeaderBar()
+        header.set_show_start_title_buttons(False)
+        header.set_show_end_title_buttons(False)
+        cancel = Gtk.Button(label="Cancel")
+        cancel.connect("clicked", lambda *_: self.close())
+        run = Gtk.Button(label="Run")
+        run.add_css_class("suggested-action")
+        run.connect("clicked", lambda *_: self._run())
+        header.pack_start(cancel)
+        header.pack_end(run)
+
+        rows = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        rows.add_css_class("boxed-list")
+        self._rows: list[tuple[str, Adw.EntryRow]] = []
+        for name in names:
+            row = Adw.EntryRow(title=name, text=values.get(name, ""))
+            row.connect("entry-activated", lambda *_: self._run())
+            rows.append(row)
+            self._rows.append((name, row))
+
+        caption = Gtk.Label(
+            label="Values go into the SQL as literals (numbers, NULL, "
+            "TRUE and FALSE go in bare, everything else quoted) and are "
+            "remembered in this workspace's file, so the next run is "
+            "prefilled.",
+            xalign=0,
+            wrap=True,
+        )
+        caption.add_css_class("dim-label")
+
+        content = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=12,
+            margin_top=12,
+            margin_bottom=12,
+            margin_start=12,
+            margin_end=12,
+        )
+        content.append(rows)
+        content.append(caption)
+        view = Adw.ToolbarView()
+        view.add_top_bar(header)
+        view.set_content(
+            Gtk.ScrolledWindow(
+                child=content,
+                propagate_natural_height=True,
+                max_content_height=460,
+            )
+        )
+        self.set_child(view)
+
+    def _run(self) -> None:
+        for name, row in self._rows:
+            self._values[name] = row.get_text()
+        self.close()
+        self._on_run(dict(self._values))
 
 
 def _message_page(text: str, error: bool) -> Gtk.Widget:

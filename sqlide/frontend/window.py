@@ -11,13 +11,13 @@ saved back to the workspace file whenever they change and when the
 window closes (which also captures query-console SQL and the selected
 tab). When no tabs are open the content area shows a status message.
 
-Layout: the left OverlaySplitView (connections sidebar) wraps the
-content area; inside it, below the content header, a right
-OverlaySplitView (query history, hidden by default) wraps the tab
-area — so the panel never reaches the window controls at the top.
+Layout: a full-width header bar spans the whole window; below it the
+left OverlaySplitView (connections sidebar) wraps the content area,
+and inside that a right OverlaySplitView (the side panel, hidden by
+default) wraps the tab area.
 The tab area holds one or more panes (each an Adw.TabBar over an
 Adw.TabView) side by side in nested Gtk.Paned splitters: the Split
-button moves the current tab into a new pane (up to three panes,
+button moves the current tab into a new pane (two panes at most,
 sized evenly), so e.g. two tables can be shown next to each other.
 New tabs open in the last-clicked pane; a pane whose last tab is
 closed or moved away is removed.
@@ -30,6 +30,7 @@ loads history entries back into a console when activated.
 from __future__ import annotations
 
 import threading
+from dataclasses import asdict
 from datetime import datetime
 from typing import Callable
 
@@ -39,7 +40,7 @@ from sqlide.frontend.util import main_menu_button, run_async
 
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import registry
-from sqlide.backend.db.base import Connector, ConnectorError
+from sqlide.backend.db.base import Connector, ConnectorError, FilterCondition
 from sqlide.backend.workspaces import HistoryEntry, Workspace
 from sqlide.frontend.cli_console import CliConsole
 from sqlide.frontend.connection_dialog import ConnectionDialog
@@ -109,8 +110,11 @@ class MainWindow(Adw.ApplicationWindow):
         self._split = Adw.OverlaySplitView()
         self._split.set_min_sidebar_width(220)
 
-        # Sidebar
+        # Sidebar. Its header sits below the full-width top banner, so
+        # it must not repeat the window controls.
         sidebar_header = Adw.HeaderBar()
+        sidebar_header.set_show_start_title_buttons(False)
+        sidebar_header.set_show_end_title_buttons(False)
         sidebar_header.set_title_widget(Gtk.Label(label="Connections"))
         add_button = Gtk.Button(icon_name="list-add-symbolic")
         add_button.set_tooltip_text("Add connection")
@@ -213,7 +217,17 @@ class MainWindow(Adw.ApplicationWindow):
         # and tab bar), so its edge and toggle stay away from the window
         # controls.
         self._side_panel = SidePanel(
-            on_activate=self._history_activated, on_clear=self._clear_history
+            on_activate=self._history_activated,
+            on_clear=self._clear_history,
+            on_insert_snippet=self._insert_snippet,
+            on_open_query=lambda sql: self.new_query(
+                self._default_query_profile(), sql=sql
+            ),
+            get_console_sql=self._current_console_sql,
+            on_error=self.show_error,
+            on_apply_filter=self._apply_saved_filter,
+            on_save_filter=self._save_current_filter,
+            on_delete_filter=self._delete_saved_filter,
         )
         self._side_panel.set_entries(workspace.history)
         self._history_split = Adw.OverlaySplitView(
@@ -223,15 +237,12 @@ class MainWindow(Adw.ApplicationWindow):
         self._history_split.set_sidebar(self._side_panel)
         self._history_split.set_content(self._stack)
 
-        content_view = Adw.ToolbarView()
-        content_view.add_top_bar(content_header)
-        content_view.set_content(self._history_split)
-        self._split.set_content(content_view)
+        self._split.set_content(self._history_split)
 
         history_toggle = Gtk.ToggleButton(
             icon_name="sidebar-show-right-symbolic"
         )
-        history_toggle.set_tooltip_text("Toggle query history")
+        history_toggle.set_tooltip_text("Toggle side panel")
         self._history_split.bind_property(
             "show-sidebar",
             history_toggle,
@@ -249,13 +260,19 @@ class MainWindow(Adw.ApplicationWindow):
         breakpoint.add_setter(self._history_split, "collapsed", True)
         self.add_breakpoint(breakpoint)
 
+        # The header bar spans the full window width, above both the
+        # sidebar and the content area.
+        top_view = Adw.ToolbarView()
+        top_view.add_top_bar(content_header)
+        top_view.set_content(self._split)
+
         # Tab overview: zoomed-out grid of tab thumbnails. It must wrap
         # the widget tree that contains the TabView so open tabs stay
         # visible (scaled down) while the overview is shown.
         self._overview = Adw.TabOverview(
             view=self._active_pane.view,
             enable_new_tab=True,
-            child=self._split,
+            child=top_view,
         )
         self._overview.connect("create-tab", self._create_tab)
 
@@ -382,13 +399,124 @@ class MainWindow(Adw.ApplicationWindow):
         self._update_active_panel()
 
     def _update_active_panel(self) -> None:
-        """Tell the side panel which tab is current, for This-panel
-        history scope and the DDL page."""
+        """Tell the side panel which tab is current: the This-panel
+        history scope, which pages to offer (context), the Info
+        content, and the saved-filter target."""
         page = self._active_pane.view.get_selected_page()
+        child = page.get_child() if page is not None else None
         self._side_panel.set_active_panel(
             page.get_title() if page is not None else ""
         )
-        self._refresh_side_ddl()
+        if isinstance(child, QueryConsole):
+            context = "console"
+        elif isinstance(child, TableTab):
+            context = "table"
+        elif isinstance(child, (QueryBuilderTab, _HistoryTab)):
+            context = "grid"
+        else:
+            context = "other"
+        self._side_panel.set_context(context)
+        if isinstance(child, TableTab):
+            self._side_panel.set_filter_target(
+                child.filter_key,
+                self.workspace.saved_filters.get(child.filter_key, []),
+            )
+        else:
+            self._side_panel.set_filter_target("", [])
+        if isinstance(child, (QueryConsole, CliConsole)):
+            self._set_console_info(child)
+        else:
+            self._refresh_side_ddl()
+
+    def _set_console_info(self, console: QueryConsole | CliConsole) -> None:
+        """Fill the side panel's Info page with the console's
+        connection details."""
+        profile = self.workspace.find_connection(
+            console.selected_connection()
+        )
+        if profile is None:
+            self._side_panel.set_info(
+                "No connection", "This console has no connection selected."
+            )
+            return
+        parts = [f"Kind: {profile.kind}"]
+        if profile.file_path:
+            parts.append(f"File: {profile.file_path}")
+        if profile.kind not in ("sqlite", "jdbc"):
+            parts.append(f"Host: {profile.host}:{profile.port or 'default'}")
+        if profile.database:
+            parts.append(f"Database: {profile.database}")
+        if profile.user:
+            parts.append(f"User: {profile.user}")
+        if profile.jdbc_url:
+            parts.append(f"JDBC URL: {profile.jdbc_url}")
+        parts.append(
+            "Connected: "
+            + ("yes" if self.is_connected(profile.name) else "not yet")
+        )
+        self._side_panel.set_info(profile.name, "\n".join(parts))
+
+    # Saved snippets, queries and filters (side panel callbacks)
+
+    def _insert_snippet(self, sql: str) -> None:
+        """A snippet was activated: into the current console at the
+        cursor, or a fresh console when none is active."""
+        page = self._active_pane.view.get_selected_page()
+        child = page.get_child() if page is not None else None
+        if isinstance(child, QueryConsole):
+            child.insert_sql(sql)
+        else:
+            self.new_query(self._default_query_profile(), sql=sql)
+
+    def _current_console_sql(self) -> str:
+        page = self._active_pane.view.get_selected_page()
+        child = page.get_child() if page is not None else None
+        return child.current_sql() if isinstance(child, QueryConsole) else ""
+
+    def _active_table_tab(self) -> TableTab | None:
+        page = self._active_pane.view.get_selected_page()
+        child = page.get_child() if page is not None else None
+        return child if isinstance(child, TableTab) else None
+
+    def _apply_saved_filter(self, entry: dict) -> None:
+        tab = self._active_table_tab()
+        if tab is None:
+            return
+        tab.apply_saved_filters(
+            [FilterCondition(**f) for f in entry.get("filters", [])]
+        )
+
+    def _save_current_filter(self, name: str) -> None:
+        tab = self._active_table_tab()
+        if tab is None:
+            return
+        filters = tab.current_filters()
+        if not filters:
+            self.show_error("No filter to save — apply one to the table first")
+            return
+        entry = {"name": name, "filters": [asdict(f) for f in filters]}
+        self.workspace.saved_filters.setdefault(tab.filter_key, []).append(
+            entry
+        )
+        self._save_state()
+        self._side_panel.set_filter_target(
+            tab.filter_key, self.workspace.saved_filters[tab.filter_key]
+        )
+
+    def _delete_saved_filter(self, entry: dict) -> None:
+        tab = self._active_table_tab()
+        if tab is None:
+            return
+        entries = self.workspace.saved_filters.get(tab.filter_key, [])
+        if entry in entries:
+            entries.remove(entry)
+            if not entries:
+                del self.workspace.saved_filters[tab.filter_key]
+            self._save_state()
+        self._side_panel.set_filter_target(
+            tab.filter_key,
+            self.workspace.saved_filters.get(tab.filter_key, []),
+        )
 
     def _refresh_side_ddl(self) -> None:
         """Fill the side panel's DDL page with the active table's
@@ -484,8 +612,8 @@ class MainWindow(Adw.ApplicationWindow):
         if pane.view.get_n_pages() == 1 and len(self._panes) == 1:
             self.show_error("Open a second tab to split the view")
             return
-        if len(self._panes) >= 3:
-            self.show_error("Split view is limited to 3 panes")
+        if len(self._panes) >= 2:
+            self.show_error("Split view is limited to 2 panes")
             return
         new_pane = self._add_pane()
         pane.view.transfer_page(page, new_pane.view, 0)
@@ -834,6 +962,7 @@ class MainWindow(Adw.ApplicationWindow):
             connection=profile.name if profile is not None else "",
             on_aggregate=self.show_aggregate,
             transaction_active=self.transaction_active,
+            placeholders=self.workspace.placeholders,
         )
         view = self._active_pane.view
         page = view.append(console)
@@ -850,6 +979,7 @@ class MainWindow(Adw.ApplicationWindow):
             )
             if not self._restoring:
                 self._save_state()
+                self._update_active_panel()  # Info follows the dropdown
 
         console.on_connection_changed = set_title
         set_title(console.selected_connection())
@@ -878,6 +1008,7 @@ class MainWindow(Adw.ApplicationWindow):
             )
             if not self._restoring:
                 self._save_state()
+                self._update_active_panel()  # Info follows the dropdown
 
         console.on_connection_changed = set_title
         set_title(console.selected_connection())

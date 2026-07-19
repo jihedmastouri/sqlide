@@ -13,6 +13,7 @@ import re
 import gi
 from gi.repository import Adw, Gtk, Pango
 
+from sqlide.backend.settings import Settings, store as settings_store
 from sqlide.frontend.completion import (
     CompletionController,
     CompletionProvider,
@@ -106,6 +107,17 @@ class SqlEditor(Gtk.ScrolledWindow):
         self._completion = CompletionController(self.view)
         if editable:
             self._completion.add_provider(KeywordCompletionProvider(_KEYWORDS))
+        # Vim mode (GtkSourceView only): a VimIMContext fed by a key
+        # controller. Follows the global setting live; the listener is
+        # dropped when the view goes away.
+        self._vim_controller: Gtk.EventControllerKey | None = None
+        if editable and GtkSource is not None:
+            self._apply_vim(settings_store.settings)
+            settings_store.subscribe(self._apply_vim)
+            self.view.connect(
+                "destroy",
+                lambda *_: settings_store.unsubscribe(self._apply_vim),
+            )
         self.set_text(sql)
 
     def add_completion_provider(self, provider: CompletionProvider) -> None:
@@ -119,6 +131,9 @@ class SqlEditor(Gtk.ScrolledWindow):
     def set_text(self, sql: str) -> None:
         self._buffer.set_text(sql)
 
+    def insert_at_cursor(self, text: str) -> None:
+        self._buffer.insert_at_cursor(text)
+
     def get_selection(self) -> str:
         """Selected text, or "" when nothing is selected."""
         bounds = self._buffer.get_selection_bounds()
@@ -130,6 +145,21 @@ class SqlEditor(Gtk.ScrolledWindow):
     def get_cursor_offset(self) -> int:
         insert = self._buffer.get_iter_at_mark(self._buffer.get_insert())
         return insert.get_offset()
+
+    def _apply_vim(self, settings: Settings) -> None:
+        if bool(self._vim_controller) == settings.vim_mode:
+            return
+        if settings.vim_mode:
+            vim = GtkSource.VimIMContext()
+            vim.set_client_widget(self.view)
+            controller = Gtk.EventControllerKey()
+            controller.set_im_context(vim)
+            controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+            self.view.add_controller(controller)
+            self._vim_controller = controller
+        else:
+            self.view.remove_controller(self._vim_controller)
+            self._vim_controller = None
 
     def _on_dark_changed(self, style_manager, *_args) -> None:
         dark = style_manager.get_dark()

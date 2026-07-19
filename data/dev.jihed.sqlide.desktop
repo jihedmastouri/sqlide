@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=sqlide
+Comment=A minimal SQL IDE for SQLite, MySQL, and PostgreSQL
+Exec=sqlide
+Icon=dev.jihed.sqlide
+Terminal=false
+Categories=Development;Database;
+StartupNotify=true

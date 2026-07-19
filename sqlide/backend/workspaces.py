@@ -56,6 +56,12 @@ class Workspace:
     tabs: list[TabState] = field(default_factory=list)
     selected_tab: int = -1
     history: list[HistoryEntry] = field(default_factory=list)
+    # Last value entered for each query placeholder (":name" -> value,
+    # "?1" -> value), prefilling the console's placeholder prompt.
+    placeholders: dict[str, str] = field(default_factory=dict)
+    # Saved table filters, keyed "connection.database.table"; each is
+    # {"name": …, "filters": [FilterCondition dicts]}.
+    saved_filters: dict[str, list[dict]] = field(default_factory=dict)
 
     def add_history(self, entry: HistoryEntry) -> None:
         self.history.append(entry)
@@ -86,6 +92,8 @@ class Workspace:
             "tabs": [asdict(t) for t in self.tabs],
             "selected_tab": self.selected_tab,
             "history": [asdict(h) for h in self.history],
+            "placeholders": self.placeholders,
+            "saved_filters": self.saved_filters,
         }
 
     @classmethod
@@ -99,6 +107,8 @@ class Workspace:
             tabs=[TabState(**t) for t in data.get("tabs", [])],
             selected_tab=data.get("selected_tab", -1),
             history=[HistoryEntry(**h) for h in data.get("history", [])],
+            placeholders=dict(data.get("placeholders") or {}),
+            saved_filters=dict(data.get("saved_filters") or {}),
         )
 
 

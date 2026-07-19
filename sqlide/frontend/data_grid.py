@@ -1004,6 +1004,12 @@ class _FilterRow(Gtk.Box):
             conjunction=_selected_string(self._conjunction),
         )
 
+    def set_condition(self, cond: FilterCondition) -> None:
+        _select_value(self._conjunction, cond.conjunction)
+        _select_value(self._column, cond.column)
+        _select_value(self._op, cond.op)
+        self._value.set_text(cond.value)
+
     def _on_op_changed(self, *_args) -> None:
         self._value.set_sensitive(
             _selected_string(self._op) not in NO_VALUE_OPERATORS
@@ -1074,6 +1080,14 @@ class _SortRow(Gtk.Box):
 def _selected_string(dropdown: Gtk.DropDown) -> str:
     item = dropdown.get_selected_item()
     return item.get_string() if item is not None else ""
+
+
+def _select_value(dropdown: Gtk.DropDown, text: str) -> None:
+    model = dropdown.get_model()
+    for i in range(model.get_n_items()):
+        if model.get_string(i) == text:
+            dropdown.set_selected(i)
+            return
 
 
 class UpdatePreviewDialog(Adw.Dialog):
@@ -1239,6 +1253,26 @@ class TableTab(Gtk.Box):
         return TabState(
             kind="table", connection=self.profile.name, table=self.table
         )
+
+    # Saved filters (listed in the side panel, stored per workspace)
+
+    @property
+    def filter_key(self) -> str:
+        """Key of this tab's saved filters: connection.database.table
+        ("-" for single-database connections like sqlite)."""
+        return f"{self.profile.name}.{self.profile.database or '-'}.{self.table}"
+
+    def current_filters(self) -> list[FilterCondition]:
+        return list(self._filters)
+
+    def apply_saved_filters(self, conditions: list[FilterCondition]) -> None:
+        """Mirror a saved filter set in the panel and re-query with it."""
+        for row in list(self._filter_rows):
+            self._remove_filter_row(row)
+        for cond in conditions:
+            self._add_filter_row(cond)
+        self._filter_toggle.set_active(True)
+        self._apply_filters()
 
     def _describe_query(self, offset: int) -> str:
         """The SELECT this tab's current state stands for, with filter
@@ -1451,10 +1485,12 @@ class TableTab(Gtk.Box):
         self._offset = 0
         self.reload()
 
-    def _add_filter_row(self) -> None:
+    def _add_filter_row(self, cond: FilterCondition | None = None) -> None:
         row = _FilterRow(
             self._column_names, self._remove_filter_row, self._apply_filters
         )
+        if cond is not None:
+            row.set_condition(cond)
         self._filter_rows.append(row)
         self._filter_rows_box.append(row)
         self._update_first_row()

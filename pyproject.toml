@@ -24,3 +24,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["sqlide*"]
+
+[tool.setuptools.package-data]
+"sqlide.frontend" = ["style.css"]

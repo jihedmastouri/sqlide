@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3584e4"/>
+      <stop offset="1" stop-color="#1a5fb4"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#bg)"/>
+  <g fill="#ffffff">
+    <!-- database cylinder -->
+    <path d="M64 26c-16.6 0-30 5.4-30 12v52c0 6.6 13.4 12 30 12s30-5.4 30-12V38c0-6.6-13.4-12-30-12z" fill="#ffffff" opacity="0.95"/>
+    <ellipse cx="64" cy="38" rx="30" ry="12" fill="#e0e8f5"/>
+    <path d="M34 52c0 6.6 13.4 12 30 12s30-5.4 30-12" fill="none" stroke="#1a5fb4" stroke-width="3" opacity="0.5"/>
+    <path d="M34 68c0 6.6 13.4 12 30 12s30-5.4 30-12" fill="none" stroke="#1a5fb4" stroke-width="3" opacity="0.5"/>
+  </g>
+  <text x="64" y="102" text-anchor="middle" font-family="sans-serif" font-weight="700" font-size="17" fill="#ffffff">SQL</text>
+</svg>

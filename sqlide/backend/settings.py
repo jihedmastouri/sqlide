@@ -10,6 +10,7 @@ see a saved file and a live UI disagree.
 Settings:
 - theme: "system" | "light" | "dark" (Adw color scheme override)
 - editor_font_size: SQL editor font size in points
+- vim_mode: modal Vim editing in SQL editors (GtkSourceView only)
 - lsp_enabled: master switch for completion language servers
 - lsp_defaults: connection kind -> what an "auto" console LSP choice
   resolves to ("auto" keeps the built-in resolution in
@@ -38,6 +39,7 @@ def _config_dir() -> Path:
 class Settings:
     theme: str = "system"
     editor_font_size: int = DEFAULT_FONT_SIZE
+    vim_mode: bool = False
     lsp_enabled: bool = True
     lsp_defaults: dict[str, str] = field(default_factory=dict)
 
@@ -49,6 +51,7 @@ class Settings:
             editor_font_size=int(
                 data.get("editor_font_size", DEFAULT_FONT_SIZE)
             ),
+            vim_mode=bool(data.get("vim_mode", False)),
             lsp_enabled=bool(data.get("lsp_enabled", True)),
             lsp_defaults={
                 str(k): str(v)
@@ -72,6 +75,12 @@ class SettingsStore:
 
     def subscribe(self, listener: Callable[[Settings], None]) -> None:
         self._listeners.append(listener)
+
+    def unsubscribe(self, listener: Callable[[Settings], None]) -> None:
+        """Short-lived subscribers (per-tab widgets) must drop their
+        listener on teardown or the store keeps them alive forever."""
+        if listener in self._listeners:
+            self._listeners.remove(listener)
 
     def update(self, **changes) -> None:
         """Apply field changes, persist, and notify subscribers."""

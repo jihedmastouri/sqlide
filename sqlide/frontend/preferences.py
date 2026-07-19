@@ -14,6 +14,7 @@ from gi.repository import Adw, GObject, Gtk
 
 from sqlide import APP_ID, __version__
 from sqlide.backend.settings import THEMES, Settings, store
+from sqlide.frontend.backup_dialog import BackupWindow
 from sqlide.lsp import servers as lsp_servers
 
 # Connection kinds that get a default-LSP row, with display titles.
@@ -62,8 +63,38 @@ class PreferencesDialog(Adw.PreferencesDialog):
         )
         group.add(font_row)
 
+        vim_row = Adw.SwitchRow(
+            title="Vim Mode",
+            subtitle="Modal Vim editing in SQL editors "
+            "(needs GtkSourceView)",
+        )
+        vim_row.set_active(settings.vim_mode)
+        vim_row.connect(
+            "notify::active",
+            lambda row, *_: store.update(vim_mode=row.get_active()),
+        )
+        group.add(vim_row)
+
         page.add(group)
+
+        backup_group = Adw.PreferencesGroup(title="Backup")
+        backup_row = Adw.ActionRow(
+            title="Backup &amp; Restore…",
+            subtitle="Export or restore settings and workspaces",
+            activatable=True,
+        )
+        backup_row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
+        backup_row.connect("activated", self._open_backup_window)
+        backup_group.add(backup_row)
+        page.add(backup_group)
         return page
+
+    def _open_backup_window(self, *_args) -> None:
+        window = BackupWindow()
+        root = self.get_root()
+        if isinstance(root, Gtk.Window):
+            window.set_transient_for(root)
+        window.present()
 
     # Language servers
 

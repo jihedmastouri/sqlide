@@ -190,6 +190,10 @@ sqlide/
     │   ├── __init__.py
     │   ├── connections.py     # ConnectionProfile dataclass
     │   ├── workspaces.py      # Workspace/TabState + per-file JSON store
+    │   ├── settings.py        # global settings store (theme, font, vim…)
+    │   ├── saved.py           # saved snippets/queries (global JSON stores)
+    │   ├── placeholders.py    # :name / ? scanner + literal substitution
+    │   ├── backup.py          # config zip export/restore
     │   └── db/
     │       ├── __init__.py
     │       ├── base.py        # Connector ABC + dataclasses + ConnectorError
@@ -217,9 +221,12 @@ sqlide/
         ├── data_grid.py       # ResultGrid + TableTab
         ├── query_console.py
         ├── cli_console.py     # psql/mysql/sqlite-style CLI client tab
-        ├── sql_editor.py      # GtkSourceView 5 with TextView fallback
+        ├── sql_editor.py      # GtkSourceView 5 with TextView fallback (+ Vim mode)
         ├── completion.py      # completion popup + keyword provider
-        ├── history_panel.py   # query history (right panel)
+        ├── history_panel.py   # query history list (a side panel page)
+        ├── side_panel.py      # contextual right panel (Info/Snippets/…)
+        ├── preferences.py     # preferences + about dialogs
+        ├── backup_dialog.py   # Backup & Restore window
         ├── style.css
         └── connection_dialog.py
 ```
@@ -260,6 +267,16 @@ sqlide/
 8. **Polish** — connection edit/remove in the sidebar, empty-string vs NULL
    handling when editing, keyboard shortcuts, about dialog, close
    connectors on exit.
+9. **Backlog round (2026-07)** — full-width header bar; split view
+   capped at two panes; console results area hidden until a run, with
+   a minimize/expand header; transaction controls in the console's
+   bottom bar (Begin alone until a transaction opens); hover DDL
+   tooltips in the console editor; placeholder (:name / ?) prompt with
+   per-workspace remembered values; Vim mode setting
+   (GtkSource.VimIMContext); Backup & Restore window (config zip);
+   saved snippets and saved queries (global stores) and saved table
+   filters (per workspace), surfaced in a contextual right side panel
+   whose pages follow the active tab type. — **done**
 
 "Unverified" = written but not yet executed; see README "Try it" for the
 manual test path.

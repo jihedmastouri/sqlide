@@ -38,6 +38,7 @@ from sqlide.frontend.data_grid import (
     _sql_literal,
     _SortRow,
 )
+from sqlide.frontend.results_panel import ResultsPanel
 from sqlide.frontend.util import run_async
 
 JOIN_KINDS = ("INNER JOIN", "LEFT JOIN", "RIGHT JOIN")
@@ -176,7 +177,7 @@ class QueryBuilderTab(Gtk.Box):
             shrink_end_child=False,
         )
         paned.set_start_child(self._build_controls())
-        paned.set_end_child(self._build_results())
+        paned.set_end_child(self._build_results(paned))
         self.append(paned)
 
         self._load_catalog()
@@ -289,9 +290,12 @@ class QueryBuilderTab(Gtk.Box):
         scroller.set_child(box)
         return scroller
 
-    def _build_results(self) -> Gtk.Widget:
+    def _build_results(self, paned: Gtk.Paned) -> Gtk.Widget:
+        # Same collapsible panel as the query console, hidden until the
+        # first run produces rows.
         self._grid = ResultGrid(on_aggregate=self._on_aggregate)
-        return self._grid
+        self._results_panel = ResultsPanel(self._grid, paned)
+        return self._results_panel
 
     @staticmethod
     def _section_label(text: str) -> Gtk.Label:
@@ -586,6 +590,7 @@ class QueryBuilderTab(Gtk.Box):
 
         def done(result) -> None:
             if isinstance(result, ResultSet):
+                self._results_panel.reveal()
                 self._grid.set_result(result.columns, result.rows)
                 self._status.set_text(f"{len(result)} row(s)")
             else:

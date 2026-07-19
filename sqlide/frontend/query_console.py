@@ -62,6 +62,7 @@ from sqlide.backend.sql_split import split_statements, statement_at
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend.data_grid import ResultGrid, _format_json
 from sqlide.frontend.lsp_completion import LspCompletionProvider
+from sqlide.frontend.results_panel import ResultsPanel
 from sqlide.frontend.sql_editor import SqlEditor
 from sqlide.frontend.util import run_async
 from sqlide.lsp import servers as lsp_servers
@@ -242,32 +243,11 @@ class QueryConsole(Gtk.Box):
         self._results.set_scrollable(True)
 
         # The results area is hidden until the first run produces
-        # something to show; its thin header carries a minimize/expand
-        # toggle that collapses the notebook to the header line.
-        results_header = Gtk.Box(
-            spacing=6, margin_start=8, margin_end=6,
-            margin_top=2, margin_bottom=2,
-        )
-        results_title = Gtk.Label(label="Results", xalign=0, hexpand=True)
-        results_title.add_css_class("dim-label")
-        results_title.add_css_class("caption-heading")
-        self._results_toggle = Gtk.ToggleButton(
-            icon_name="go-down-symbolic", active=True
-        )
-        self._results_toggle.add_css_class("flat")
-        self._results_toggle.set_tooltip_text("Minimize or expand the results")
-        self._results_toggle.connect("toggled", self._on_results_toggled)
-        results_header.append(results_title)
-        results_header.append(self._results_toggle)
-        self._results_area = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL, visible=False
-        )
-        self._results_area.append(results_header)
-        self._results_area.append(self._results)
-
+        # something to show.
         self._paned = Gtk.Paned(
             orientation=Gtk.Orientation.VERTICAL, vexpand=True
         )
+        self._results_area = ResultsPanel(self._results, self._paned)
         self._paned.set_start_child(self._editor)
         self._paned.set_end_child(self._results_area)
         self._paned.set_shrink_start_child(False)
@@ -706,13 +686,6 @@ class QueryConsole(Gtk.Box):
 
     # Result panel
 
-    def _on_results_toggled(self, toggle: Gtk.ToggleButton) -> None:
-        expanded = toggle.get_active()
-        self._results.set_visible(expanded)
-        toggle.set_icon_name(
-            "go-down-symbolic" if expanded else "go-up-symbolic"
-        )
-
     def _append_result_page(self, child: Gtk.Widget, title: str) -> None:
         label = Gtk.Label(label=title)
         label.set_max_width_chars(24)
@@ -724,8 +697,7 @@ class QueryConsole(Gtk.Box):
         planned: int,
         json_view: bool = False,
     ) -> None:
-        self._results_area.set_visible(True)
-        self._results_toggle.set_active(True)
+        self._results_area.reveal()
         while self._results.get_n_pages():
             self._results.remove_page(-1)
 

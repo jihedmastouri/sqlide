@@ -1,0 +1,77 @@
+# Throwaway database servers for developing and testing sqlide.
+#
+#   docker compose up -d              # everything
+#   docker compose up -d postgres16 mysql8   # just what you need
+#   docker compose down -v            # stop and wipe
+#
+# All servers use user/password/database sqlide/sqlide/sqlide
+# (MySQL root password is also sqlide) on 127.0.0.1 at the ports
+# below. tests/ connects to these same ports and skips any server
+# that isn't running.
+
+x-postgres-common: &postgres
+  environment:
+    POSTGRES_USER: sqlide
+    POSTGRES_PASSWORD: sqlide
+    POSTGRES_DB: sqlide
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U sqlide -d sqlide"]
+    interval: 2s
+    timeout: 2s
+    retries: 30
+  restart: unless-stopped
+
+x-mysql-common: &mysql
+  environment:
+    MYSQL_ROOT_PASSWORD: sqlide
+    MYSQL_USER: sqlide
+    MYSQL_PASSWORD: sqlide
+    MYSQL_DATABASE: sqlide
+  healthcheck:
+    test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+    interval: 2s
+    timeout: 2s
+    retries: 60
+  restart: unless-stopped
+
+services:
+  postgres10:
+    <<: *postgres
+    image: postgres:10
+    ports: ["54310:5432"]
+  postgres11:
+    <<: *postgres
+    image: postgres:11
+    ports: ["54311:5432"]
+  postgres12:
+    <<: *postgres
+    image: postgres:12
+    ports: ["54312:5432"]
+  postgres13:
+    <<: *postgres
+    image: postgres:13
+    ports: ["54313:5432"]
+  postgres14:
+    <<: *postgres
+    image: postgres:14
+    ports: ["54314:5432"]
+  postgres15:
+    <<: *postgres
+    image: postgres:15
+    ports: ["54315:5432"]
+  postgres16:
+    <<: *postgres
+    image: postgres:16
+    ports: ["54316:5432"]
+
+  mysql5:
+    <<: *mysql
+    image: mysql:5.7
+    ports: ["33057:3306"]
+  mysql8:
+    <<: *mysql
+    image: mysql:8.0
+    ports: ["33080:3306"]
+    # PyMySQL needs no extra crypto dependency with the classic
+    # auth plugin (8.0 defaults to caching_sha2_password).
+    command: --default-authentication-plugin=mysql_native_password

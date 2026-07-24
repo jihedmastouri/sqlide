@@ -47,6 +47,7 @@ from sqlide.frontend.connection_dialog import ConnectionDialog
 from sqlide.frontend.data_grid import ResultGrid, TableTab
 from sqlide.frontend.definition_tab import DefinitionTab, FunctionTab
 from sqlide.frontend.drop_dialog import present_drop_dialog
+from sqlide.frontend.mcp_tab import McpServerTab
 from sqlide.frontend.query_builder import QueryBuilderTab
 from sqlide.frontend.query_console import QueryConsole
 from sqlide.frontend.relation_graph import RelationGraphTab
@@ -140,6 +141,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_query_builder=self.open_query_builder,
             on_drop_object=self._drop_object,
             on_new_object=self._new_object,
+            on_mcp_server=self.open_mcp_server,
             show_error=self.show_error,
         )
         search = Gtk.SearchEntry(placeholder_text="Find tables…")
@@ -206,6 +208,10 @@ class MainWindow(Adw.ApplicationWindow):
         split_button.set_tooltip_text("Split: move current tab to a new pane")
         split_button.connect("clicked", self._split_current_tab)
         content_header.pack_start(split_button)
+        mcp_button = Gtk.Button(icon_name="network-transmit-receive-symbolic")
+        mcp_button.set_tooltip_text("New MCP server")
+        mcp_button.connect("clicked", lambda *_: self.open_mcp_server())
+        content_header.pack_start(mcp_button)
 
         content_header.pack_end(main_menu_button(with_history=True))
 
@@ -552,9 +558,10 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_close_page(self, view, page: Adw.TabPage) -> bool:
         """A tab is being closed. A query console whose connection has
-        an open transaction is held back behind a confirmation dialog;
-        forcing the close rolls the transaction back. Either way the
-        closed tab's entries leave the side panel's history scopes
+        an open transaction, or a running MCP server tab, is held back
+        behind a confirmation dialog; forcing the close rolls the
+        transaction back / stops the server. Either way the closed
+        tab's entries leave the side panel's history scopes
         (panel_closed) but stay in the workspace-wide History tab."""
         child = page.get_child()
         if isinstance(child, QueryConsole):
@@ -562,8 +569,37 @@ class MainWindow(Adw.ApplicationWindow):
             if name:
                 self._confirm_console_close(view, page, name)
                 return True  # close_page_finish decides later
+        if isinstance(child, McpServerTab) and child.running:
+            self._confirm_mcp_close(view, page, child)
+            return True  # close_page_finish decides later
         self._mark_panel_closed(page)
         return False  # let the default handler close the page
+
+    def _confirm_mcp_close(
+        self, view: Adw.TabView, page: Adw.TabPage, tab: McpServerTab
+    ) -> None:
+        dialog = Adw.AlertDialog(
+            heading="MCP Server Running",
+            body="This server is still running. Close the tab anyway "
+            "and stop it?",
+        )
+        dialog.add_response("cancel", "Keep Open")
+        dialog.add_response("stop", "Stop and Close")
+        dialog.set_response_appearance(
+            "stop", Adw.ResponseAppearance.DESTRUCTIVE
+        )
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def respond(_dialog, response: str) -> None:
+            force = response == "stop"
+            if force:
+                tab.stop_instance()
+                self._mark_panel_closed(page)
+            view.close_page_finish(page, force)
+
+        dialog.connect("response", respond)
+        dialog.present(self)
 
     def _confirm_console_close(
         self, view: Adw.TabView, page: Adw.TabPage, name: str
@@ -762,6 +798,15 @@ class MainWindow(Adw.ApplicationWindow):
         if not self._restoring:
             self._save_state()
 
+    def _running_mcp_tabs(self) -> list[McpServerTab]:
+        tabs = []
+        for pane in self._panes:
+            for i in range(pane.view.get_n_pages()):
+                child = pane.view.get_nth_page(i).get_child()
+                if isinstance(child, McpServerTab) and child.running:
+                    tabs.append(child)
+        return tabs
+
     def _on_close_request(self, *_args) -> bool:
         self._save_state()
         if self._close_confirmed:
@@ -799,6 +844,11 @@ class MainWindow(Adw.ApplicationWindow):
             return
 
         def finish() -> None:
+            # MCP instances die with their window: no separate
+            # confirmation (unlike per-tab close), just stop them now
+            # that the close is actually going through.
+            for tab in self._running_mcp_tabs():
+                tab.stop_instance()
             self._close_confirmed = True
             self.close()
 
@@ -982,6 +1032,24 @@ class MainWindow(Adw.ApplicationWindow):
     def _table_created(self, profile: ConnectionProfile, table: str) -> None:
         self._sidebar.reload_connection(profile.name)
         self.open_table(profile, table)
+
+    def open_mcp_server(
+        self, profile: ConnectionProfile | None = None
+    ) -> None:
+        # Not deduplicated: several instances (different ports, maybe
+        # different connection sets) can run side by side.
+        tab = McpServerTab(
+            self.workspace.name,
+            self.workspace.connections,
+            self.show_error,
+            initial_profile=profile,
+        )
+        self._append_tab(
+            tab,
+            ("mcp", id(tab)),
+            "MCP server",
+            "Read-only MCP server instance",
+        )
 
     def open_relation_graph(self, profile: ConnectionProfile) -> None:
         key = ("relations", profile.name)

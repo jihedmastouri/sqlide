@@ -20,13 +20,13 @@ function (or its Edit Definition context item) opens its definition
 in an editable tab. Right-clicking a table or view opens View Data /
 Query Console / Table Definition; right-clicking a connection offers
 a new query console (new consoles otherwise come from the header-bar
-button), the connection's relation graph, a "New ▸" submenu of the
-adapter's creatable kinds, and Refresh (drops and reloads the
-subtree). Every droppable object row gets "Drop…". Context menus are
-built per popup because their items depend on the connection's
-capabilities. Hovering a table/view shows its DDL in a tooltip
-(fetched lazily, cached on the node); hovering a connection shows a
-short summary.
+button), the connection's relation graph, an MCP Server tab
+preselecting that connection, a "New ▸" submenu of the adapter's
+creatable kinds, and Refresh (drops and reloads the subtree). Every
+droppable object row gets "Drop…". Context menus are built per popup
+because their items depend on the connection's capabilities. Hovering
+a table/view shows its DDL in a tooltip (fetched lazily, cached on the
+node); hovering a connection shows a short summary.
 
 set_filter() switches the view to fuzzy-find mode: a flat list of the
 tables, views and functions whose names loosely match the query
@@ -142,6 +142,7 @@ class Sidebar(Gtk.ScrolledWindow):
             [ConnectionProfile, str, str, str], None
         ],  # (profile, kind, name, owning table)
         on_new_object: Callable[[ConnectionProfile, str], None],
+        on_mcp_server: Callable[[ConnectionProfile], None],
         show_error: Callable[[str], None],
     ) -> None:
         super().__init__(vexpand=True)
@@ -155,6 +156,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_query_builder = on_query_builder
         self._on_drop_object = on_drop_object
         self._on_new_object = on_new_object
+        self._on_mcp_server = on_mcp_server
         self._show_error = show_error
         # Currently bound status dot per connection name, so
         # set_connected() can restyle a visible row.
@@ -193,6 +195,7 @@ class Sidebar(Gtk.ScrolledWindow):
             ("query-builder", self._menu_query_builder),
             ("drop-object", self._menu_drop),
             ("refresh", self._menu_refresh),
+            ("mcp-server", self._menu_mcp_server),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", callback)
@@ -569,6 +572,7 @@ class Sidebar(Gtk.ScrolledWindow):
             menu.append("New CLI Client", "schema.cli-console")
             menu.append("Relation Graph", "schema.relation-graph")
             menu.append("Query Builder", "schema.query-builder")
+            menu.append("MCP Server", "schema.mcp-server")
             if node.ddl_kinds:
                 sub = Gio.Menu()
                 for kind in node.ddl_kinds:
@@ -673,6 +677,11 @@ class Sidebar(Gtk.ScrolledWindow):
         node = self._menu_node
         if node is not None and node.kind == "connection":
             self.reload_connection(node.label)
+
+    def _menu_mcp_server(self, *_args) -> None:
+        node = self._menu_node
+        if node is not None and node.profile is not None:
+            self._on_mcp_server(node.profile)
 
     def _query_tooltip(
         self, widget, _x, _y, _keyboard, tooltip: Gtk.Tooltip,

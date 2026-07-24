@@ -46,11 +46,13 @@ from sqlide.frontend.cli_console import CliConsole
 from sqlide.frontend.connection_dialog import ConnectionDialog
 from sqlide.frontend.data_grid import ResultGrid, TableTab
 from sqlide.frontend.definition_tab import DefinitionTab, FunctionTab
+from sqlide.frontend.drop_dialog import present_drop_dialog
 from sqlide.frontend.query_builder import QueryBuilderTab
 from sqlide.frontend.query_console import QueryConsole
 from sqlide.frontend.relation_graph import RelationGraphTab
 from sqlide.frontend.side_panel import SidePanel
 from sqlide.frontend.sidebar import Sidebar
+from sqlide.frontend.table_designer import TableDesignerTab
 
 
 class _HistoryTab(Gtk.Box):
@@ -136,6 +138,8 @@ class MainWindow(Adw.ApplicationWindow):
             on_open_function=self.open_function,
             on_relation_graph=self.open_relation_graph,
             on_query_builder=self.open_query_builder,
+            on_drop_object=self._drop_object,
+            on_new_object=self._new_object,
             show_error=self.show_error,
         )
         search = Gtk.SearchEntry(placeholder_text="Find tables…")
@@ -927,6 +931,57 @@ class MainWindow(Adw.ApplicationWindow):
         tab.on_ran = lambda sql, ok: self._query_ran(
             page.get_title(), sql, profile.name, ok
         )
+
+    # Create/drop DDL (sidebar context menus)
+
+    def _drop_object(
+        self, profile: ConnectionProfile, kind: str, name: str, table: str
+    ) -> None:
+        def executed(sql: str, ok: bool) -> None:
+            self._query_ran(f"{profile.name} ▸ drop", sql, profile.name, ok)
+            if ok:
+                self._sidebar.reload_connection(profile.name)
+
+        present_drop_dialog(
+            self, profile, kind, name, table,
+            self.ensure_connector, self.show_error, executed,
+        )
+
+    def _new_object(self, profile: ConnectionProfile, kind: str) -> None:
+        if kind == "table":
+            self.open_table_designer(profile)
+            return
+
+        # Everything else: a query console prefilled with the
+        # dialect's commented CREATE skeleton.
+        run_async(
+            lambda: self.ensure_connector(profile).create_template(kind),
+            lambda template: self.new_query(profile, sql=template),
+            lambda exc: self.show_error(str(exc)),
+        )
+
+    def open_table_designer(self, profile: ConnectionProfile) -> None:
+        # Not deduplicated by tab_key: several designers on the same
+        # connection are fine, like query consoles.
+        tab = TableDesignerTab(
+            profile,
+            self.ensure_connector,
+            self.show_error,
+            on_created=lambda table: self._table_created(profile, table),
+        )
+        page = self._append_tab(
+            tab,
+            ("designer", profile.name, id(tab)),
+            f"new table · {profile.name}",
+            f"Table designer on {profile.name}",
+        )
+        tab.on_ran = lambda sql, ok: self._query_ran(
+            page.get_title(), sql, profile.name, ok
+        )
+
+    def _table_created(self, profile: ConnectionProfile, table: str) -> None:
+        self._sidebar.reload_connection(profile.name)
+        self.open_table(profile, table)
 
     def open_relation_graph(self, profile: ConnectionProfile) -> None:
         key = ("relations", profile.name)

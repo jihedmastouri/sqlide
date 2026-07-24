@@ -3,7 +3,12 @@
 Gtk.TreeListModel + Gtk.ListView + Gtk.TreeExpander (the GTK4 idiom
 for lazy trees). Shape:
 
-    connection → Tables / Views / Functions → object → columns
+    connection → Tables / Views / Functions / Indexes / Triggers /
+    Events → object → columns
+
+The Indexes/Triggers/Events categories appear only when the adapter's
+ddl_kinds() advertises the kind (known after connect) and it supports
+dropping (JDBC stays template-only).
 
 Column rows show "name  type" with a PK marker and are informational.
 Rows lead with a per-kind icon (connections also get a connection
@@ -15,9 +20,13 @@ function (or its Edit Definition context item) opens its definition
 in an editable tab. Right-clicking a table or view opens View Data /
 Query Console / Table Definition; right-clicking a connection offers
 a new query console (new consoles otherwise come from the header-bar
-button) and the connection's relation graph. Hovering a table/view shows its DDL in a tooltip (fetched
-lazily, cached on the node); hovering a connection shows a short
-summary.
+button), the connection's relation graph, a "New ▸" submenu of the
+adapter's creatable kinds, and Refresh (drops and reloads the
+subtree). Every droppable object row gets "Drop…". Context menus are
+built per popup because their items depend on the connection's
+capabilities. Hovering a table/view shows its DDL in a tooltip
+(fetched lazily, cached on the node); hovering a connection shows a
+short summary.
 
 set_filter() switches the view to fuzzy-find mode: a flat list of the
 tables, views and functions whose names loosely match the query
@@ -37,7 +46,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from gi.repository import Gdk, Gio, GObject, Gtk, Pango
+from gi.repository import Gdk, Gio, GLib, GObject, Gtk, Pango
 
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import Connector
@@ -52,6 +61,29 @@ _KIND_ICONS = {
     "table": "view-grid-symbolic",
     "view": "view-reveal-symbolic",
     "function": "system-run-symbolic",
+    "index": "view-continuous-symbolic",
+    "trigger": "media-playback-start-symbolic",
+    "event": "alarm-symbolic",
+}
+
+# "New ▸" submenu labels, in ddl_kinds order. The ellipsis marks the
+# table designer; the rest prefill a query console with a template.
+_NEW_LABELS = {
+    "table": "Table…",
+    "view": "View",
+    "index": "Index",
+    "trigger": "Trigger",
+    "function": "Function",
+    "procedure": "Procedure",
+    "event": "Event",
+}
+
+# Lazily loaded category → the object row kind it holds.
+_LAZY_CATEGORIES = {
+    "functions": "function",
+    "indexes": "index",
+    "triggers": "trigger",
+    "events": "event",
 }
 
 
@@ -59,6 +91,7 @@ class Node(GObject.Object):
     """One tree row; kind decides expandability, look, and activation.
 
     kind: "connection" | "category" | "table" | "view" | "function"
+        | "index" | "trigger" | "event"
         | "column" | "note" (dim placeholder: loading/empty/error)
     """
 
@@ -69,9 +102,10 @@ class Node(GObject.Object):
         *,
         detail: str = "",
         profile: ConnectionProfile | None = None,
-        category: str = "",  # category nodes: "tables"|"views"|"functions"
+        category: str = "",  # category nodes: "tables"|"views"|"functions"|…
         payload: list | None = None,  # tables/views categories: TableInfo list
         is_pk: bool = False,
+        table: str = "",  # index/trigger rows: owning table (for DROP)
     ) -> None:
         super().__init__()
         self.kind = kind
@@ -81,12 +115,16 @@ class Node(GObject.Object):
         self.category = category
         self.payload = payload
         self.is_pk = is_pk
+        self.table = table
         self.store: Gio.ListStore | None = None  # cached child model
         self.loaded = False
         self.loading = False
         self.connected = False  # connection rows: status dot state
         self.ddl: str | None = None  # table/view rows: None = not fetched
         self.ddl_loading = False
+        # Connection rows: adapter capabilities, known once loaded.
+        self.ddl_kinds: tuple[str, ...] = ()
+        self.supports_drop = False
 
 
 class Sidebar(Gtk.ScrolledWindow):
@@ -100,6 +138,10 @@ class Sidebar(Gtk.ScrolledWindow):
         on_open_function: Callable[[ConnectionProfile, str], None],
         on_relation_graph: Callable[[ConnectionProfile], None],
         on_query_builder: Callable[..., None],  # (profile, table="")
+        on_drop_object: Callable[
+            [ConnectionProfile, str, str, str], None
+        ],  # (profile, kind, name, owning table)
+        on_new_object: Callable[[ConnectionProfile, str], None],
         show_error: Callable[[str], None],
     ) -> None:
         super().__init__(vexpand=True)
@@ -111,6 +153,8 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_open_function = on_open_function
         self._on_relation_graph = on_relation_graph
         self._on_query_builder = on_query_builder
+        self._on_drop_object = on_drop_object
+        self._on_new_object = on_new_object
         self._show_error = show_error
         # Currently bound status dot per connection name, so
         # set_connected() can restyle a visible row.
@@ -147,33 +191,20 @@ class Sidebar(Gtk.ScrolledWindow):
             ("edit-function", self._menu_edit_function),
             ("relation-graph", self._menu_relation_graph),
             ("query-builder", self._menu_query_builder),
+            ("drop-object", self._menu_drop),
+            ("refresh", self._menu_refresh),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", callback)
             actions.add_action(action)
+        new_object = Gio.SimpleAction.new(
+            "new-object", GLib.VariantType.new("s")
+        )
+        new_object.connect("activate", self._menu_new_object)
+        actions.add_action(new_object)
         self._view.insert_action_group("schema", actions)
 
-        self._object_menu = Gio.Menu()
-        self._object_menu.append("View Data", "schema.view-data")
-        self._object_menu.append("Query Console", "schema.query-console")
-        self._object_menu.append("Table Definition", "schema.definition")
-        self._object_menu.append("Query Builder", "schema.query-builder")
-        self._connection_menu = Gio.Menu()
-        self._connection_menu.append(
-            "New Query Console", "schema.query-console"
-        )
-        self._connection_menu.append(
-            "New CLI Client", "schema.cli-console"
-        )
-        self._connection_menu.append(
-            "Relation Graph", "schema.relation-graph"
-        )
-        self._connection_menu.append(
-            "Query Builder", "schema.query-builder"
-        )
-        self._function_menu = Gio.Menu()
-        self._function_menu.append("Edit Definition", "schema.edit-function")
-        self._popover = Gtk.PopoverMenu.new_from_model(self._object_menu)
+        self._popover = Gtk.PopoverMenu.new_from_model(Gio.Menu())
         self._popover.set_parent(self._view)
         self._popover.set_has_arrow(False)
         self._view.connect("destroy", lambda *_: self._popover.unparent())
@@ -259,6 +290,35 @@ class Sidebar(Gtk.ScrolledWindow):
                     row.set_expanded(True)
                 return
 
+    def reload_connection(self, name: str) -> None:
+        """Drop and re-create a connection node's children, so
+        create/drop results appear (also the connection menu's
+        Refresh). A collapsed node just forgets its stale children;
+        an expanded one reloads immediately."""
+        for i in range(self._roots.get_n_items()):
+            node = self._roots.get_item(i)
+            if node.label != name:
+                continue
+            node.loaded = False
+            node.loading = False
+            if node.store is not None:
+                node.store.remove_all()
+            row = self._tree.get_child_row(i)
+            if row is not None and row.get_expanded():
+                self._load_children(node)
+            return
+
+    def _root_node(self, profile: ConnectionProfile | None) -> Node | None:
+        """The connection row a (possibly nested) node belongs to —
+        the keeper of the adapter's capability flags."""
+        if profile is None:
+            return None
+        for i in range(self._roots.get_n_items()):
+            node = self._roots.get_item(i)
+            if node.profile is profile or node.label == profile.name:
+                return node
+        return None
+
     # Tree model
 
     def _create_children(self, node: Node) -> Gio.ListStore | None:
@@ -268,7 +328,10 @@ class Sidebar(Gtk.ScrolledWindow):
             return None
         if node.store is None:
             node.store = Gio.ListStore(item_type=Node)
-            if node.kind == "category" and node.category != "functions":
+            if (
+                node.kind == "category"
+                and node.category not in _LAZY_CATEGORIES
+            ):
                 self._fill_category(node)
         return node.store
 
@@ -301,9 +364,17 @@ class Sidebar(Gtk.ScrolledWindow):
 
         if node.kind == "connection":
             def work():
-                return self._ensure(node.profile).list_tables()
+                connector = self._ensure(node.profile)
+                return (
+                    connector.list_tables(),
+                    connector.ddl_kinds(),
+                    connector.supports_drop,
+                )
 
-            def fill(objects):
+            def fill(loaded):
+                objects, kinds, supports_drop = loaded
+                node.ddl_kinds = kinds
+                node.supports_drop = supports_drop
                 tables = [t for t in objects if t.kind != "view"]
                 views = [t for t in objects if t.kind == "view"]
                 store.append(Node(
@@ -318,16 +389,44 @@ class Sidebar(Gtk.ScrolledWindow):
                     "category", "Functions",
                     profile=node.profile, category="functions",
                 ))
-        elif node.kind == "category":  # only the lazy Functions category
+                # Browse-to-drop categories, only where the adapter can
+                # actually drop the kind.
+                if supports_drop:
+                    for category, kind in (
+                        ("indexes", "index"),
+                        ("triggers", "trigger"),
+                        ("events", "event"),
+                    ):
+                        if kind in kinds:
+                            store.append(Node(
+                                "category", category.capitalize(),
+                                profile=node.profile, category=category,
+                            ))
+        elif node.kind == "category":  # the lazy categories
             def work():
-                return self._ensure(node.profile).list_functions()
+                connector = self._ensure(node.profile)
+                if node.category == "functions":
+                    return connector.list_functions()
+                if node.category == "indexes":
+                    return connector.list_indexes()
+                if node.category == "triggers":
+                    return connector.list_triggers()
+                return connector.list_events()
 
-            def fill(functions):
-                for function in functions:
-                    store.append(
-                        Node("function", function.name, profile=node.profile)
-                    )
-                if not functions:
+            def fill(objects):
+                kind = _LAZY_CATEGORIES[node.category]
+                for obj in objects:
+                    if node.category == "events":  # plain names
+                        name, table = obj, ""
+                    elif node.category == "functions":
+                        name, table = obj.name, ""
+                    else:  # IndexInfo | TriggerInfo
+                        name, table = obj.name, obj.table
+                    store.append(Node(
+                        kind, name,
+                        detail=table, profile=node.profile, table=table,
+                    ))
+                if not objects:
                     store.append(Node("note", "(none)"))
         else:  # table | view
             def work():
@@ -448,6 +547,55 @@ class Sidebar(Gtk.ScrolledWindow):
 
     # Context menu
 
+    def _menu_for(self, node: Node) -> Gio.Menu | None:
+        """The context menu for a row, built per popup: which items
+        appear depends on the connection's capabilities (ddl_kinds and
+        supports_drop, known once its schema loaded)."""
+        root = self._root_node(node.profile)
+        can_drop = root is not None and root.supports_drop
+
+        if node.kind in ("table", "view"):
+            menu = Gio.Menu()
+            menu.append("View Data", "schema.view-data")
+            menu.append("Query Console", "schema.query-console")
+            menu.append("Table Definition", "schema.definition")
+            menu.append("Query Builder", "schema.query-builder")
+            if can_drop:
+                menu.append("Drop…", "schema.drop-object")
+            return menu
+        if node.kind == "connection":
+            menu = Gio.Menu()
+            menu.append("New Query Console", "schema.query-console")
+            menu.append("New CLI Client", "schema.cli-console")
+            menu.append("Relation Graph", "schema.relation-graph")
+            menu.append("Query Builder", "schema.query-builder")
+            if node.ddl_kinds:
+                sub = Gio.Menu()
+                for kind in node.ddl_kinds:
+                    item = Gio.MenuItem.new(
+                        _NEW_LABELS.get(kind, kind.capitalize()), None
+                    )
+                    item.set_action_and_target_value(
+                        "schema.new-object", GLib.Variant.new_string(kind)
+                    )
+                    sub.append_item(item)
+                menu.append_submenu("New", sub)
+            menu.append("Refresh", "schema.refresh")
+            return menu
+        if node.kind == "function" and node.profile is not None:
+            menu = Gio.Menu()
+            menu.append("Edit Definition", "schema.edit-function")
+            # SQLite lists its triggers under Functions; they drop from
+            # the Triggers category instead, so no "function" kind here.
+            if can_drop and "function" in root.ddl_kinds:
+                menu.append("Drop…", "schema.drop-object")
+            return menu
+        if node.kind in ("index", "trigger", "event") and can_drop:
+            menu = Gio.Menu()
+            menu.append("Drop…", "schema.drop-object")
+            return menu
+        return None
+
     def _row_menu_pressed(
         self, gesture, _n_press, x, y, list_item: Gtk.ListItem
     ) -> None:
@@ -455,13 +603,8 @@ class Sidebar(Gtk.ScrolledWindow):
         if row is None:
             return
         node = row.get_item()
-        if node.kind in ("table", "view"):
-            menu = self._object_menu
-        elif node.kind == "connection":
-            menu = self._connection_menu
-        elif node.kind == "function" and node.profile is not None:
-            menu = self._function_menu
-        else:
+        menu = self._menu_for(node)
+        if menu is None:
             return
         gesture.set_state(Gtk.EventSequenceState.CLAIMED)
         self._menu_node = node
@@ -514,6 +657,22 @@ class Sidebar(Gtk.ScrolledWindow):
             return
         table = node.label if node.kind in ("table", "view") else ""
         self._on_query_builder(node.profile, table)
+
+    def _menu_drop(self, *_args) -> None:
+        node = self._menu_node
+        if node is None or node.profile is None:
+            return
+        self._on_drop_object(node.profile, node.kind, node.label, node.table)
+
+    def _menu_new_object(self, _action, param) -> None:
+        node = self._menu_node
+        if node is not None and node.profile is not None:
+            self._on_new_object(node.profile, param.get_string())
+
+    def _menu_refresh(self, *_args) -> None:
+        node = self._menu_node
+        if node is not None and node.kind == "connection":
+            self.reload_connection(node.label)
 
     def _query_tooltip(
         self, widget, _x, _y, _keyboard, tooltip: Gtk.Tooltip,

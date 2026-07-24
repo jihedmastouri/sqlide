@@ -101,6 +101,21 @@ exec sql-language-server up --method stdio
 (Remember `chmod +x`.) A server that exits or misbehaves is disabled
 for the rest of the session; keyword completion keeps working.
 
+## Create/drop DDL
+
+Right-click a connection row for **New ▸** (tables, views, indexes,
+triggers, and — where the dialect supports them — functions,
+procedures and events): tables open a small designer tab (name,
+columns, types, PK/nullable/default, a live preview of the generated
+`CREATE TABLE`); everything else opens a query console prefilled with
+a commented, dialect-correct skeleton to fill in and run. Right-click
+any object (including rows under the sidebar's Indexes/Triggers/Events
+categories) for **Drop…**, which shows the exact statement — with a
+CASCADE checkbox on PostgreSQL — before running it. **Refresh** on the
+connection menu reloads the sidebar subtree after either. JDBC
+connections get templates only (no reliable dialect knowledge to build
+a safe DROP).
+
 ## Layout
 
 - `sqlide/backend/` — connectors, connection profiles, and the workspace

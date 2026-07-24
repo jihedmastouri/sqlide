@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
+import urllib.parse
 from typing import Any
 
 from sqlide.backend.db.base import (
@@ -63,8 +64,9 @@ class SqliteConnector(Connector):
     statement is serialized behind a lock (hence check_same_thread=False).
     """
 
-    def __init__(self, file_path: str) -> None:
+    def __init__(self, file_path: str, read_only: bool = False) -> None:
         self.file_path = file_path
+        self.read_only = read_only  # MCP instances: open with mode=ro
         self._conn: sqlite3.Connection | None = None
         self._lock = threading.Lock()
 
@@ -78,8 +80,16 @@ class SqliteConnector(Connector):
             # transactions, so statements autocommit unless the user
             # runs an explicit BEGIN (the console's transaction
             # buttons) — which then stays open across statements.
+            target = self.file_path
+            if self.read_only:
+                target = (
+                    "file:"
+                    + urllib.parse.quote(os.path.abspath(self.file_path))
+                    + "?mode=ro"
+                )
             self._conn = sqlite3.connect(
-                self.file_path,
+                target,
+                uri=self.read_only,
                 check_same_thread=False,
                 isolation_level=None,
             )

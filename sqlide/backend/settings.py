@@ -16,6 +16,10 @@ Settings:
   resolves to ("auto" keeps the built-in resolution in
   sqlide.lsp.servers, "none" turns completion off for that kind, any
   other value names a server from available_servers()).
+- mcp_defaults: last-used values of the MCP server tab's form
+  (bind_host, row_limit, allow_query, auth_mode — "none" or "token").
+  The token itself is never persisted: regenerated per instance, or
+  re-typed, like every other credential in this app.
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ class Settings:
     vim_mode: bool = False
     lsp_enabled: bool = True
     lsp_defaults: dict[str, str] = field(default_factory=dict)
+    mcp_defaults: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict) -> Settings:
@@ -56,6 +61,10 @@ class Settings:
             lsp_defaults={
                 str(k): str(v)
                 for k, v in (data.get("lsp_defaults") or {}).items()
+            },
+            mcp_defaults={
+                str(k): str(v)
+                for k, v in (data.get("mcp_defaults") or {}).items()
             },
         )
 

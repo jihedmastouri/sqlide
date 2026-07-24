@@ -13,12 +13,47 @@ from sqlide.backend.db.base import (
     ConnectorError,
     FilterCondition,
     FunctionInfo,
+    IndexInfo,
     RelationInfo,
     ResultSet,
     SortSpec,
     TableInfo,
+    TriggerInfo,
     build_filter_clauses,
 )
+
+_TEMPLATES = {
+    "table": (
+        "-- New table: adjust the name and columns, then Run.\n"
+        "CREATE TABLE table_name (\n"
+        "  id INTEGER PRIMARY KEY,\n"
+        "  name TEXT NOT NULL,\n"
+        "  created_at TEXT DEFAULT (datetime('now'))\n"
+        ");\n"
+    ),
+    "view": (
+        "-- New view: adjust the name and the SELECT, then Run.\n"
+        "CREATE VIEW view_name AS\n"
+        "SELECT column_a, column_b\n"
+        "FROM table_name;\n"
+    ),
+    "index": (
+        "-- New index: adjust the name, table and columns, then Run.\n"
+        "-- Add UNIQUE after CREATE for a unique index.\n"
+        "CREATE INDEX index_name\n"
+        "ON table_name (column_a);\n"
+    ),
+    "trigger": (
+        "-- New trigger: adjust the name, timing and body, then Run.\n"
+        "-- Timing: BEFORE | AFTER | INSTEAD OF, on INSERT | UPDATE |"
+        " DELETE.\n"
+        "CREATE TRIGGER trigger_name AFTER INSERT ON table_name\n"
+        "FOR EACH ROW\n"
+        "BEGIN\n"
+        "  UPDATE table_name SET name = NEW.name WHERE id = NEW.id;\n"
+        "END;\n"
+    ),
+}
 
 
 class SqliteConnector(Connector):
@@ -169,6 +204,33 @@ class SqliteConnector(Connector):
             "ORDER BY name"
         )
         return [FunctionInfo(name=name) for (name,) in rows]
+
+    def list_indexes(self) -> list[IndexInfo]:
+        # Autoindexes (sqlite_autoindex_*) back PRIMARY KEY/UNIQUE
+        # constraints and cannot be dropped.
+        _, rows, _ = self._run(
+            "SELECT name, tbl_name FROM sqlite_master "
+            "WHERE type = 'index' AND name NOT LIKE 'sqlite_%' "
+            "ORDER BY name"
+        )
+        return [IndexInfo(name=name, table=table) for name, table in rows]
+
+    def list_triggers(self) -> list[TriggerInfo]:
+        _, rows, _ = self._run(
+            "SELECT name, tbl_name FROM sqlite_master "
+            "WHERE type = 'trigger' ORDER BY name"
+        )
+        return [TriggerInfo(name=name, table=table) for name, table in rows]
+
+    def ddl_kinds(self) -> tuple[str, ...]:
+        return ("table", "view", "index", "trigger")
+
+    def create_template(self, kind: str) -> str:
+        return _TEMPLATES.get(kind, "")
+
+    def column_types(self) -> list[str]:
+        # SQLite's storage classes; anything else is affinity-mapped.
+        return ["INTEGER", "TEXT", "REAL", "BLOB", "NUMERIC"]
 
     def explain_prefix(self) -> str:
         # Plain EXPLAIN dumps VDBE opcodes; the query plan is the

@@ -73,6 +73,10 @@ class JdbcConnector(Connector):
             self._conn.close()
             self._conn = None
 
+    # No reliable dialect knowledge: "New ▸" offers only the generic
+    # base templates and Drop… is hidden entirely.
+    supports_drop = False
+
     def _meta(self):
         """java.sql.DatabaseMetaData of the underlying JDBC connection."""
         if self._conn is None:

@@ -3,9 +3,18 @@
 A small character scanner rather than a parser: it only needs to know
 where statements end, so it tracks the contexts in which a semicolon
 does NOT terminate one — single-quoted strings, double-quoted and
-backtick-quoted identifiers, line comments and block comments. Escaped
+backtick-quoted identifiers, dollar-quoted bodies ($$…$$ and
+$tag$…$tag$, PostgreSQL), line comments and block comments. Escaped
 quotes ('' or "") fall out naturally: the first quote closes the
 context and the second reopens it.
+
+Routine bodies are the one case where a semicolon sits bare inside a
+statement: SQLite trigger and MySQL trigger/function/procedure bodies
+(PostgreSQL wraps its bodies in dollar quotes). Inside a statement
+whose first keyword is CREATE and that mentions TRIGGER, FUNCTION or
+PROCEDURE, the scanner therefore counts BEGIN/CASE…END nesting and
+only terminates at depth zero; END IF/LOOP/WHILE/REPEAT close their
+uncounted openers and are consumed as pairs.
 
 Offsets are kept so the console can map the editor's cursor position
 to the statement under it.
@@ -31,11 +40,14 @@ def split_statements(sql: str) -> list[Statement]:
     statements: list[Statement] = []
     seg_start = 0
     has_content = False  # any non-comment, non-whitespace char in segment
+    first_word = ""  # first keyword of the segment ("" until seen)
+    routine = False  # CREATE segment mentioning TRIGGER/FUNCTION/PROCEDURE
+    depth = 0  # BEGIN/CASE…END nesting inside a routine segment
     i = 0
     n = len(sql)
 
     def close_segment(end: int) -> None:
-        nonlocal seg_start, has_content
+        nonlocal seg_start, has_content, first_word, routine, depth
         if has_content:
             raw = sql[seg_start:end]
             text = raw.strip().removesuffix(";").strip()
@@ -43,6 +55,9 @@ def split_statements(sql: str) -> list[Statement]:
             statements.append(Statement(text=text, start=offset, end=end))
         seg_start = end
         has_content = False
+        first_word = ""
+        routine = False
+        depth = 0
 
     while i < n:
         ch = sql[i]
@@ -59,8 +74,35 @@ def split_statements(sql: str) -> list[Statement]:
             while i < n and sql[i] != ch:
                 i += 1
             i += 1  # past the closing quote (or end on unterminated)
+        elif ch == "$" and (delim := _dollar_delimiter(sql, i)):
+            has_content = True
+            end = sql.find(delim, i + len(delim))
+            i = n if end == -1 else end + len(delim)
+        elif ch.isalpha() or ch == "_":
+            has_content = True
+            j = i
+            while j < n and (sql[j].isalnum() or sql[j] == "_"):
+                j += 1
+            word = sql[i:j].upper()
+            if not first_word:
+                first_word = word
+            if first_word == "CREATE":
+                if word in ("TRIGGER", "FUNCTION", "PROCEDURE"):
+                    routine = True
+                elif routine and word in ("BEGIN", "CASE"):
+                    depth += 1
+                elif routine and word == "END":
+                    nxt, k = _peek_word(sql, j)
+                    if nxt in ("IF", "LOOP", "WHILE", "REPEAT"):
+                        j = k  # closes an uncounted opener
+                    else:
+                        if nxt == "CASE":  # MySQL's END CASE
+                            j = k
+                        depth = max(depth - 1, 0)
+            i = j
         elif ch == ";":
-            close_segment(i + 1)
+            if depth == 0:
+                close_segment(i + 1)
             i += 1
         else:
             if not ch.isspace():
@@ -68,6 +110,32 @@ def split_statements(sql: str) -> list[Statement]:
             i += 1
     close_segment(n)
     return statements
+
+
+def _dollar_delimiter(sql: str, i: int) -> str:
+    """The full dollar-quote delimiter starting at `i` ($$ or $tag$),
+    or "" when this $ does not open one (e.g. a $1 placeholder)."""
+    j = i + 1
+    while j < len(sql) and (sql[j].isalnum() or sql[j] == "_"):
+        j += 1
+    if j >= len(sql) or sql[j] != "$":
+        return ""
+    tag = sql[i + 1 : j]
+    if tag and tag[0].isdigit():
+        return ""
+    return sql[i : j + 1]
+
+
+def _peek_word(sql: str, i: int) -> tuple[str, int]:
+    """The next word after position `i` (skipping whitespace),
+    uppercased, and the offset just past it ("" when a non-word
+    character comes first)."""
+    while i < len(sql) and sql[i].isspace():
+        i += 1
+    j = i
+    while j < len(sql) and (sql[j].isalnum() or sql[j] == "_"):
+        j += 1
+    return sql[i:j].upper(), j
 
 
 def statement_at(statements: list[Statement], offset: int) -> Statement | None:

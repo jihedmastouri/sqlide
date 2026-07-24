@@ -27,6 +27,18 @@ class FunctionInfo:
 
 
 @dataclass(frozen=True)
+class IndexInfo:
+    name: str
+    table: str = ""  # owning table (MySQL's DROP INDEX … ON table)
+
+
+@dataclass(frozen=True)
+class TriggerInfo:
+    name: str
+    table: str = ""  # owning table (Postgres' DROP TRIGGER … ON table)
+
+
+@dataclass(frozen=True)
 class RelationInfo:
     """One foreign-key column: table.column references ref_table.ref_column."""
 
@@ -34,6 +46,35 @@ class RelationInfo:
     column: str
     ref_table: str
     ref_column: str
+
+
+# Every object kind the create/drop DDL surface can talk about;
+# adapters advertise their subset through Connector.ddl_kinds().
+DDL_KINDS = (
+    "table", "view", "index", "trigger", "function", "procedure", "event",
+)
+
+# Console skeletons for adapters without dialect knowledge (JDBC).
+_GENERIC_TEMPLATES = {
+    "table": (
+        "-- New table: adjust the name and columns, then Run.\n"
+        "CREATE TABLE table_name (\n"
+        "  id INTEGER PRIMARY KEY,\n"
+        "  name VARCHAR(255) NOT NULL\n"
+        ");\n"
+    ),
+    "view": (
+        "-- New view: adjust the name and the SELECT, then Run.\n"
+        "CREATE VIEW view_name AS\n"
+        "SELECT column_a, column_b\n"
+        "FROM table_name;\n"
+    ),
+    "index": (
+        "-- New index: adjust the name, table and columns, then Run.\n"
+        "CREATE INDEX index_name\n"
+        "ON table_name (column_a);\n"
+    ),
+}
 
 
 FILTER_OPERATORS = (
@@ -151,6 +192,31 @@ class Connector(ABC):
         """
         return []
 
+    def list_indexes(self) -> list[IndexInfo]:
+        """Indexes in the connected database, sorted by name, with
+        their owning table when the dialect needs it to drop one.
+
+        Concrete default (not abstract) so adapters without an index
+        catalog need no override.
+        """
+        return []
+
+    def list_triggers(self) -> list[TriggerInfo]:
+        """Triggers in the connected database, sorted by name, with
+        their owning table when the dialect needs it to drop one.
+
+        Concrete default (not abstract) so adapters without a trigger
+        catalog need no override.
+        """
+        return []
+
+    def list_events(self) -> list[str]:
+        """Scheduled event names (MySQL only), sorted by name.
+
+        Concrete default (not abstract): only MySQL overrides.
+        """
+        return []
+
     def list_relations(self) -> list[RelationInfo]:
         """Foreign-key relations between the connected database's
         tables, for the relation graph.
@@ -195,6 +261,79 @@ class Connector(ABC):
         string when the adapter doesn't support replacing functions.
         """
         return ""
+
+    # Create/drop DDL. All of these return SQL for the user to review
+    # (or a prefilled console) — nothing here executes anything.
+
+    #: Whether drop_sql(cascade=True) means anything in this dialect
+    #: (drives the drop dialog's CASCADE checkbox).
+    supports_drop_cascade = False
+
+    #: Whether the sidebar offers Drop… at all. JDBC turns this off:
+    #: without reliable dialect knowledge it stays template-only.
+    supports_drop = True
+
+    def ddl_kinds(self) -> tuple[str, ...]:
+        """Which of DDL_KINDS this adapter can create and drop (drives
+        the sidebar's menu visibility). Safe to call before connect()."""
+        return ("table", "view", "index")
+
+    def drop_sql(
+        self, kind: str, name: str, table: str = "", cascade: bool = False
+    ) -> str:
+        """Quoted, dialect-correct DROP statement for one object.
+
+        `table` is the owning table for the kinds that need it (MySQL
+        indexes, Postgres triggers); `cascade` is honored only where
+        the dialect supports it (see supports_drop_cascade). May query
+        the catalog (Postgres function signatures), so call it from a
+        worker thread.
+        """
+        if kind not in DDL_KINDS:
+            raise ConnectorError(f"Unknown object kind: {kind}")
+        return f"DROP {kind.upper()} {self.quote_ident(name)}"
+
+    def create_template(self, kind: str) -> str:
+        """Commented, dialect-correct CREATE skeleton for a query
+        console (the "New ▸" menu). Empty string when the adapter has
+        no template for `kind`."""
+        return _GENERIC_TEMPLATES.get(kind, "")
+
+    def column_types(self) -> list[str]:
+        """Suggested column types for the table designer's dropdown
+        (free text stays allowed; this is not a whitelist)."""
+        return ["INTEGER", "VARCHAR(255)", "TEXT", "DATE", "TIMESTAMP"]
+
+    def create_table_sql(
+        self,
+        table: str,
+        columns: list[ColumnInfo],
+        defaults: dict[str, str] | None = None,
+    ) -> str:
+        """CREATE TABLE statement for the table designer: column names,
+        types, DEFAULT expressions, NOT NULL and the primary key.
+        Dialects only override quirks."""
+        defaults = defaults or {}
+        defs = []
+        for column in columns:
+            line = f"  {self.quote_ident(column.name)} {column.type}".rstrip()
+            if defaults.get(column.name, "").strip():
+                line += f" DEFAULT {defaults[column.name].strip()}"
+            if not column.nullable:
+                line += " NOT NULL"
+            defs.append(line)
+        pks = [c.name for c in columns if c.is_pk]
+        if pks:
+            defs.append(
+                "  PRIMARY KEY ("
+                + ", ".join(self.quote_ident(p) for p in pks)
+                + ")"
+            )
+        return (
+            f"CREATE TABLE {self.quote_ident(table)} (\n"
+            + ",\n".join(defs)
+            + "\n)"
+        )
 
     # DDL editing (definition tab). All return SQL for the user to
     # review — nothing here executes anything.

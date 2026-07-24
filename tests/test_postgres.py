@@ -139,3 +139,72 @@ def test_quote_ident(postgres):
     assert db.quote_ident('we"ird') == '"we""ird"'
     with pytest.raises(ConnectorError):
         db.quote_ident("")
+
+
+def test_index_roundtrip(postgres):
+    _, db = postgres
+    db.execute("CREATE INDEX orders_amount ON orders (amount)")
+    try:
+        indexes = {i.name: i.table for i in db.list_indexes()}
+        assert indexes["orders_amount"] == "orders"
+    finally:
+        db.execute(db.drop_sql("index", "orders_amount"))
+    assert "orders_amount" not in [i.name for i in db.list_indexes()]
+
+
+def test_trigger_roundtrip(postgres):
+    _, db = postgres
+    db.execute(
+        "CREATE OR REPLACE FUNCTION touch_row() RETURNS trigger "
+        "LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$"
+    )
+    db.execute(
+        "CREATE TRIGGER users_touch BEFORE INSERT ON users "
+        "FOR EACH ROW EXECUTE PROCEDURE touch_row()"
+    )
+    try:
+        triggers = {t.name: t.table for t in db.list_triggers()}
+        assert triggers["users_touch"] == "users"
+        sql = db.drop_sql("trigger", "users_touch", table="users")
+        assert sql == 'DROP TRIGGER "users_touch" ON "users"'
+    finally:
+        db.execute('DROP TRIGGER IF EXISTS "users_touch" ON "users"')
+        db.execute(db.drop_sql("function", "touch_row"))
+    assert "users_touch" not in [t.name for t in db.list_triggers()]
+
+
+def test_drop_sql_uses_function_signature(postgres):
+    _, db = postgres
+    db.execute(
+        "CREATE OR REPLACE FUNCTION drop_me(a integer, b text) "
+        "RETURNS integer LANGUAGE sql AS $$ SELECT a $$"
+    )
+    sql = db.drop_sql("function", "drop_me")
+    # regprocedure::text renders the signature without spaces after commas.
+    assert sql == "DROP FUNCTION drop_me(integer,text)"
+    db.execute(sql)
+    assert "drop_me" not in [f.name for f in db.list_functions()]
+
+
+def test_drop_sql_detects_procedures(postgres):
+    version, db = postgres
+    if int(version) < 11:
+        pytest.skip("CREATE PROCEDURE arrived in PostgreSQL 11")
+    db.execute(
+        "CREATE OR REPLACE PROCEDURE drop_me_proc() "
+        "LANGUAGE plpgsql AS $$ BEGIN NULL; END $$"
+    )
+    # The catalog decides the verb even when the caller says "function"
+    # (the sidebar lists procedures under Functions).
+    sql = db.drop_sql("function", "drop_me_proc")
+    assert sql == "DROP PROCEDURE drop_me_proc()"
+    db.execute(sql)
+
+
+def test_drop_cascade(postgres):
+    _, db = postgres
+    db.execute("CREATE TABLE base_t (id integer)")
+    db.execute("CREATE VIEW base_v AS SELECT * FROM base_t")
+    db.execute(db.drop_sql("table", "base_t", cascade=True))
+    names = {t.name for t in db.list_tables()}
+    assert "base_t" not in names and "base_v" not in names

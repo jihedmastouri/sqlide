@@ -145,3 +145,56 @@ def test_quote_ident(mysql):
     assert db.quote_ident("we`ird") == "`we``ird`"
     with pytest.raises(ConnectorError):
         db.quote_ident("")
+
+
+def test_index_roundtrip(mysql):
+    _, db = mysql
+    db.execute("CREATE INDEX orders_amount ON orders (amount)")
+    try:
+        indexes = {i.name: i.table for i in db.list_indexes()}
+        assert indexes["orders_amount"] == "orders"
+        assert "PRIMARY" not in indexes
+    finally:
+        db.execute(db.drop_sql("index", "orders_amount", table="orders"))
+    assert "orders_amount" not in [i.name for i in db.list_indexes()]
+
+
+def test_trigger_roundtrip(mysql):
+    _, db = mysql
+    db.execute(
+        "CREATE TRIGGER users_touch BEFORE INSERT ON users "
+        "FOR EACH ROW SET NEW.name = TRIM(NEW.name)"
+    )
+    try:
+        triggers = {t.name: t.table for t in db.list_triggers()}
+        assert triggers["users_touch"] == "users"
+    finally:
+        db.execute(db.drop_sql("trigger", "users_touch"))
+    assert "users_touch" not in [t.name for t in db.list_triggers()]
+
+
+def test_procedure_roundtrip(mysql):
+    _, db = mysql
+    db.execute("DROP PROCEDURE IF EXISTS count_users")
+    db.execute(
+        "CREATE PROCEDURE count_users() SELECT count(*) FROM users"
+    )
+    assert "count_users" in [f.name for f in db.list_functions()]
+    db.execute(db.drop_sql("procedure", "count_users"))
+    assert "count_users" not in [f.name for f in db.list_functions()]
+
+
+def test_event_roundtrip(mysql):
+    _, db = mysql
+    try:
+        db.execute(
+            "CREATE EVENT sqlide_evt ON SCHEDULE EVERY 1 DAY "
+            "DO DELETE FROM orders WHERE amount < 0"
+        )
+    except ConnectorError as exc:
+        pytest.skip(f"cannot create events on this server: {exc}")
+    try:
+        assert "sqlide_evt" in db.list_events()
+    finally:
+        db.execute(db.drop_sql("event", "sqlide_evt"))
+    assert "sqlide_evt" not in db.list_events()

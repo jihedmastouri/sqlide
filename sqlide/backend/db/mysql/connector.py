@@ -19,15 +19,77 @@ from sqlide.backend.db.base import (
     ConnectorError,
     FilterCondition,
     FunctionInfo,
+    IndexInfo,
     RelationInfo,
     ResultSet,
     SortSpec,
     TableInfo,
+    TriggerInfo,
     build_filter_clauses,
 )
 
 # Server-side catalogs that are not user databases.
 _SYSTEM_SCHEMAS = ("information_schema", "performance_schema", "mysql", "sys")
+
+_TEMPLATES = {
+    "table": (
+        "-- New table: adjust the name and columns, then Run.\n"
+        "CREATE TABLE table_name (\n"
+        "  id INT AUTO_INCREMENT PRIMARY KEY,\n"
+        "  name VARCHAR(255) NOT NULL,\n"
+        "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP\n"
+        ");\n"
+    ),
+    "view": (
+        "-- New view: adjust the name and the SELECT, then Run.\n"
+        "CREATE VIEW view_name AS\n"
+        "SELECT column_a, column_b\n"
+        "FROM table_name;\n"
+    ),
+    "index": (
+        "-- New index: adjust the name, table and columns, then Run.\n"
+        "-- Add UNIQUE after CREATE for a unique index.\n"
+        "CREATE INDEX index_name\n"
+        "ON table_name (column_a);\n"
+    ),
+    "trigger": (
+        "-- New trigger: adjust the name, timing and body, then Run.\n"
+        "-- Timing: BEFORE | AFTER, on INSERT | UPDATE | DELETE.\n"
+        "CREATE TRIGGER trigger_name BEFORE INSERT ON table_name\n"
+        "FOR EACH ROW\n"
+        "BEGIN\n"
+        "  SET NEW.created_at = NOW();\n"
+        "END;\n"
+    ),
+    "function": (
+        "-- New function: adjust the name, arguments and body, then"
+        " Run.\n"
+        "-- DETERMINISTIC (or NO SQL / READS SQL DATA) is required\n"
+        "-- when binary logging is enabled.\n"
+        "CREATE FUNCTION function_name(a INT, b INT)\n"
+        "RETURNS INT\n"
+        "DETERMINISTIC\n"
+        "RETURN a + b;\n"
+    ),
+    "procedure": (
+        "-- New procedure: adjust the name, arguments and body, then"
+        " Run.\n"
+        "CREATE PROCEDURE procedure_name(IN a INT)\n"
+        "BEGIN\n"
+        "  SELECT a;\n"
+        "END;\n"
+    ),
+    "event": (
+        "-- New scheduled event: adjust the name, schedule and body,\n"
+        "-- then Run. Needs the event scheduler"
+        " (SET GLOBAL event_scheduler = ON).\n"
+        "CREATE EVENT event_name\n"
+        "ON SCHEDULE EVERY 1 DAY\n"
+        "DO\n"
+        "  DELETE FROM table_name WHERE created_at < NOW() - INTERVAL 30"
+        " DAY;\n"
+    ),
+}
 
 
 class MysqlConnector(Connector):
@@ -260,6 +322,63 @@ class MysqlConnector(Connector):
                 ref_table=ref_table, ref_column=ref_column or "",
             )
             for table, column, ref_table, ref_column in rows
+        ]
+
+    def list_indexes(self) -> list[IndexInfo]:
+        # One row per (index, column) in statistics; DISTINCT folds
+        # multi-column indexes. PRIMARY is dropped through ALTER TABLE,
+        # not DROP INDEX, so it stays out.
+        _, rows, _ = self._run(
+            "SELECT DISTINCT index_name, table_name "
+            "FROM information_schema.statistics "
+            "WHERE table_schema = DATABASE() AND index_name <> 'PRIMARY' "
+            "ORDER BY index_name"
+        )
+        return [IndexInfo(name=name, table=table) for name, table in rows]
+
+    def list_triggers(self) -> list[TriggerInfo]:
+        _, rows, _ = self._run(
+            "SELECT trigger_name, event_object_table "
+            "FROM information_schema.triggers "
+            "WHERE trigger_schema = DATABASE() ORDER BY trigger_name"
+        )
+        return [TriggerInfo(name=name, table=table) for name, table in rows]
+
+    def list_events(self) -> list[str]:
+        _, rows, _ = self._run(
+            "SELECT event_name FROM information_schema.events "
+            "WHERE event_schema = DATABASE() ORDER BY event_name"
+        )
+        return [name for (name,) in rows]
+
+    def ddl_kinds(self) -> tuple[str, ...]:
+        return (
+            "table", "view", "index", "trigger", "function", "procedure",
+            "event",
+        )
+
+    def drop_sql(
+        self, kind: str, name: str, table: str = "", cascade: bool = False
+    ) -> str:
+        if kind == "index":
+            # MySQL has no bare DROP INDEX; it needs the owning table.
+            if not table:
+                raise ConnectorError(
+                    f"Cannot drop index {name}: owning table unknown"
+                )
+            return (
+                f"DROP INDEX {self.quote_ident(name)} "
+                f"ON {self.quote_ident(table)}"
+            )
+        return super().drop_sql(kind, name, table=table, cascade=cascade)
+
+    def create_template(self, kind: str) -> str:
+        return _TEMPLATES.get(kind, "")
+
+    def column_types(self) -> list[str]:
+        return [
+            "INT", "BIGINT", "VARCHAR(255)", "TEXT", "DATETIME", "DATE",
+            "DECIMAL(10,2)", "DOUBLE", "TINYINT(1)", "JSON", "BLOB",
         ]
 
     def get_ddl(self, name: str) -> str:

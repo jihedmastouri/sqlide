@@ -1,0 +1,31 @@
+---
+interface DocLink {
+  slug: string;
+  title: string;
+}
+
+interface Props {
+  docs: DocLink[];
+  currentSlug: string;
+}
+
+const { docs, currentSlug } = Astro.props;
+---
+
+<nav class="docs-nav" aria-label="Documentation">
+  <p class="docs-nav-title">Documentation</p>
+  <ul>
+    {
+      docs.map((d) => (
+        <li>
+          <a
+            href={d.slug === "" ? "/docs/" : `/docs/${d.slug}/`}
+            aria-current={d.slug === currentSlug ? "page" : undefined}
+          >
+            {d.title}
+          </a>
+        </li>
+      ))
+    }
+  </ul>
+</nav>

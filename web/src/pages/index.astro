@@ -1,0 +1,122 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+
+const GITHUB_URL = "https://github.com/jihedmastouri/sqlide";
+
+const features = [
+  {
+    emoji: "🗂️",
+    title: "Schema browser",
+    text: "Tables, views, and functions per connection, with columns and their types laid out inline.",
+  },
+  {
+    emoji: "✏️",
+    title: "Editable data grid",
+    text: "Paged table browsing with inline cell edits, committed as primary-key UPDATEs. Views and PK-less tables are safely read-only.",
+  },
+  {
+    emoji: "⌨️",
+    title: "Query console",
+    text: "A SQL editor with syntax highlighting and keyword completion. Run with Ctrl+Enter, see results in the same grid.",
+  },
+  {
+    emoji: "🧭",
+    title: "Workspaces",
+    text: "Group connections and tabs into a workspace; close it and reopen later exactly as you left it.",
+  },
+  {
+    emoji: "🛠️",
+    title: "Create / drop DDL",
+    text: "A small table designer, dialect-correct skeletons for the rest, and drop dialogs that show the exact statement first.",
+  },
+  {
+    emoji: "🧠",
+    title: "Language server completion",
+    text: "Schema-aware completion via Postgres Language Server or sqls, merged into the built-in keyword completion.",
+  },
+  {
+    emoji: "🤖",
+    title: "MCP server",
+    text: "Expose a workspace's connections to an AI assistant over MCP — read-only by construction, with a query guard and token auth.",
+  },
+  {
+    emoji: "🔒",
+    title: "Keyring-backed passwords",
+    text: "Connection passwords stored in the system keyring when one is available, instead of plain JSON.",
+  },
+];
+---
+
+<BaseLayout title="sqlide — a minimal SQL IDE">
+  <section class="hero">
+    <div class="wrap">
+      <img class="icon" src="/icon.svg" alt="sqlide icon" width="128" height="128" />
+      <h1>sqlide</h1>
+      <p class="tagline">
+        A minimal, clean SQL IDE for SQLite, MySQL, and PostgreSQL — built
+        with GTK4 and libadwaita. Browse schemas, page through data, edit
+        cells, and run queries, with nothing extra in the way.
+      </p>
+      <div class="btn-row">
+        <a class="btn btn-primary" href={GITHUB_URL}>View on GitHub</a>
+        <a class="btn btn-secondary" href="/docs/">Read the Docs</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap">
+      <h2 class="section-title">What it does</h2>
+      <p class="section-sub">
+        Built in the spirit of DBeaver or DataGrip, but deliberately basic.
+        No visual query builder, no ER diagrams, no SSH tunnel wizards — a
+        small, fast tool to look at a database and run some SQL.
+      </p>
+      <div class="grid">
+        {
+          features.map((f) => (
+            <div class="card">
+              <div class="emoji">{f.emoji}</div>
+              <h3>{f.title}</h3>
+              <p>{f.text}</p>
+            </div>
+          ))
+        }
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap">
+      <h2 class="section-title">Get it</h2>
+      <p class="section-sub">
+        sqlide isn't packaged yet — run it from source. Python 3.12+ and
+        GTK4 + libadwaita are the only hard requirements; database drivers
+        are optional extras you install as needed.
+      </p>
+      <div class="install-panel">
+        <h3>From source</h3>
+        <pre><code>git clone {GITHUB_URL}.git
+cd sqlide
+pip install .
+sqlide</code></pre>
+        <p>
+          SQLite needs nothing extra. See <a href="/docs/installation/">Installation</a> for
+          the MySQL, PostgreSQL, JDBC, MCP, and keyring extras.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap">
+      <h2 class="section-title">Details</h2>
+      <ul class="meta-list" style="max-width: 640px; margin: 0 auto;">
+        <li><span class="k">Platform</span><span>Linux (GTK4 + libadwaita)</span></li>
+        <li><span class="k">Language</span><span>Python 3.12+</span></li>
+        <li><span class="k">Databases</span><span>SQLite, MySQL, PostgreSQL, JDBC (experimental)</span></li>
+        <li><span class="k">Source</span><span><a href={GITHUB_URL}>github.com/jihedmastouri/sqlide</a></span></li>
+      </ul>
+    </div>
+  </section>
+</BaseLayout>

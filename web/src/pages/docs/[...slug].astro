@@ -1,0 +1,62 @@
+---
+import { getCollection, render } from "astro:content";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import DocsSidebar from "../../components/DocsSidebar.astro";
+
+export async function getStaticPaths() {
+  const entries = await getCollection("docs");
+  const sorted = [...entries].sort((a, b) => a.data.order - b.data.order);
+
+  return sorted.map((entry) => {
+    const slug = entry.id === "index" ? "" : entry.id;
+    return {
+      params: { slug: slug || undefined },
+      props: { entry, sorted },
+    };
+  });
+}
+
+const { entry, sorted } = Astro.props;
+const { Content } = await render(entry);
+
+const navDocs = sorted.map((e) => ({
+  slug: e.id === "index" ? "" : e.id,
+  title: e.data.title,
+}));
+
+const currentSlug = entry.id === "index" ? "" : entry.id;
+const currentIndex = sorted.findIndex((e) => e.id === entry.id);
+const prev = currentIndex > 0 ? sorted[currentIndex - 1] : undefined;
+const next = currentIndex < sorted.length - 1 ? sorted[currentIndex + 1] : undefined;
+
+const linkFor = (e: (typeof sorted)[number]) => (e.id === "index" ? "/docs/" : `/docs/${e.id}/`);
+---
+
+<BaseLayout title={`${entry.data.title} — sqlide docs`} description={entry.data.description}>
+  <div class="docs-layout">
+    <DocsSidebar docs={navDocs} currentSlug={currentSlug} />
+    <article class="docs-content">
+      <h1>{entry.data.title}</h1>
+      {entry.data.description && <p class="description">{entry.data.description}</p>}
+      <Content />
+      <div class="docs-pager">
+        <div>
+          {prev && (
+            <a href={linkFor(prev)}>
+              <span class="dir">&larr; Previous</span>
+              {prev.data.title}
+            </a>
+          )}
+        </div>
+        <div style="text-align: right;">
+          {next && (
+            <a href={linkFor(next)}>
+              <span class="dir">Next &rarr;</span>
+              {next.data.title}
+            </a>
+          )}
+        </div>
+      </div>
+    </article>
+  </div>
+</BaseLayout>

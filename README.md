@@ -1,7 +1,7 @@
 # sqlide
 
 A minimal, clean SQL IDE built with Python, GTK4, and libadwaita.
-SQLite works today; MySQL/PostgreSQL are stubbed; a generic JDBC bridge is
+SQLite, MySQL, and PostgreSQL are fully supported; a generic JDBC bridge is
 included (experimental). See [PLAN.md](PLAN.md) for design and status.
 
 ## Requirements
@@ -10,10 +10,11 @@ included (experimental). See [PLAN.md](PLAN.md) for design and status.
 - GTK4 + libadwaita + PyGObject (usually system packages, e.g.
   `sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1`)
 - Optional drivers:
-  - MySQL: `pip install PyMySQL` (adapter not implemented yet)
-  - PostgreSQL: `pip install "psycopg[binary]"` (adapter not implemented yet)
+  - MySQL: `pip install PyMySQL`
+  - PostgreSQL: `pip install "psycopg[binary]"`
   - JDBC: `pip install JayDeBeApi` + a Java runtime + the driver jar
   - MCP server: `pip install "sqlide[mcp]"` (the `mcp` SDK + uvicorn)
+  - System keyring for connection passwords: `pip install "sqlide[keyring]"`
 
 SQLite needs nothing extra.
 
@@ -172,6 +173,24 @@ included).
    ever bypassed. JDBC has no portable read-only mode, so JDBC
    instances rely on the guard alone.
 3. **0.0.0.0 without a token is refused outright.**
+
+## Connection passwords
+
+Right-click a connection in the sidebar for **Edit…** (the same form
+as adding one, pre-filled — renaming it there is safe, open tabs keep
+working) and **Remove…** (confirmed). Workspaces can be renamed too,
+from a pencil button on their row in the launcher.
+
+With the `keyring` extra installed and a backend available (GNOME
+Keyring, KWallet, macOS Keychain, …), a connection's password and SSH
+tunnel password are stored there instead of in the workspace's JSON
+file, which keeps only a blank placeholder. Without a usable keyring
+— the extra isn't installed, or no backend is running — sqlide falls
+back to plain text in the JSON file, as in earlier versions; nothing
+needs configuring either way. Keyring entries are per machine: copying
+a workspace file elsewhere carries the blanked password field, not
+the secret, so the connection needs its password re-entered once on
+the new machine.
 
 ## Layout
 

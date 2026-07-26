@@ -2,7 +2,9 @@
 
 A profile describes how to reach one database. Profiles belong to a
 workspace and persist inside its file (see backend/workspaces.py).
-Known v1 limitation: passwords are stored in plain text.
+password/ssh_password are written to the system keyring when one is
+available (backend/secrets.py) and blanked out of the JSON; otherwise
+they fall back to plain text in the file, as in earlier versions.
 """
 
 from __future__ import annotations

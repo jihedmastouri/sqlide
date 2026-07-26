@@ -29,7 +29,10 @@ primary-key-based cell editing. Editing is opt-in: a toggle in the
 action bar unlocks the cells, edits accumulate locally (highlighted in
 the grid), and Save opens a review dialog showing the UPDATE statements
 before they run through Connector.update_cell(). Refresh discards
-pending edits.
+pending edits. A NULL and an empty string look the same once typed
+into an EditableLabel, so setting a cell to NULL instead goes through
+the cell's right-click menu ("Set Cell to NULL", enabled only while
+unlocked) — it calls on_edit with None rather than "".
 """
 
 from __future__ import annotations
@@ -67,8 +70,8 @@ COPY_FORMATS = (
     ("Markdown", "markdown"),
 )
 
-# on_edit(row_item, column_index, new_text)
-EditCallback = Callable[["RowItem", int, str], None]
+# on_edit(row_item, column_index, new_text_or_None_for_NULL)
+EditCallback = Callable[["RowItem", int, str | None], None]
 
 
 class RowItem(GObject.Object):
@@ -137,6 +140,7 @@ class ResultGrid(Gtk.ScrolledWindow):
         self._menu_rect = Gdk.Rectangle()
 
         actions = Gio.SimpleActionGroup()
+        self._set_null_action: Gio.SimpleAction | None = None
         for name, callback in (
             ("select-row", self._on_select_row),
             ("select-column", self._on_select_column),
@@ -144,10 +148,14 @@ class ResultGrid(Gtk.ScrolledWindow):
             ("aggregate", self._on_aggregate),
             ("move-left", lambda *_: self._move_menu_column(-1)),
             ("move-right", lambda *_: self._move_menu_column(1)),
+            ("set-null", self._on_set_null),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", callback)
             actions.add_action(action)
+            if name == "set-null":
+                action.set_enabled(False)  # only while editing is unlocked
+                self._set_null_action = action
         copy_as = Gio.SimpleAction.new("copy-as", GLib.VariantType.new("s"))
         copy_as.connect(
             "activate", lambda _a, param: self.copy_selection(param.get_string())
@@ -171,6 +179,10 @@ class ResultGrid(Gtk.ScrolledWindow):
         copy_section.append_submenu("Copy As", copy_as_menu)
         copy_section.append("Aggregate", "grid.aggregate")
         menu.append_section(None, copy_section)
+        if on_edit is not None:
+            edit_section = Gio.Menu()
+            edit_section.append("Set Cell to NULL", "grid.set-null")
+            menu.append_section(None, edit_section)
         # Columns can also be reordered by dragging their headers; the
         # menu items cover the cell-menu path.
         move_section = Gio.Menu()
@@ -449,6 +461,8 @@ class ResultGrid(Gtk.ScrolledWindow):
         for widget in self._bound_cells:
             if isinstance(widget, Gtk.EditableLabel):
                 widget.set_editable(unlocked)
+        if self._set_null_action is not None:
+            self._set_null_action.set_enabled(unlocked)
 
     def mark_modified(self, row: RowItem, col: int) -> None:
         """Highlight a cell as locally edited but not yet saved."""
@@ -750,6 +764,15 @@ class ResultGrid(Gtk.ScrolledWindow):
         _row, col = self._menu_cell
         self._select(set(range(self._store.get_n_items())), {col}, "column")
 
+    def _on_set_null(self, *_args) -> None:
+        if self._on_edit is None or not self._unlocked:
+            return
+        row, col = self._menu_cell
+        item = self._store.get_item(row)
+        if item is None or item.values[col] is None:
+            return  # already NULL
+        self._on_edit(item, col, None)
+
     def _popup_menu(self, widget, x, y) -> None:
         ok, bounds = widget.compute_bounds(self._view)
         rect = Gdk.Rectangle()
@@ -961,6 +984,7 @@ class _FilterRow(Gtk.Box):
         on_remove: Callable[["_FilterRow"], None],
         on_activate: Callable[[], None],
         on_change: Callable[[], None] | None = None,
+        on_close: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self._conjunction = Gtk.DropDown(
@@ -972,16 +996,30 @@ class _FilterRow(Gtk.Box):
         self._value = Gtk.Entry(hexpand=True, placeholder_text="value")
         self._value.connect("activate", lambda *_: on_activate())
         if on_change is not None:
-            # Live consumers (the query builder's SQL preview) want to
-            # know about every tweak, not just Apply/Enter.
+            # Live consumers (the query builder's SQL preview, and the
+            # table tab's remove/close button state) want to know about
+            # every tweak, not just Apply/Enter.
             for dropdown in (self._conjunction, self._column, self._op):
                 dropdown.connect("notify::selected", lambda *_: on_change())
             self._value.connect("changed", lambda *_: on_change())
-        remove = Gtk.Button(icon_name="list-remove-symbolic")
-        remove.add_css_class("flat")
-        remove.set_tooltip_text("Remove condition")
-        remove.connect("clicked", lambda *_: on_remove(self))
-        for widget in (self._conjunction, self._column, self._op, self._value, remove):
+        self._remove = Gtk.Button(icon_name="list-remove-symbolic")
+        self._remove.add_css_class("flat")
+        self._remove.set_tooltip_text("Remove condition")
+        self._remove.connect("clicked", lambda *_: on_remove(self))
+        self._close = Gtk.Button(icon_name="window-close-symbolic")
+        self._close.add_css_class("flat")
+        self._close.set_tooltip_text("Close filters")
+        self._close.set_visible(False)
+        if on_close is not None:
+            self._close.connect("clicked", lambda *_: on_close())
+        for widget in (
+            self._conjunction,
+            self._column,
+            self._op,
+            self._value,
+            self._remove,
+            self._close,
+        ):
             self.append(widget)
 
     def set_first(self, is_first: bool) -> None:
@@ -1010,6 +1048,30 @@ class _FilterRow(Gtk.Box):
         _select_value(self._op, cond.op)
         self._value.set_text(cond.value)
 
+    def is_empty(self) -> bool:
+        """No value entered (operators that don't need one, like IS
+        NULL, always count as a real condition)."""
+        return (
+            _selected_string(self._op) not in NO_VALUE_OPERATORS
+            and not self._value.get_text().strip()
+        )
+
+    def clear(self) -> None:
+        # Reset the operator too: an IS NULL / IS NOT NULL row is a
+        # complete condition with no value, so clearing only the value
+        # would never register as empty.
+        self._op.set_selected(0)
+        self._value.set_text("")
+
+    def set_last(self, is_last: bool) -> None:
+        """The sole remaining row can't be deleted (the panel always
+        keeps at least one), so once it's empty there is nothing left
+        to remove — hide that button and show a close button in its
+        place instead."""
+        hide_remove = is_last and self.is_empty()
+        self._remove.set_visible(not hide_remove)
+        self._close.set_visible(hide_remove)
+
     def _on_op_changed(self, *_args) -> None:
         self._value.set_sensitive(
             _selected_string(self._op) not in NO_VALUE_OPERATORS
@@ -1027,6 +1089,7 @@ class _SortRow(Gtk.Box):
         on_remove: Callable[["_SortRow"], None],
         on_move: Callable[["_SortRow", int], None],
         on_change: Callable[[], None] | None = None,
+        on_close: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self._column = Gtk.DropDown(
@@ -1046,11 +1109,19 @@ class _SortRow(Gtk.Box):
         down.add_css_class("flat")
         down.set_tooltip_text("Sort by this column later")
         down.connect("clicked", lambda *_: on_move(self, 1))
-        remove = Gtk.Button(icon_name="list-remove-symbolic")
-        remove.add_css_class("flat")
-        remove.set_tooltip_text("Remove sort column")
-        remove.connect("clicked", lambda *_: on_remove(self))
-        for widget in (self._column, self._direction, up, down, remove):
+        self._remove = Gtk.Button(icon_name="list-remove-symbolic")
+        self._remove.add_css_class("flat")
+        self._remove.set_tooltip_text("Remove sort column")
+        self._remove.connect("clicked", lambda *_: on_remove(self))
+        self._close = Gtk.Button(icon_name="window-close-symbolic")
+        self._close.add_css_class("flat")
+        self._close.set_tooltip_text("Close sort")
+        self._close.set_visible(False)
+        if on_close is not None:
+            self._close.connect("clicked", lambda *_: on_close())
+        for widget in (
+            self._column, self._direction, up, down, self._remove, self._close
+        ):
             self.append(widget)
 
     def set_columns(self, names: list[str]) -> None:
@@ -1075,6 +1146,23 @@ class _SortRow(Gtk.Box):
                 self._column.set_selected(i)
                 break
         self._direction.set_selected(1 if spec.descending else 0)
+
+    def is_empty(self) -> bool:
+        """Untouched: first column, ascending — the state a fresh or
+        cleared row starts in."""
+        return self._column.get_selected() == 0 and self._direction.get_selected() == 0
+
+    def clear(self) -> None:
+        self._column.set_selected(0)
+        self._direction.set_selected(0)
+
+    def set_last(self, is_last: bool) -> None:
+        """Mirrors _FilterRow.set_last: the sole remaining row can't be
+        deleted, so once it's back to its blank state there is nothing
+        left to remove — swap the remove button for a close button."""
+        hide_remove = is_last and self.is_empty()
+        self._remove.set_visible(not hide_remove)
+        self._close.set_visible(hide_remove)
 
 
 def _selected_string(dropdown: Gtk.DropDown) -> str:
@@ -1186,8 +1274,11 @@ class TableTab(Gtk.Box):
         self._filter_rows: list[_FilterRow] = []
         self._sort_rows: list[_SortRow] = []
         # Pending (unsaved) edits per row: pk values snapshotted at the
-        # first edit of the row, then {column name: new text}.
-        self._pending: dict[RowItem, tuple[dict[str, Any], dict[str, str]]] = {}
+        # first edit of the row, then {column name: new text or None
+        # for NULL}.
+        self._pending: dict[
+            RowItem, tuple[dict[str, Any], dict[str, str | None]]
+        ] = {}
 
         # Filter and sort are separate panels behind separate toggles;
         # both can be revealed at the same time.
@@ -1267,10 +1358,11 @@ class TableTab(Gtk.Box):
 
     def apply_saved_filters(self, conditions: list[FilterCondition]) -> None:
         """Mirror a saved filter set in the panel and re-query with it."""
-        for row in list(self._filter_rows):
-            self._remove_filter_row(row)
+        self._clear_all_filter_rows()
         for cond in conditions:
             self._add_filter_row(cond)
+        if not self._filter_rows:
+            self._add_filter_row()
         self._filter_toggle.set_active(True)
         self._apply_filters()
 
@@ -1422,16 +1514,41 @@ class TableTab(Gtk.Box):
 
     def _add_sort_row(self, spec: SortSpec | None = None) -> None:
         row = _SortRow(
-            self._column_names, self._remove_sort_row, self._move_sort_row
+            self._column_names,
+            self._remove_sort_row,
+            self._move_sort_row,
+            on_change=self._update_sort_controls,
+            on_close=self._close_sort_panel,
         )
         if spec is not None:
             row.set_spec(spec)
         self._sort_rows.append(row)
         self._sort_rows_box.append(row)
+        self._update_sort_controls()
 
     def _remove_sort_row(self, row: _SortRow) -> None:
+        if len(self._sort_rows) == 1:
+            # Always keep at least one row: emptying it is the closest
+            # equivalent to removing it.
+            row.clear()
+            self._update_sort_controls()
+            return
         self._sort_rows.remove(row)
         self._sort_rows_box.remove(row)
+        self._update_sort_controls()
+
+    def _clear_all_sort_rows(self) -> None:
+        for row in list(self._sort_rows):
+            self._sort_rows_box.remove(row)
+        self._sort_rows.clear()
+
+    def _update_sort_controls(self) -> None:
+        is_last = len(self._sort_rows) == 1
+        for row in self._sort_rows:
+            row.set_last(is_last)
+
+    def _close_sort_panel(self) -> None:
+        self._sort_toggle.set_active(False)
 
     def _move_sort_row(self, row: _SortRow, delta: int) -> None:
         index = self._sort_rows.index(row)
@@ -1446,10 +1563,11 @@ class TableTab(Gtk.Box):
 
     def _set_sort_rows(self, specs: list[SortSpec]) -> None:
         """Mirror an order list (e.g. from header clicks) in the panel."""
-        for row in list(self._sort_rows):
-            self._remove_sort_row(row)
+        self._clear_all_sort_rows()
         for spec in specs:
             self._add_sort_row(spec)
+        if not self._sort_rows:
+            self._add_sort_row()
 
     def _apply_sort(self) -> None:
         # Line order is the ORDER BY priority; duplicate columns keep
@@ -1466,8 +1584,8 @@ class TableTab(Gtk.Box):
         self.reload()
 
     def _clear_sort(self) -> None:
-        for row in list(self._sort_rows):
-            self._remove_sort_row(row)
+        self._clear_all_sort_rows()
+        self._add_sort_row()
         if self._order_by:
             self._order_by = []
             self._offset = 0
@@ -1487,22 +1605,47 @@ class TableTab(Gtk.Box):
 
     def _add_filter_row(self, cond: FilterCondition | None = None) -> None:
         row = _FilterRow(
-            self._column_names, self._remove_filter_row, self._apply_filters
+            self._column_names,
+            self._remove_filter_row,
+            self._apply_filters,
+            on_change=self._update_filter_controls,
+            on_close=self._close_filter_panel,
         )
         if cond is not None:
             row.set_condition(cond)
         self._filter_rows.append(row)
         self._filter_rows_box.append(row)
         self._update_first_row()
+        self._update_filter_controls()
 
     def _remove_filter_row(self, row: _FilterRow) -> None:
+        if len(self._filter_rows) == 1:
+            # Always keep at least one row: emptying it is the closest
+            # equivalent to removing it.
+            row.clear()
+            self._update_filter_controls()
+            return
         self._filter_rows.remove(row)
         self._filter_rows_box.remove(row)
         self._update_first_row()
+        self._update_filter_controls()
+
+    def _clear_all_filter_rows(self) -> None:
+        for row in list(self._filter_rows):
+            self._filter_rows_box.remove(row)
+        self._filter_rows.clear()
 
     def _update_first_row(self) -> None:
         for index, row in enumerate(self._filter_rows):
             row.set_first(index == 0)
+
+    def _update_filter_controls(self) -> None:
+        is_last = len(self._filter_rows) == 1
+        for row in self._filter_rows:
+            row.set_last(is_last)
+
+    def _close_filter_panel(self) -> None:
+        self._filter_toggle.set_active(False)
 
     def _set_column_names(self, names: list[str]) -> None:
         if names == self._column_names:
@@ -1521,8 +1664,8 @@ class TableTab(Gtk.Box):
         self.reload()
 
     def _clear_filters(self) -> None:
-        for row in list(self._filter_rows):
-            self._remove_filter_row(row)
+        self._clear_all_filter_rows()
+        self._add_filter_row()
         if self._filters:
             self._filters = []
             self._offset = 0
@@ -1543,7 +1686,9 @@ class TableTab(Gtk.Box):
         # discarding Refresh) is still available.
         self._grid.set_unlocked(toggle.get_active())
 
-    def _commit_edit(self, row: RowItem, index: int, new_text: str) -> None:
+    def _commit_edit(
+        self, row: RowItem, index: int, new_text: str | None
+    ) -> None:
         column_name = self._result_names[index]
         pending = self._pending.get(row)
         if pending is None:
@@ -1571,7 +1716,7 @@ class TableTab(Gtk.Box):
         self._save.set_visible(count > 0)
         self._save.set_label(f"Save ({count})")
 
-    def _pending_updates(self) -> list[tuple[dict[str, Any], str, str]]:
+    def _pending_updates(self) -> list[tuple[dict[str, Any], str, str | None]]:
         """Flat (pk values, column, new value) list, one per edited cell."""
         return [
             (pk_values, column, value)
@@ -1598,7 +1743,7 @@ class TableTab(Gtk.Box):
         dialog.present(self)
 
     def _execute_updates(
-        self, updates: list[tuple[dict[str, Any], str, str]]
+        self, updates: list[tuple[dict[str, Any], str, str | None]]
     ) -> None:
         def work():
             connector = self._ensure(self.profile)

@@ -5,7 +5,9 @@ that were open in it (table tabs and query consoles, including the
 console SQL text), so reopening a workspace restores it as it was
 left. It also keeps a capped history of executed queries (successes
 and failures). Each workspace persists as its own JSON file in
-$XDG_CONFIG_HOME/sqlide/workspaces/<id>.json.
+$XDG_CONFIG_HOME/sqlide/workspaces/<id>.json — connection passwords
+excepted, which go through backend/secrets.py (system keyring when
+available, otherwise plain text in this same file, as before).
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from sqlide.backend import secrets
 from sqlide.backend.connections import ConnectionProfile
 
 
@@ -67,16 +70,40 @@ class Workspace:
         self.history.append(entry)
         del self.history[:-MAX_HISTORY]
 
+    def unique_connection_name(
+        self, name: str, *, exclude: ConnectionProfile | None = None
+    ) -> str:
+        """A variant of `name` guaranteed not to collide with another
+        connection in this workspace (skipping `exclude`, e.g. the
+        profile being renamed). Names key the open-connector cache and
+        saved tab states, so they must stay unique within a workspace."""
+        names = {p.name for p in self.connections if p is not exclude}
+        if name not in names:
+            return name
+        n = 2
+        while f"{name} ({n})" in names:
+            n += 1
+        return f"{name} ({n})"
+
     def add_connection(self, profile: ConnectionProfile) -> None:
-        # Names key the open-connector cache and saved tab states; keep
-        # them unique within the workspace.
-        names = {p.name for p in self.connections}
-        if profile.name in names:
-            n = 2
-            while f"{profile.name} ({n})" in names:
-                n += 1
-            profile.name = f"{profile.name} ({n})"
+        profile.name = self.unique_connection_name(profile.name)
         self.connections.append(profile)
+        secrets.store_profile_secrets(self.id, profile)
+
+    def remove_connection(self, name: str) -> None:
+        self.connections = [p for p in self.connections if p.name != name]
+        secrets.drop_profile_secrets(self.id, name)
+
+    def sync_renamed_connection_secrets(
+        self, old_name: str, profile: ConnectionProfile
+    ) -> None:
+        """Called after an edit mutates `profile` in place (window.py's
+        _connection_edited): push the current secrets under its
+        (possibly new) name, then drop the old name's entries so a
+        rename doesn't leave the keyring holding a stale password."""
+        secrets.store_profile_secrets(self.id, profile)
+        if profile.name != old_name:
+            secrets.drop_profile_secrets(self.id, old_name)
 
     def find_connection(self, name: str) -> ConnectionProfile | None:
         for profile in self.connections:
@@ -88,7 +115,7 @@ class Workspace:
         return {
             "id": self.id,
             "name": self.name,
-            "connections": [asdict(p) for p in self.connections],
+            "connections": [secrets.redact(asdict(p)) for p in self.connections],
             "tabs": [asdict(t) for t in self.tabs],
             "selected_tab": self.selected_tab,
             "history": [asdict(h) for h in self.history],
@@ -98,12 +125,16 @@ class Workspace:
 
     @classmethod
     def from_dict(cls, data: dict) -> Workspace:
+        workspace_id = data["id"]
+        connections = []
+        for c in data.get("connections", []):
+            profile = ConnectionProfile(**c)
+            secrets.hydrate(workspace_id, profile)
+            connections.append(profile)
         return cls(
-            id=data["id"],
+            id=workspace_id,
             name=data["name"],
-            connections=[
-                ConnectionProfile(**c) for c in data.get("connections", [])
-            ],
+            connections=connections,
             tabs=[TabState(**t) for t in data.get("tabs", [])],
             selected_tab=data.get("selected_tab", -1),
             history=[HistoryEntry(**h) for h in data.get("history", [])],

@@ -194,6 +194,7 @@ sqlide/
     │   ├── saved.py           # saved snippets/queries (global JSON stores)
     │   ├── placeholders.py    # :name / ? scanner + literal substitution
     │   ├── backup.py          # config zip export/restore
+    │   ├── secrets.py         # connection passwords: system keyring or plain text
     │   └── db/
     │       ├── __init__.py
     │       ├── base.py        # Connector ABC + dataclasses + ConnectorError
@@ -283,13 +284,9 @@ manual test path.
 
 ## Risks / known limitations (v1)
 
-- **Nothing has been run yet** — expect small GTK API wrinkles on first
-  launch (factory signal signatures, Adw widget availability by version).
-- Cell edits are written back as **strings**; SQLite type affinity converts
-  for typed columns, but there is no way yet to set a cell to NULL.
 - Query console executes **one statement at a time** (sqlite3 `execute`).
-- Passwords are stored in plain text in the config JSON.
+- Passwords are stored in plain text in the config JSON unless the
+  `keyring` extra is installed and a backend is available (see
+  README "Connection passwords").
 - JDBC: client-side pagination is slow on big offsets; JPype thread
   attachment with the worker-thread model is untested.
-- No connection or workspace edit/remove/rename UI yet — edit
-  `~/.config/sqlide/workspaces/<id>.json` by hand for now.

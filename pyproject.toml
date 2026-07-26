@@ -14,8 +14,9 @@ postgres = ["psycopg[binary]>=3.1"]
 jdbc = ["JayDeBeApi>=1.2"]
 ssh = ["sshtunnel>=0.4"]
 mcp = ["mcp>=1.0", "uvicorn>=0.23"]
-all = ["PyMySQL>=1.1", "psycopg[binary]>=3.1", "JayDeBeApi>=1.2", "sshtunnel>=0.4", "mcp>=1.0", "uvicorn>=0.23"]
-test = ["pytest>=8", "PyMySQL>=1.1", "psycopg[binary]>=3.1", "mcp>=1.0", "uvicorn>=0.23", "httpx>=0.27"]
+keyring = ["keyring>=24"]
+all = ["PyMySQL>=1.1", "psycopg[binary]>=3.1", "JayDeBeApi>=1.2", "sshtunnel>=0.4", "mcp>=1.0", "uvicorn>=0.23", "keyring>=24"]
+test = ["pytest>=8", "PyMySQL>=1.1", "psycopg[binary]>=3.1", "mcp>=1.0", "uvicorn>=0.23", "httpx>=0.27", "keyring>=24"]
 
 [project.scripts]
 sqlide = "sqlide.frontend.application:main"

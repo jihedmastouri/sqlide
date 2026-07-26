@@ -30,7 +30,7 @@ loads history entries back into a console when activated.
 from __future__ import annotations
 
 import threading
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from datetime import datetime
 from typing import Callable
 
@@ -142,6 +142,8 @@ class MainWindow(Adw.ApplicationWindow):
             on_drop_object=self._drop_object,
             on_new_object=self._new_object,
             on_mcp_server=self.open_mcp_server,
+            on_edit_connection=self._edit_connection,
+            on_remove_connection=self._remove_connection,
             show_error=self.show_error,
         )
         search = Gtk.SearchEntry(placeholder_text="Find tables…")
@@ -878,6 +880,83 @@ class MainWindow(Adw.ApplicationWindow):
         self._connection_names.append(profile.name)
         self._sidebar.add_profile(profile)
         self._sidebar.expand_profile(profile.name)
+
+    def _drop_connector(self, name: str) -> None:
+        """Forget a cached connector (edit/remove) and close it in the
+        background; nothing else in the app currently closes connectors
+        explicitly, but a connection the user just removed shouldn't
+        keep a server-side session open behind them."""
+        with self._connectors_lock:
+            connector = self._connectors.pop(name, None)
+        if connector is not None:
+            run_async(connector.close, lambda _r: None, lambda _e: None)
+
+    def _edit_connection(self, profile: ConnectionProfile) -> None:
+        ConnectionDialog(
+            on_save=lambda edited: self._connection_edited(profile, edited),
+            profile=profile,
+        ).present(self)
+
+    def _connection_edited(
+        self, profile: ConnectionProfile, edited: ConnectionProfile
+    ) -> None:
+        # Mutate the existing profile object in place (rather than
+        # replacing it in workspace.connections) so tabs already open
+        # on this connection keep a valid reference and just pick up
+        # the new details next time they connect.
+        old_name = profile.name
+        edited.name = self.workspace.unique_connection_name(
+            edited.name, exclude=profile
+        )
+        for f in fields(profile):
+            setattr(profile, f.name, getattr(edited, f.name))
+        self.workspace.sync_renamed_connection_secrets(old_name, profile)
+        self._store.save(self.workspace)
+
+        for i in range(self._connection_names.get_n_items()):
+            if self._connection_names.get_string(i) == old_name:
+                self._connection_names.splice(i, 1, [profile.name])
+                break
+        if self._last_connection == old_name:
+            self._last_connection = profile.name
+        self._drop_connector(old_name)
+        # A fresh root row (rather than patching the old one in place)
+        # so a changed kind/host also resets the cached schema tree,
+        # not just the label.
+        self._sidebar.remove_profile(old_name)
+        self._sidebar.add_profile(profile)
+        self._sidebar.expand_profile(profile.name)
+
+    def _remove_connection(self, profile: ConnectionProfile) -> None:
+        dialog = Adw.AlertDialog(
+            heading=f"Remove “{profile.name}”?",
+            body="This removes the connection from this workspace. Tabs "
+            "already open on it are left as-is and will show an error "
+            "next time they run.",
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("remove", "Remove")
+        dialog.set_response_appearance(
+            "remove", Adw.ResponseAppearance.DESTRUCTIVE
+        )
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._remove_connection_response, profile)
+        dialog.present(self)
+
+    def _remove_connection_response(
+        self, _dialog, response: str, profile: ConnectionProfile
+    ) -> None:
+        if response != "remove":
+            return
+        self.workspace.remove_connection(profile.name)
+        self._store.save(self.workspace)
+        for i in range(self._connection_names.get_n_items()):
+            if self._connection_names.get_string(i) == profile.name:
+                self._connection_names.splice(i, 1, [])
+                break
+        self._drop_connector(profile.name)
+        self._sidebar.remove_profile(profile.name)
 
     def _focus_tab(self, key: tuple) -> bool:
         """Select the open tab with this tab_key, if any."""

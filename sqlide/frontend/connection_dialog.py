@@ -1,9 +1,13 @@
-"""New-connection dialog.
+"""New/edit connection dialog.
 
 An Adw.Dialog (attached to the main window, Esc to dismiss) with a
 kind dropdown (SQLite / MySQL / PostgreSQL / JDBC); the visible field
 group follows the kind. "Test connection" opens and closes a throwaway
-connector on a worker thread.
+connector on a worker thread. Passing an existing `profile` switches
+the dialog to edit mode: the title changes and every field is
+pre-filled from it, but `on_save` still just receives a freshly built
+ConnectionProfile — the caller decides how to apply it (see
+window.py's `_connection_edited`).
 """
 
 from __future__ import annotations
@@ -36,9 +40,10 @@ class ConnectionDialog(Adw.Dialog):
     def __init__(
         self,
         on_save: Callable[[ConnectionProfile], None],
+        profile: ConnectionProfile | None = None,
     ) -> None:
         super().__init__(
-            title="New Connection",
+            title="Edit Connection" if profile is not None else "New Connection",
             content_width=460,
             content_height=600,
         )
@@ -163,7 +168,35 @@ class ConnectionDialog(Adw.Dialog):
         view.set_content(page)
         self._toasts = Adw.ToastOverlay(child=view)
         self.set_child(self._toasts)
+        if profile is not None:
+            self._prefill(profile)
         self._on_kind_changed()
+
+    def _prefill(self, profile: ConnectionProfile) -> None:
+        self._name.set_text(profile.name)
+        self._kind.set_selected(KIND_IDS.index(profile.kind))
+        self._file.set_text(profile.file_path)
+        self._host.set_text(profile.host)
+        self._port.set_text(str(profile.port) if profile.port else "")
+        self._user.set_text(profile.user)
+        self._password.set_text(profile.password)
+        self._database.set_text(profile.database)
+        self._jdbc_url.set_text(profile.jdbc_url)
+        self._driver_class.set_text(profile.driver_class)
+        self._jar_path.set_text(profile.jar_path)
+        self._jdbc_user.set_text(profile.user)
+        self._jdbc_password.set_text(profile.password)
+        if profile.ssl_mode in SSL_MODE_IDS:
+            self._ssl_mode.set_selected(SSL_MODE_IDS.index(profile.ssl_mode))
+        self._ssl_ca.set_text(profile.ssl_ca)
+        self._ssl_cert.set_text(profile.ssl_cert)
+        self._ssl_key.set_text(profile.ssl_key)
+        self._ssh_enable.set_enable_expansion(profile.use_ssh)
+        self._ssh_host.set_text(profile.ssh_host)
+        self._ssh_port.set_text(str(profile.ssh_port) if profile.ssh_port else "")
+        self._ssh_user.set_text(profile.ssh_user)
+        self._ssh_password.set_text(profile.ssh_password)
+        self._ssh_key.set_text(profile.ssh_key_path)
 
     def _kind_id(self) -> str:
         return KIND_IDS[self._kind.get_selected()]

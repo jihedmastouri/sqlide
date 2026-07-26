@@ -22,8 +22,11 @@ Query Console / Table Definition; right-clicking a connection offers
 a new query console (new consoles otherwise come from the header-bar
 button), the connection's relation graph, an MCP Server tab
 preselecting that connection, a "New ▸" submenu of the adapter's
-creatable kinds, and Refresh (drops and reloads the subtree). Every
-droppable object row gets "Drop…". Context menus are built per popup
+creatable kinds, Refresh (drops and reloads the subtree), Edit… (the
+connection dialog pre-filled, applied in place so open tabs keep
+working) and Remove… (confirmed, drops the profile from the
+workspace). Every droppable object row gets "Drop…". Context menus
+are built per popup
 because their items depend on the connection's capabilities. Hovering
 a table/view shows its DDL in a tooltip (fetched lazily, cached on the
 node); hovering a connection shows a short summary.
@@ -143,6 +146,8 @@ class Sidebar(Gtk.ScrolledWindow):
         ],  # (profile, kind, name, owning table)
         on_new_object: Callable[[ConnectionProfile, str], None],
         on_mcp_server: Callable[[ConnectionProfile], None],
+        on_edit_connection: Callable[[ConnectionProfile], None],
+        on_remove_connection: Callable[[ConnectionProfile], None],
         show_error: Callable[[str], None],
     ) -> None:
         super().__init__(vexpand=True)
@@ -157,6 +162,8 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_drop_object = on_drop_object
         self._on_new_object = on_new_object
         self._on_mcp_server = on_mcp_server
+        self._on_edit_connection = on_edit_connection
+        self._on_remove_connection = on_remove_connection
         self._show_error = show_error
         # Currently bound status dot per connection name, so
         # set_connected() can restyle a visible row.
@@ -196,6 +203,8 @@ class Sidebar(Gtk.ScrolledWindow):
             ("drop-object", self._menu_drop),
             ("refresh", self._menu_refresh),
             ("mcp-server", self._menu_mcp_server),
+            ("edit-connection", self._menu_edit_connection),
+            ("remove-connection", self._menu_remove_connection),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", callback)
@@ -216,6 +225,17 @@ class Sidebar(Gtk.ScrolledWindow):
         self._roots.append(
             Node("connection", profile.name, detail=profile.kind, profile=profile)
         )
+
+    def remove_profile(self, name: str) -> None:
+        """Drop a connection's root row — after it's removed from the
+        workspace, or as the first half of an edit (re-added fresh via
+        add_profile so renamed/re-kinded connections get a clean
+        reload instead of a stale cached schema)."""
+        self._dots.pop(name, None)
+        for i in range(self._roots.get_n_items()):
+            if self._roots.get_item(i).label == name:
+                self._roots.remove(i)
+                return
 
     def set_connected(self, name: str, connected: bool) -> None:
         """Flip a connection row's status dot (main thread only; the
@@ -585,6 +605,8 @@ class Sidebar(Gtk.ScrolledWindow):
                     sub.append_item(item)
                 menu.append_submenu("New", sub)
             menu.append("Refresh", "schema.refresh")
+            menu.append("Edit…", "schema.edit-connection")
+            menu.append("Remove…", "schema.remove-connection")
             return menu
         if node.kind == "function" and node.profile is not None:
             menu = Gio.Menu()
@@ -682,6 +704,16 @@ class Sidebar(Gtk.ScrolledWindow):
         node = self._menu_node
         if node is not None and node.profile is not None:
             self._on_mcp_server(node.profile)
+
+    def _menu_edit_connection(self, *_args) -> None:
+        node = self._menu_node
+        if node is not None and node.kind == "connection" and node.profile:
+            self._on_edit_connection(node.profile)
+
+    def _menu_remove_connection(self, *_args) -> None:
+        node = self._menu_node
+        if node is not None and node.kind == "connection" and node.profile:
+            self._on_remove_connection(node.profile)
 
     def _query_tooltip(
         self, widget, _x, _y, _keyboard, tooltip: Gtk.Tooltip,

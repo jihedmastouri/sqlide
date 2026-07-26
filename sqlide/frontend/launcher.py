@@ -3,8 +3,9 @@
 The small window shown at startup (and from the sidebar's Workspaces
 button): pick an existing workspace or create a new one by name.
 Activating a workspace asks the application to open its main window
-and closes the launcher. The list is rebuilt every time the window is
-mapped so it stays in sync with workspaces created elsewhere.
+and closes the launcher; each row also has a rename button. The list
+is rebuilt every time the window is mapped so it stays in sync with
+workspaces created elsewhere.
 """
 
 from __future__ import annotations
@@ -92,9 +93,47 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
             subtitle=subtitle,
             activatable=True,
         )
+        rename = Gtk.Button(icon_name="document-edit-symbolic")
+        rename.set_tooltip_text("Rename workspace")
+        rename.add_css_class("flat")
+        rename.set_valign(Gtk.Align.CENTER)
+        rename.connect("clicked", lambda *_: self._rename_workspace(workspace))
+        row.add_suffix(rename)
         row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
         row.connect("activated", lambda *_: self._open(workspace))
         return row
+
+    def _rename_workspace(self, workspace: Workspace) -> None:
+        dialog = Adw.AlertDialog(
+            heading="Rename Workspace",
+            body="Connections and open tabs stay the same.",
+        )
+        entry = Gtk.Entry(
+            text=workspace.name,
+            placeholder_text="Workspace name",
+            activates_default=True,
+        )
+        dialog.set_extra_child(entry)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("rename", "Rename")
+        dialog.set_response_appearance(
+            "rename", Adw.ResponseAppearance.SUGGESTED
+        )
+        dialog.set_default_response("rename")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._rename_response, workspace, entry)
+        dialog.present(self)
+
+    def _rename_response(
+        self, _dialog, response: str, workspace: Workspace, entry: Gtk.Entry
+    ) -> None:
+        if response != "rename":
+            return
+        name = entry.get_text().strip()
+        if name:
+            workspace.name = name
+            self.get_application().workspace_store.save(workspace)
+        self._refresh()
 
     def _new_workspace(self) -> None:
         dialog = Adw.AlertDialog(

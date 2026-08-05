@@ -18,7 +18,7 @@ mysql SET SESSION TRANSACTION READ ONLY): a query is admitted only if
 
 from __future__ import annotations
 
-from sqlide.backend.sql_split import split_statements
+from sqlide.backend.sql_split import split_statements, tokens as split_tokens
 
 _ALLOWED_FIRST: dict[str, tuple[str, ...]] = {
     "sqlite": ("SELECT", "WITH", "EXPLAIN"),
@@ -65,47 +65,8 @@ def check_read_only(sql: str, dialect: str) -> str:
 
 
 def _words(sql: str) -> list[str]:
-    """Uppercased bare words of one statement, skipping strings,
-    quoted identifiers, dollar-quoted bodies and comments (the same
-    contexts the statement splitter knows)."""
-    words: list[str] = []
-    i = 0
-    n = len(sql)
-    while i < n:
-        ch = sql[i]
-        two = sql[i : i + 2]
-        if two == "--":
-            i = sql.find("\n", i)
-            i = n if i == -1 else i + 1
-        elif two == "/*":
-            i = sql.find("*/", i + 2)
-            i = n if i == -1 else i + 2
-        elif ch in ("'", '"', "`"):
-            i += 1
-            while i < n and sql[i] != ch:
-                i += 1
-            i += 1
-        elif ch == "$" and (delim := _dollar(sql, i)):
-            end = sql.find(delim, i + len(delim))
-            i = n if end == -1 else end + len(delim)
-        elif ch.isalpha() or ch == "_":
-            j = i
-            while j < n and (sql[j].isalnum() or sql[j] == "_"):
-                j += 1
-            words.append(sql[i:j].upper())
-            i = j
-        else:
-            i += 1
-    return words
-
-
-def _dollar(sql: str, i: int) -> str:
-    j = i + 1
-    while j < len(sql) and (sql[j].isalnum() or sql[j] == "_"):
-        j += 1
-    if j >= len(sql) or sql[j] != "$":
-        return ""
-    tag = sql[i + 1 : j]
-    if tag and tag[0].isdigit():
-        return ""
-    return sql[i : j + 1]
+    """Uppercased bare words of one statement. Strings, quoted
+    identifiers, dollar-quoted bodies and comments are skipped by the
+    shared tokenizer — a quoted identifier must never be read as the
+    keyword it spells."""
+    return [t.word for t in split_tokens(sql) if not t.quoted]

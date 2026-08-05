@@ -18,6 +18,10 @@ uncounted openers and are consumed as pairs.
 
 Offsets are kept so the console can map the editor's cursor position
 to the statement under it.
+
+`tokens()` shares the same context rules for the callers that need to
+look *inside* one statement — the MCP read-only guard and the
+destructive-statement classifier in sql_risk.py.
 """
 
 from __future__ import annotations
@@ -110,6 +114,64 @@ def split_statements(sql: str) -> list[Statement]:
             i += 1
     close_segment(n)
     return statements
+
+
+@dataclass(frozen=True)
+class Token:
+    """One identifier-ish token of a statement. `word` is the
+    uppercased spelling of a bare word (used for keyword matching) and
+    is empty for quoted identifiers, whose text is kept verbatim in
+    `text` — `DELETE FROM "select"` names a table, not a keyword."""
+
+    text: str
+    word: str
+    quoted: bool
+
+
+def tokens(sql: str) -> list[Token]:
+    """The bare words and quoted identifiers of `sql`, in order.
+
+    String literals, comments and dollar-quoted bodies are skipped, so
+    a keyword inside them can never be mistaken for the real thing.
+    Numbers and punctuation are dropped: every caller here matches
+    keywords and picks out object names, and neither needs them.
+    """
+    found: list[Token] = []
+    i = 0
+    n = len(sql)
+    while i < n:
+        ch = sql[i]
+        two = sql[i : i + 2]
+        if two == "--":
+            i = sql.find("\n", i)
+            i = n if i == -1 else i + 1
+        elif two == "/*":
+            i = sql.find("*/", i + 2)
+            i = n if i == -1 else i + 2
+        elif ch == "'":  # string literal
+            i += 1
+            while i < n and sql[i] != ch:
+                i += 1
+            i += 1
+        elif ch in ('"', "`"):  # quoted identifier
+            j = i + 1
+            while j < n and sql[j] != ch:
+                j += 1
+            found.append(Token(text=sql[i + 1 : j], word="", quoted=True))
+            i = j + 1
+        elif ch == "$" and (delim := _dollar_delimiter(sql, i)):
+            end = sql.find(delim, i + len(delim))
+            i = n if end == -1 else end + len(delim)
+        elif ch.isalpha() or ch == "_":
+            j = i
+            while j < n and (sql[j].isalnum() or sql[j] == "_"):
+                j += 1
+            text = sql[i:j]
+            found.append(Token(text=text, word=text.upper(), quoted=False))
+            i = j
+        else:
+            i += 1
+    return found
 
 
 def _dollar_delimiter(sql: str, i: int) -> str:

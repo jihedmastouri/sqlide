@@ -14,6 +14,7 @@ from gi.repository import Adw, GObject, Gtk
 
 from sqlide import APP_ID, __version__
 from sqlide.backend.settings import THEMES, Settings, store
+from sqlide.backend.sql_risk import CONFIRM_MODES
 from sqlide.frontend.backup_dialog import BackupWindow
 from sqlide.lsp import servers as lsp_servers
 
@@ -25,6 +26,12 @@ _LSP_KINDS = (
     ("jdbc", "JDBC"),
 )
 _THEME_LABELS = ("Follow System", "Light", "Dark")
+# Parallel to sql_risk.CONFIRM_MODES.
+_CONFIRM_LABELS = (
+    "Always",
+    "Outside Development",
+    "Never",
+)
 
 
 class PreferencesDialog(Adw.PreferencesDialog):
@@ -76,6 +83,28 @@ class PreferencesDialog(Adw.PreferencesDialog):
         group.add(vim_row)
 
         page.add(group)
+
+        safety = Adw.PreferencesGroup(
+            title="Safety",
+            description="How much friction a DROP, TRUNCATE, DELETE or "
+            "UPDATE gets before it runs. Production connections always "
+            "ask for the object's name on the destructive ones.",
+        )
+        confirm_row = Adw.ComboRow(
+            title="Confirm Destructive Statements",
+            model=Gtk.StringList.new(list(_CONFIRM_LABELS)),
+        )
+        confirm_row.set_selected(
+            CONFIRM_MODES.index(settings.confirm_destructive)
+        )
+        confirm_row.connect(
+            "notify::selected",
+            lambda row, *_: store.update(
+                confirm_destructive=CONFIRM_MODES[row.get_selected()]
+            ),
+        )
+        safety.add(confirm_row)
+        page.add(safety)
 
         backup_group = Adw.PreferencesGroup(title="Backup")
         backup_row = Adw.ActionRow(

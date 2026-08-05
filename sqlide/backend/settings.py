@@ -11,6 +11,9 @@ Settings:
 - theme: "system" | "light" | "dark" (Adw color scheme override)
 - editor_font_size: SQL editor font size in points
 - vim_mode: modal Vim editing in SQL editors (GtkSourceView only)
+- confirm_destructive: when the destructive-action ladder engages —
+  "always", "non-dev" (the default: development connections run
+  without a prompt) or "never". See backend/sql_risk.py.
 - lsp_enabled: master switch for completion language servers
 - lsp_defaults: connection kind -> what an "auto" console LSP choice
   resolves to ("auto" keeps the built-in resolution in
@@ -30,6 +33,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from sqlide.backend.sql_risk import CONFIRM_MODES, DEFAULT_CONFIRM_MODE
+
 THEMES = ("system", "light", "dark")
 DEFAULT_FONT_SIZE = 11
 
@@ -44,6 +49,7 @@ class Settings:
     theme: str = "system"
     editor_font_size: int = DEFAULT_FONT_SIZE
     vim_mode: bool = False
+    confirm_destructive: str = DEFAULT_CONFIRM_MODE
     lsp_enabled: bool = True
     lsp_defaults: dict[str, str] = field(default_factory=dict)
     mcp_defaults: dict[str, str] = field(default_factory=dict)
@@ -57,6 +63,11 @@ class Settings:
                 data.get("editor_font_size", DEFAULT_FONT_SIZE)
             ),
             vim_mode=bool(data.get("vim_mode", False)),
+            confirm_destructive=(
+                mode
+                if (mode := data.get("confirm_destructive")) in CONFIRM_MODES
+                else DEFAULT_CONFIRM_MODE
+            ),
             lsp_enabled=bool(data.get("lsp_enabled", True)),
             lsp_defaults={
                 str(k): str(v)

@@ -27,7 +27,7 @@ through what it builds. Ship it first.
       see the design notes for the table.
 - [x] Persistent status bar (identity · context · jobs · status zones), replacing
       the scattered per-tab state widgets. Never shows a stale connection.
-- [ ] Feedback rules: toast / inline / banner / dialog, one per situation
+- [x] Feedback rules: toast / inline / banner / dialog, one per situation
       (see the design notes). Move today's ad-hoc labels onto the right surface.
 - [x] Destructive-action ladder: inform → confirm → type-to-confirm, keyed to
       environment. Cancel focused by default everywhere.

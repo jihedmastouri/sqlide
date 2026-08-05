@@ -31,11 +31,12 @@ statement.
 
 The bottom bar (status line) also carries the transaction controls,
 which run the bare statements over the console's connection: Begin
-alone while no transaction is open; Commit/Rollback plus a warning
-badge while one is (the window additionally guards closing such a
-console). The toolbar keeps open/save buttons that load any text
-file into the editor and write the editor back to a file (the first
-save asks where; later saves reuse it).
+alone while no transaction is open; Commit/Rollback while one is, plus
+a banner across the top of the tab for as long as it stays open (the
+window additionally guards closing such a console). The toolbar keeps
+open/save buttons that load any text file into the editor and write
+the editor back to a file (the first save asks where; later saves
+reuse it).
 
 The results area below the editor stays hidden until a run produces
 output; its thin header has a minimize/expand toggle that collapses
@@ -60,7 +61,7 @@ from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import Connector, ResultSet
 from sqlide.backend.sql_split import split_statements, statement_at
 from sqlide.backend.workspaces import TabState
-from sqlide.frontend import confirm
+from sqlide.frontend import confirm, feedback
 from sqlide.frontend.data_grid import ResultGrid, _format_json
 from sqlide.frontend.lsp_completion import LspCompletionProvider
 from sqlide.frontend.results_panel import ResultsPanel
@@ -101,7 +102,7 @@ class QueryConsole(Gtk.Box):
             placeholders if placeholders is not None else {}
         )
         # Non-blocking peek (window-provided): is there an open
-        # transaction on the named connection? Drives the badge.
+        # transaction on the named connection? Drives the banner.
         self._transaction_active = transaction_active
         # Public: the window rebinds it after the tab page exists so
         # history entries carry the panel (tab) name.
@@ -163,8 +164,7 @@ class QueryConsole(Gtk.Box):
 
         # Transaction statements over this console's connection. The
         # buttons live in the bottom bar: Begin alone while no
-        # transaction is open, Commit/Rollback (and the badge) while
-        # one is.
+        # transaction is open, Commit/Rollback while one is.
         self._tx_buttons: dict[str, Gtk.Button] = {}
         for label, tooltip in (
             ("Begin", "Start a transaction (BEGIN)"),
@@ -179,13 +179,12 @@ class QueryConsole(Gtk.Box):
             )
             self._tx_buttons[label] = button
 
-        # Visible while this console's connection has an open
-        # transaction (refreshed after every run and selection change).
-        self._tx_badge = Gtk.Label(label="⏺ transaction open", visible=False)
-        self._tx_badge.add_css_class("warning")
-        self._tx_badge.set_tooltip_text(
-            "An explicit transaction is open on this connection — "
-            "Commit or Rollback to end it"
+        # An open transaction is a condition that stays true until the
+        # user ends it, so it gets a banner at the top of the tab
+        # (feedback.py's rules) rather than a label in the corner.
+        self._tx_banner = feedback.condition_banner(
+            button_label="Commit",
+            on_click=lambda: self._run_statements(["COMMIT"]),
         )
 
         self._file_path: Path | None = None  # target of the Save button
@@ -210,6 +209,7 @@ class QueryConsole(Gtk.Box):
         toolbar.append(open_button)
         toolbar.append(save_button)
         toolbar.append(self._settings_button())
+        self.append(self._tx_banner)
         self.append(toolbar)
 
         if connection:
@@ -273,7 +273,6 @@ class QueryConsole(Gtk.Box):
         )
         self._status.add_css_class("dim-label")
         bottom.append(self._status)
-        bottom.append(self._tx_badge)
         for button in self._tx_buttons.values():
             bottom.append(button)
         self.append(bottom)
@@ -497,9 +496,15 @@ class QueryConsole(Gtk.Box):
 
     def _set_transaction_open(self, open_: bool) -> None:
         """Flip the bottom bar's transaction controls: Begin alone
-        while nothing is open, Commit/Rollback and the badge while a
-        transaction is."""
-        self._tx_badge.set_visible(open_)
+        while nothing is open, Commit/Rollback while a transaction is —
+        and raise or clear the banner that says so."""
+        feedback.set_condition(
+            self._tx_banner,
+            "Transaction open — your changes are only visible here "
+            "until you commit"
+            if open_
+            else "",
+        )
         self._tx_buttons["Begin"].set_visible(not open_)
         self._tx_buttons["Commit"].set_visible(open_)
         self._tx_buttons["Rollback"].set_visible(open_)
@@ -758,10 +763,12 @@ class QueryConsole(Gtk.Box):
                 )
                 counts.append(f"{len(result)} row(s)")
             elif isinstance(result, Exception):
-                page = _message_page(str(result), error=True)
+                # Inline, verbatim, with the statement and a Copy
+                # button: a database error is never a toast.
+                page = feedback.error_page(str(result), sql)
                 error = result
             else:
-                page = _message_page(f"{result} row(s) affected", error=False)
+                page = feedback.message_page(f"{result} row(s) affected")
                 counts.append(f"{result} row(s) affected")
             page.set_tooltip_text(sql)
             self._append_result_page(page, title)
@@ -969,15 +976,3 @@ class PlaceholderDialog(Adw.Dialog):
         self._on_run(dict(self._values))
 
 
-def _message_page(text: str, error: bool) -> Gtk.Widget:
-    label = Gtk.Label(
-        label=text,
-        xalign=0,
-        margin_top=8,
-        margin_start=8,
-        selectable=True,
-        wrap=True,
-        valign=Gtk.Align.START,
-    )
-    label.add_css_class("error" if error else "dim-label")
-    return label

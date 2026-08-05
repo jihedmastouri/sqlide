@@ -56,7 +56,7 @@ from sqlide.backend.db.base import (
     SortSpec,
 )
 from sqlide.backend.workspaces import TabState
-from sqlide.frontend import confirm
+from sqlide.frontend import confirm, feedback
 from sqlide.frontend.util import run_async
 
 PAGE_SIZE = 500
@@ -1331,6 +1331,11 @@ class TableTab(Gtk.Box):
         self.read_only = False
         self._row_range = "loading…"
 
+        # A table without a primary key stays read-only for as long as
+        # it is open — a condition, so a banner (see feedback.py).
+        self._banner = feedback.condition_banner()
+        self.append(self._banner)
+
         # Filter and sort are separate panels behind separate toggles;
         # both can be revealed at the same time.
         self._filter_revealer = Gtk.Revealer(child=self._build_filter_panel())
@@ -1519,6 +1524,13 @@ class TableTab(Gtk.Box):
             # The read-only state and the row range belong to the
             # window's status bar; on_ran is what tells it to re-read.
             self.read_only = not editable
+            feedback.set_condition(
+                self._banner,
+                ""
+                if editable
+                else f"{self.table} has no primary key, so its rows "
+                "cannot be edited here",
+            )
             self._row_range = page
             if self.on_ran is not None:
                 self.on_ran(history_sql, True)

@@ -25,7 +25,7 @@ through what it builds. Ship it first.
 - [x] Environment classes change behaviour, not just appearance: confirmation
       friction, edit-lock re-arming, privacy default, read-only suggestion —
       see the design notes for the table.
-- [ ] Persistent status bar (identity · context · jobs · status zones), replacing
+- [x] Persistent status bar (identity · context · jobs · status zones), replacing
       the scattered per-tab state widgets. Never shows a stale connection.
 - [ ] Feedback rules: toast / inline / banner / dialog, one per situation
       (see the design notes). Move today's ad-hoc labels onto the right surface.

@@ -103,6 +103,7 @@ COLOR_SURFACES: dict[str, str] = {
     "launcher-dot": "the workspace name on the same row",
     "sidebar-bar": "the connection name on (or above) the row",
     "tab-icon": "the connection name in the tab title",
+    "status-swatch": "the connection and database names beside it",
 }
 
 

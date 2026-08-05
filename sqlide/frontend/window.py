@@ -11,10 +11,14 @@ saved back to the workspace file whenever they change and when the
 window closes (which also captures query-console SQL and the selected
 tab). When no tabs are open the content area shows a status message.
 
-Layout: a full-width header bar spans the whole window; below it the
-left OverlaySplitView (connections sidebar) wraps the content area,
-and inside that a right OverlaySplitView (the side panel, hidden by
-default) wraps the tab area.
+Layout: a full-width header bar spans the whole window, with the
+workspace's identity stripe under it; below that the left
+OverlaySplitView (connections sidebar) wraps the content area, and
+inside that a right OverlaySplitView (the side panel, hidden by
+default) wraps the tab area. A persistent status bar closes the window
+at the bottom: the active tab's connection, its state, running jobs and
+transient messages, refreshed on every tab switch, run and connection
+change so it can never show a connection that is no longer open.
 The tab area holds one or more panes (each an Adw.TabBar over an
 Adw.TabView) side by side in nested Gtk.Paned splitters: the Split
 button moves the current tab into a new pane (two panes at most,
@@ -30,6 +34,7 @@ loads history entries back into a console when activated.
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import asdict, fields
 from datetime import datetime
 from typing import Callable
@@ -55,6 +60,7 @@ from sqlide.frontend.query_console import QueryConsole
 from sqlide.frontend.relation_graph import RelationGraphTab
 from sqlide.frontend.side_panel import SidePanel
 from sqlide.frontend.sidebar import Sidebar
+from sqlide.frontend.status_bar import StatusBar
 from sqlide.frontend.table_designer import TableDesignerTab
 
 
@@ -294,6 +300,15 @@ class MainWindow(Adw.ApplicationWindow):
         self._refresh_workspace_identity()
         top_view.set_content(self._split)
 
+        # Persistent status bar: where the active tab's connection,
+        # state and messages live, instead of a widget per tab.
+        self._status_bar = StatusBar(on_connect=self._connect_now)
+        top_view.add_bottom_bar(self._status_bar)
+        # An open transaction is timed from when the window first sees
+        # it, and the elapsed text is refreshed on a slow tick.
+        self._transaction_since: dict[str, float] = {}
+        GLib.timeout_add_seconds(20, self._status_tick)
+
         # Tab overview: zoomed-out grid of tab thumbnails. It must wrap
         # the widget tree that contains the TabView so open tabs stay
         # visible (scaled down) while the overview is shown.
@@ -344,6 +359,79 @@ class MainWindow(Adw.ApplicationWindow):
             f"Workspace “{self.workspace.name}” · colour {color}"
         )
         self.set_title(f"sqlide — {self.workspace.name}")
+
+    # Status bar
+
+    def _status_tick(self) -> bool:
+        """Keep the transaction timer honest while nothing else
+        happens. Stops with the window."""
+        if self.get_application() is None:
+            return GLib.SOURCE_REMOVE
+        self.refresh_status_bar()
+        return GLib.SOURCE_CONTINUE
+
+    def refresh_status_bar(self) -> None:
+        """Re-read the active tab's state into the status bar. Called
+        on every tab switch, run, connection change and slow tick, so
+        the identity zone can never go stale."""
+        page = self._active_pane.view.get_selected_page()
+        child = page.get_child() if page is not None else None
+        name = _page_connection(child)
+        profile = self.workspace.find_connection(name)
+        connected = bool(name) and self.is_connected(name)
+        self._status_bar.set_identity(
+            name,
+            database=self._tab_database(child, profile),
+            color=profile.color if profile is not None else identity.NONE,
+            environment=(
+                profile.environment if profile is not None else identity.UNSET
+            ),
+            connected=connected,
+            transaction=self._transaction_text(name) if connected else "",
+            read_only=bool(getattr(child, "read_only", False)),
+        )
+        context = getattr(child, "status_context", None)
+        self._status_bar.set_context(context() if context is not None else "")
+
+    @staticmethod
+    def _tab_database(child, profile: ConnectionProfile | None) -> str:
+        """The database the tab is really on: a console can switch it
+        per tab, everything else follows the profile."""
+        selected = getattr(child, "selected_database", None)
+        if selected is not None and (database := selected()):
+            return database
+        return profile.database if profile is not None else ""
+
+    def _transaction_text(self, name: str) -> str:
+        if not self.transaction_active(name):
+            self._transaction_since.pop(name, None)
+            return ""
+        started = self._transaction_since.setdefault(name, time.monotonic())
+        minutes = int((time.monotonic() - started) // 60)
+        return (
+            "⏺ transaction open"
+            if minutes < 1
+            else f"⏺ transaction open {minutes} min"
+        )
+
+    def _connect_now(self, name: str) -> None:
+        """The status bar's Connect button: open the connection now
+        rather than on the next query."""
+        profile = self.workspace.find_connection(name)
+        if profile is None:
+            return
+        self._status_bar.set_job(f"Connecting to {name}…")
+        run_async(
+            lambda: self.ensure_connector(profile),
+            lambda _c: (
+                self._status_bar.set_job(""),
+                self.refresh_status_bar(),
+            ),
+            lambda exc: (
+                self._status_bar.set_job(""),
+                self.show_error(str(exc)),
+            ),
+        )
 
     def _on_palette_changed(self) -> None:
         """The colour scheme flipped: CSS-driven surfaces restyle
@@ -475,9 +563,11 @@ class MainWindow(Adw.ApplicationWindow):
     def _update_active_panel(self) -> None:
         """Tell the side panel which tab is current: the This-panel
         history scope, which pages to offer (context), the Info
-        content, and the saved-filter target."""
+        content, and the saved-filter target. The status bar follows
+        the same switch."""
         page = self._active_pane.view.get_selected_page()
         child = page.get_child() if page is not None else None
+        self.refresh_status_bar()
         self._side_panel.set_active_panel(
             page.get_title() if page is not None else ""
         )
@@ -743,6 +833,7 @@ class MainWindow(Adw.ApplicationWindow):
                 GLib.idle_add(
                     self._sidebar.set_connected, profile.name, True
                 )
+                GLib.idle_add(self.refresh_status_bar)
             return connector
 
     def is_connected(self, name: str) -> bool:
@@ -926,6 +1017,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def show_error(self, message: str) -> None:
         self._toasts.add_toast(Adw.Toast(title=message))
+        self._status_bar.set_status(message, error=True)
 
     def show_aggregate(self, lines: list[str]) -> None:
         """Route a grid's Aggregate summary into the side panel."""
@@ -952,6 +1044,11 @@ class MainWindow(Adw.ApplicationWindow):
             connector = self._connectors.pop(name, None)
         if connector is not None:
             run_async(connector.close, lambda _r: None, lambda _e: None)
+        # The connection is gone: the sidebar dot and the status bar
+        # must say so rather than keep showing it as open.
+        self._sidebar.set_connected(name, False)
+        self._transaction_since.pop(name, None)
+        self.refresh_status_bar()
 
     def _edit_connection(self, profile: ConnectionProfile) -> None:
         ConnectionDialog(
@@ -1237,6 +1334,9 @@ class MainWindow(Adw.ApplicationWindow):
         console.on_ran = lambda sql, conn, ok: self._query_ran(
             page.get_title(), sql, conn, ok
         )
+        console.on_busy = lambda busy: self._status_bar.set_job(
+            "Running…" if busy else ""
+        )
 
         def set_title(name: str) -> None:
             page.set_title(f"query · {name}" if name else "query")
@@ -1313,6 +1413,7 @@ class MainWindow(Adw.ApplicationWindow):
         self, panel: str, sql: str, connection: str, ok: bool
     ) -> None:
         self._last_connection = connection
+        self.refresh_status_bar()  # row counts, transaction, connected state
         self.workspace.add_history(HistoryEntry(
             sql=sql,
             connection=connection,

@@ -1288,6 +1288,9 @@ class TableTab(Gtk.Box):
         # Guards the re-entrant unlock on production connections: the
         # confirmation flips the toggle back on itself.
         self._unlock_confirmed = False
+        # Read by the window's status bar after every load.
+        self.read_only = False
+        self._row_range = "loading…"
 
         # Filter and sort are separate panels behind separate toggles;
         # both can be revealed at the same time.
@@ -1335,14 +1338,11 @@ class TableTab(Gtk.Box):
         self._save.add_css_class("suggested-action")
         self._save.set_visible(False)
         self._save.connect("clicked", self._on_save_clicked)
-        self._mode_label = Gtk.Label()
-        self._mode_label.add_css_class("dim-label")
         bar.pack_end(refresh)
         bar.pack_end(self._filter_toggle)
         bar.pack_end(self._sort_toggle)
         bar.pack_end(self._edit_toggle)
         bar.pack_end(self._save)
-        bar.pack_end(self._mode_label)
         self.append(bar)
 
         self._prev.set_sensitive(False)
@@ -1353,6 +1353,22 @@ class TableTab(Gtk.Box):
         return TabState(
             kind="table", connection=self.profile.name, table=self.table
         )
+
+    def status_context(self) -> str:
+        """This tab's line in the window's status bar: what is loaded
+        and how much of it."""
+        parts = [f"{self.table}: {self._row_range}"]
+        if self._filters:
+            parts.append(f"{len(self._filters)} filter(s)")
+        if self._order_by:
+            parts.append(
+                "sorted by "
+                + ", ".join(spec.column for spec in self._order_by)
+            )
+        pending = sum(len(changes) for _pk, changes in self._pending.values())
+        if pending:
+            parts.append(f"{pending} unsaved edit(s)")
+        return " · ".join(parts)
 
     # Saved filters (listed in the side panel, stored per workspace)
 
@@ -1439,9 +1455,10 @@ class TableTab(Gtk.Box):
             self._page_label.set_text(page)
             self._prev.set_sensitive(offset > 0)
             self._next.set_sensitive(count == PAGE_SIZE)
-            self._mode_label.set_text(
-                "" if editable else "read-only (no primary key)"
-            )
+            # The read-only state and the row range belong to the
+            # window's status bar; on_ran is what tells it to re-read.
+            self.read_only = not editable
+            self._row_range = page
             if self.on_ran is not None:
                 self.on_ran(history_sql, True)
 

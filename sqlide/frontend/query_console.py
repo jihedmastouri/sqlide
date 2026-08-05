@@ -109,6 +109,9 @@ class QueryConsole(Gtk.Box):
         self._on_aggregate = on_aggregate
         # Set by the window after the tab page exists (tab title).
         self.on_connection_changed: Callable[[str], None] | None = None
+        # Set by the window: True while a run is in flight, so the
+        # status bar's job zone can show it.
+        self.on_busy: Callable[[bool], None] | None = None
 
         toolbar = Gtk.Box(
             orientation=Gtk.Orientation.HORIZONTAL,
@@ -328,9 +331,16 @@ class QueryConsole(Gtk.Box):
             sql=self._editor.get_text(),
         )
 
-    def _selected_database(self) -> str:
+    def selected_database(self) -> str:
+        """The database this console runs against — a server connection
+        can hold several, and the window's status bar shows which."""
         item = self._db_dropdown.get_selected_item()
         return item.get_string() if item is not None else ""
+
+    def status_context(self) -> str:
+        """The console's line in the window's status bar: the last
+        run's outcome."""
+        return self._status.get_text()
 
     def _active_profile(self) -> ConnectionProfile | None:
         """The selected connection, with the database dropdown's choice
@@ -339,7 +349,7 @@ class QueryConsole(Gtk.Box):
         profile = self._find_connection(self.selected_connection())
         if profile is None:
             return None
-        database = self._selected_database()
+        database = self.selected_database()
         if database and database != profile.database:
             profile = replace(
                 profile,
@@ -518,7 +528,7 @@ class QueryConsole(Gtk.Box):
         def done(databases):
             if seq != self._db_seq or not databases:
                 return
-            selected = self._selected_database() or profile.database
+            selected = self.selected_database() or profile.database
             self._set_databases(databases, select=selected)
 
         run_async(work, done, lambda _exc: None)
@@ -621,6 +631,7 @@ class QueryConsole(Gtk.Box):
         self._run_all_button.set_sensitive(False)
         self._explain_button.set_sensitive(False)
         self._set_status("Running…", error=False)
+        self._set_busy(True)
 
         def work():
             connector = self._ensure(profile)
@@ -640,6 +651,7 @@ class QueryConsole(Gtk.Box):
 
         def done(work_result):
             outcomes, in_transaction = work_result
+            self._set_busy(False)
             self._run_button.set_sensitive(True)
             self._run_all_button.set_sensitive(True)
             self._explain_button.set_sensitive(True)
@@ -653,6 +665,7 @@ class QueryConsole(Gtk.Box):
 
         def failed(exc):
             # Connecting failed before any statement ran.
+            self._set_busy(False)
             self._run_button.set_sensitive(True)
             self._run_all_button.set_sensitive(True)
             self._explain_button.set_sensitive(True)
@@ -766,6 +779,10 @@ class QueryConsole(Gtk.Box):
                     f"{len(outcomes)} statements · " + " · ".join(counts),
                     error=False,
                 )
+
+    def _set_busy(self, busy: bool) -> None:
+        if self.on_busy is not None:
+            self.on_busy(busy)
 
     def _set_status(self, text: str, error: bool) -> None:
         self._status.set_text(text)

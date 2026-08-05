@@ -128,6 +128,13 @@ listview.schema-tree .conn-dot-active {
   background-color: @success_bg_color;
 }
 
+/* Persistent status bar (frontend/status_bar.py): a quiet strip, so a
+   glance at it is optional and reading it is easy. */
+box.status-bar {
+  border-top: 1px solid alpha(currentColor, 0.12);
+  min-height: 26px;
+}
+
 /* Identity colours (frontend/identity.py). The colour itself comes
    from the generated palette provider — one .identity-<name> class per
    palette name, reloaded when the theme flips; these rules only give

@@ -15,7 +15,7 @@ through what it builds. Ship it first.
       `Gtk.CssProvider` at runtime and regenerated when the colour scheme
       changes. A test asserts 3:1 contrast against the window background in
       light, dark and high-contrast themes.
-- [ ] `color` on `Workspace`; `color` and `environment` on `ConnectionProfile`.
+- [x] `color` on `Workspace`; `color` and `environment` on `ConnectionProfile`.
       Unknown values load as `none`/`unset` rather than failing.
 - [ ] Colour pickers: create/edit workspace dialog, and an "Identity" group at
       the top of the connection dialog. Environment is *suggested* when the host

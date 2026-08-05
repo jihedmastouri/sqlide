@@ -1,7 +1,9 @@
 """Connection profiles.
 
-A profile describes how to reach one database. Profiles belong to a
-workspace and persist inside its file (see backend/workspaces.py).
+A profile describes how to reach one database, and how much a mistake
+against it costs (identity colour + environment class, see
+backend/identity.py). Profiles belong to a workspace and persist
+inside its file (see backend/workspaces.py).
 password/ssh_password are written to the system keyring when one is
 available (backend/secrets.py) and blanked out of the JSON; otherwise
 they fall back to plain text in the file, as in earlier versions.
@@ -11,11 +13,18 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
+from sqlide.backend import identity
+
 
 @dataclass
 class ConnectionProfile:
     name: str
     kind: str  # "sqlite" | "mysql" | "postgres" | "jdbc"
+    # Identity (backend/identity.py): the colour this connection wears
+    # in the sidebar, its tabs and the status bar, and the environment
+    # class that decides how much friction destructive actions carry.
+    color: str = identity.NONE
+    environment: str = identity.UNSET
     file_path: str = ""  # sqlite only
     host: str = "localhost"
     port: int = 0  # 0 -> adapter default (3306 / 5432)
@@ -39,6 +48,13 @@ class ConnectionProfile:
     ssh_user: str = ""
     ssh_password: str = ""
     ssh_key_path: str = ""
+
+    def __post_init__(self) -> None:
+        # A file written by a newer version (or edited by hand) must
+        # still open: an unknown colour or environment degrades to the
+        # neutral default instead of failing to load.
+        self.color = identity.normalize_color(self.color)
+        self.environment = identity.normalize_environment(self.environment)
 
     def ssl_params(self) -> dict | None:
         """SSL settings for the adapter, or None when untouched."""

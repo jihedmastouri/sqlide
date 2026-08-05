@@ -18,7 +18,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from sqlide.backend import secrets
+from sqlide.backend import identity, secrets
 from sqlide.backend.connections import ConnectionProfile
 
 
@@ -55,6 +55,9 @@ class HistoryEntry:
 class Workspace:
     name: str
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    # Identity colour (backend/identity.py): the window stripe and the
+    # launcher dot. "none" until the user picks one.
+    color: str = identity.NONE
     connections: list[ConnectionProfile] = field(default_factory=list)
     tabs: list[TabState] = field(default_factory=list)
     selected_tab: int = -1
@@ -115,6 +118,7 @@ class Workspace:
         return {
             "id": self.id,
             "name": self.name,
+            "color": self.color,
             "connections": [secrets.redact(asdict(p)) for p in self.connections],
             "tabs": [asdict(t) for t in self.tabs],
             "selected_tab": self.selected_tab,
@@ -134,6 +138,7 @@ class Workspace:
         return cls(
             id=workspace_id,
             name=data["name"],
+            color=identity.normalize_color(data.get("color")),
             connections=connections,
             tabs=[TabState(**t) for t in data.get("tabs", [])],
             selected_tab=data.get("selected_tab", -1),
@@ -167,8 +172,8 @@ class WorkspaceStore:
         path = self.directory / f"{workspace.id}.json"
         path.write_text(json.dumps(workspace.to_dict(), indent=2) + "\n")
 
-    def create(self, name: str) -> Workspace:
-        workspace = Workspace(name=name)
+    def create(self, name: str, color: str = identity.NONE) -> Workspace:
+        workspace = Workspace(name=name, color=identity.normalize_color(color))
         self.workspaces.append(workspace)
         self.save(workspace)
         return workspace

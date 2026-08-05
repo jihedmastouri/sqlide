@@ -53,3 +53,34 @@ def test_unique_connection_name_no_collision():
     ws = Workspace(name="w")
     ws.add_connection(_profile("a"))
     assert ws.unique_connection_name("new") == "new"
+
+
+def test_identity_round_trips_through_the_workspace_file():
+    ws = Workspace(name="w", color="blue")
+    profile = _profile("a")
+    profile.color = "red"
+    profile.environment = "production"
+    ws.add_connection(profile)
+    loaded = Workspace.from_dict(ws.to_dict())
+    assert loaded.color == "blue"
+    assert loaded.connections[0].color == "red"
+    assert loaded.connections[0].environment == "production"
+
+
+def test_unknown_identity_values_load_as_defaults():
+    """A file written by a newer version, or edited by hand, must open."""
+    data = Workspace(name="w").to_dict()
+    data["color"] = "chartreuse"
+    data["connections"] = [
+        {"name": "a", "kind": "sqlite", "color": "beige", "environment": "qa"}
+    ]
+    loaded = Workspace.from_dict(data)
+    assert loaded.color == "none"
+    assert loaded.connections[0].color == "none"
+    assert loaded.connections[0].environment == "unset"
+
+
+def test_workspaces_without_identity_keys_still_load():
+    data = Workspace(name="w").to_dict()
+    del data["color"]
+    assert Workspace.from_dict(data).color == "none"

@@ -31,7 +31,7 @@ through what it builds. Ship it first.
       (see the design notes). Move today's ad-hoc labels onto the right surface.
 - [x] Destructive-action ladder: inform → confirm → type-to-confirm, keyed to
       environment. Cancel focused by default everywhere.
-- [ ] Empty states for every empty view; empty-result and empty-filter say
+- [x] Empty states for every empty view; empty-result and empty-filter say
       different things.
 - [ ] Shortcuts window; accessible labels on every icon-only button; verify at
       200% text scale.

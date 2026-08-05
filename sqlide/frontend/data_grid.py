@@ -138,6 +138,15 @@ class ResultGrid(Gtk.ScrolledWindow):
         # Currently bound cell widgets, for restyling on selection change.
         self._bound_cells: dict[Gtk.Widget, tuple[Gtk.ListItem, int]] = {}
         self._menu_cell: tuple[int, int] = (0, 0)
+        # What an empty result should say. "No rows" and "no rows match
+        # this filter" are different situations with different fixes,
+        # so the owner sets this before loading (see set_empty_state).
+        self._empty: tuple[str, str, str, Callable[[], None] | None] = (
+            "No rows",
+            "The query returned no rows.",
+            "",
+            None,
+        )
         self._menu_rect = Gdk.Rectangle()
 
         actions = Gio.SimpleActionGroup()
@@ -250,6 +259,32 @@ class ResultGrid(Gtk.ScrolledWindow):
     def clear(self) -> None:
         self.set_result([], [])
 
+    def set_empty_state(
+        self,
+        title: str,
+        description: str,
+        action_label: str = "",
+        on_action: Callable[[], None] | None = None,
+    ) -> None:
+        """What to show when a result has no rows at all. An empty
+        table, an empty result and a filter that matches nothing have
+        different fixes, so each caller says its own."""
+        self._empty = (title, description, action_label, on_action)
+
+    def _empty_page(self) -> Gtk.Widget:
+        title, description, action_label, on_action = self._empty
+        page = Adw.StatusPage(
+            icon_name="edit-find-symbolic",
+            title=title,
+            description=description,
+        )
+        if action_label and on_action is not None:
+            button = Gtk.Button(label=action_label, halign=Gtk.Align.CENTER)
+            button.add_css_class("pill")
+            button.connect("clicked", lambda *_: on_action())
+            page.set_child(button)
+        return page
+
     def set_result(
         self,
         columns: list[str],
@@ -323,6 +358,10 @@ class ResultGrid(Gtk.ScrolledWindow):
 
         for row in rows:
             self._store.append(RowItem(row))
+
+        # An empty grid is a blank rectangle that teaches nothing; show
+        # the state's own message and its fix instead.
+        self.set_child(self._view if rows else self._empty_page())
 
     def set_sort_state(self, order: list[tuple[str, bool]]) -> None:
         """Show sort arrows matching (column name, descending) pairs,
@@ -1430,6 +1469,28 @@ class TableTab(Gtk.Box):
         def done(loaded):
             self._columns, result = loaded
             self._result_names = result.columns
+            # Empty because the table is empty, empty because the page
+            # ran past the end, and empty because a filter matched
+            # nothing are three different problems.
+            if filters:
+                self._grid.set_empty_state(
+                    "No rows match this filter",
+                    "Change the conditions, or clear the filter to see "
+                    "the whole table.",
+                    "Clear Filter",
+                    self._clear_filters,
+                )
+            elif offset:
+                self._grid.set_empty_state(
+                    "No rows on this page",
+                    f"{self.table} has fewer than {offset + 1} rows.",
+                    "Back to the First Page",
+                    self._first_page,
+                )
+            else:
+                self._grid.set_empty_state(
+                    "No rows", f"{self.table} is empty."
+                )
             self._set_column_names([c.name for c in self._columns])
             editable = any(c.is_pk for c in self._columns)
             self._pending.clear()
@@ -1700,6 +1761,10 @@ class TableTab(Gtk.Box):
             self._filters = []
             self._offset = 0
             self.reload()
+
+    def _first_page(self) -> None:
+        self._offset = 0
+        self.reload()
 
     def _on_prev(self, *_args) -> None:
         self._offset = max(0, self._offset - PAGE_SIZE)

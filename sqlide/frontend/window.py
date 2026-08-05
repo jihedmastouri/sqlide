@@ -161,6 +161,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_mcp_server=self.open_mcp_server,
             on_edit_connection=self._edit_connection,
             on_remove_connection=self._remove_connection,
+            on_add_connection=self._add_connection,
             show_error=self.show_error,
         )
         search = Gtk.SearchEntry(placeholder_text="Find tables…")
@@ -191,8 +192,9 @@ class MainWindow(Adw.ApplicationWindow):
         placeholder = Adw.StatusPage(
             icon_name="folder-open-symbolic",
             title="Nothing Open",
-            description="Pick a table from the sidebar, or open a query "
-            "console from a connection row.",
+            description="Pick a table from the sidebar, or start a query "
+            "console.",
+            child=self._placeholder_actions(),
         )
         self._stack = Gtk.Stack()
         self._stack.add_named(placeholder, "placeholder")
@@ -347,6 +349,34 @@ class MainWindow(Adw.ApplicationWindow):
             self._sidebar.add_profile(profile)
         self._restore_tabs()
         self._update_active_panel()
+
+    # Empty states
+
+    def _placeholder_actions(self) -> Gtk.Widget:
+        """The empty content area teaches the next step: with no
+        connections there is only one useful action, so that is the
+        only one offered."""
+        box = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER)
+        if self.workspace.connections:
+            query = Gtk.Button(label="New Query Console")
+            query.add_css_class("suggested-action")
+            query.add_css_class("pill")
+            query.connect(
+                "clicked", lambda *_: self.new_query(self._default_query_profile())
+            )
+            box.append(query)
+        else:
+            add = Gtk.Button(label="Add Connection")
+            add.add_css_class("suggested-action")
+            add.add_css_class("pill")
+            add.connect("clicked", self._add_connection)
+            box.append(add)
+        return box
+
+    def _refresh_placeholder_actions(self) -> None:
+        """The first connection changes what the empty state offers."""
+        placeholder = self._stack.get_child_by_name("placeholder")
+        placeholder.set_child(self._placeholder_actions())
 
     # Identity (colour + environment)
 
@@ -1034,6 +1064,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._connection_names.append(profile.name)
         self._sidebar.add_profile(profile)
         self._sidebar.expand_profile(profile.name)
+        self._refresh_placeholder_actions()
 
     def _drop_connector(self, name: str) -> None:
         """Forget a cached connector (edit/remove) and close it in the
@@ -1117,6 +1148,7 @@ class MainWindow(Adw.ApplicationWindow):
                 break
         self._drop_connector(profile.name)
         self._sidebar.remove_profile(profile.name)
+        self._refresh_placeholder_actions()
 
     def _focus_tab(self, key: tuple) -> bool:
         """Select the open tab with this tab_key, if any."""

@@ -742,10 +742,15 @@ class QueryConsole(Gtk.Box):
 
         counts = []
         error: Exception | None = None
-        for i, (sql, result, _elapsed) in enumerate(outcomes):
+        for i, (sql, result, elapsed) in enumerate(outcomes):
             title = _tab_title(i, sql) if len(outcomes) > 1 else "Result"
             if isinstance(result, ResultSet):
                 grid = ResultGrid(on_aggregate=self._on_aggregate)
+                grid.set_empty_state(
+                    "No rows",
+                    "The statement ran in "
+                    f"{_format_elapsed(elapsed)} and matched nothing.",
+                )
                 grid.set_result(result.columns, result.rows)
                 # Explain plans also offer a JSON rendering of the rows.
                 page: Gtk.Widget = (

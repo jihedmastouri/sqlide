@@ -49,7 +49,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from gi.repository import Gdk, Gio, GLib, GObject, Gtk, Pango
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
 from sqlide.backend import identity
 from sqlide.backend.connections import ConnectionProfile
@@ -150,6 +150,7 @@ class Sidebar(Gtk.ScrolledWindow):
         on_mcp_server: Callable[[ConnectionProfile], None],
         on_edit_connection: Callable[[ConnectionProfile], None],
         on_remove_connection: Callable[[ConnectionProfile], None],
+        on_add_connection: Callable[[], None],
         show_error: Callable[[str], None],
     ) -> None:
         super().__init__(vexpand=True)
@@ -189,7 +190,21 @@ class Sidebar(Gtk.ScrolledWindow):
         self._view.add_css_class("schema-tree")
         self._view.set_single_click_activate(True)
         self._view.connect("activate", self._on_activate)
-        self.set_child(self._view)
+
+        add_connection = Gtk.Button(
+            label="Add Connection", halign=Gtk.Align.CENTER
+        )
+        add_connection.add_css_class("suggested-action")
+        add_connection.add_css_class("pill")
+        add_connection.connect("clicked", lambda *_: on_add_connection())
+        self._empty_page = Adw.StatusPage(
+            icon_name="network-server-symbolic",
+            title="No connections yet",
+            description="A workspace holds the databases you work on "
+            "together. Add the first one to browse its tables.",
+            child=add_connection,
+        )
+        self.set_child(self._empty_page)
 
         # Context menu (right-click on a table/view or connection row).
         self._menu_node: Node | None = None
@@ -227,6 +242,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self._roots.append(
             Node("connection", profile.name, detail=profile.kind, profile=profile)
         )
+        self._refresh_empty_state()
 
     def remove_profile(self, name: str) -> None:
         """Drop a connection's root row — after it's removed from the
@@ -237,7 +253,14 @@ class Sidebar(Gtk.ScrolledWindow):
         for i in range(self._roots.get_n_items()):
             if self._roots.get_item(i).label == name:
                 self._roots.remove(i)
-                return
+                break
+        self._refresh_empty_state()
+
+    def _refresh_empty_state(self) -> None:
+        """An empty tree is a blank panel; say what to do instead."""
+        self.set_child(
+            self._view if self._roots.get_n_items() else self._empty_page
+        )
 
     def set_connected(self, name: str, connected: bool) -> None:
         """Flip a connection row's status dot (main thread only; the

@@ -18,10 +18,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Callable
 
-from sqlide.frontend.util import describe
 from gi.repository import Adw, Gtk
 
 from sqlide.backend.workspaces import HistoryEntry
+from sqlide.frontend.util import describe
 
 _SCOPES = ("This panel", "All panels")
 

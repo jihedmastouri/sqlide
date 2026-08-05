@@ -33,7 +33,6 @@ from __future__ import annotations
 
 from typing import Callable
 
-from sqlide.frontend.util import describe
 from gi.repository import Adw, Gtk, Pango
 
 from sqlide.backend.saved import SavedItem, SavedStore
@@ -42,6 +41,7 @@ from sqlide.backend.saved import snippets as snippets_store
 from sqlide.backend.workspaces import HistoryEntry
 from sqlide.frontend.history_panel import HistoryPanel
 from sqlide.frontend.sql_editor import SqlEditor
+from sqlide.frontend.util import describe
 
 _CONTEXT_PAGES = {
     "console": ("info", "snippets", "queries", "history", "aggregate"),

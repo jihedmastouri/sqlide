@@ -223,3 +223,6 @@ __marimo__/
 *.db
 *.sqlite
 *.sqlite3
+
+# Internal design notes and competitive analysis — never distributed.
+confidential/

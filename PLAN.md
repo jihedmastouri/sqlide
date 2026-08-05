@@ -8,19 +8,38 @@ anything else with a JDBC driver.
 ## Goals
 
 - Connect to SQLite, MySQL, and PostgreSQL databases (JDBC as a generic escape hatch).
-- Browse schemas: list tables, views, and their columns in a sidebar.
-- View table data in a grid (paged).
-- Edit data in the grid (cell edits committed via primary-key UPDATEs).
-- Query console: type SQL, run it, see results in a grid.
-- Minimal, clean libadwaita design. No plugins, no ER diagrams, nothing fancy.
+- Browse schemas: tables, views, routines, indexes, triggers and their columns.
+- View table data in a grid (paged, filtered, sorted).
+- Edit data in the grid — batches of inserts/updates/deletes staged, previewed,
+  and applied in one transaction.
+- Edit schema from the UI: create/alter tables, indexes and foreign keys, with
+  per-dialect capability gating.
+- Query console: multi-statement scripts, run all / current / selection,
+  parameters, transaction control, history.
+- Move data in and out: streaming export to files, import from files, native
+  dump/restore.
+- Minimal, clean libadwaita design; nothing that isn't pulling its weight.
 
-## Non-goals (keep it basic)
+## Non-goals
 
-- No visual query builder, ER diagrams, or DDL editors.
-- No SSH tunnels, SSL config UIs, or exotic auth.
-- No LSP-grade intellisense (keyword completion and SQL highlighting exist;
-  nothing smarter).
-- No multi-statement script tooling beyond "run what's in the console".
+- **No cloud.** No hosted workspaces, no team sync, no per-item sharing or
+  permissions, no accounts, no billing. Workspaces are local files; the user
+  syncs them with their own tooling if they want to.
+- **No embedded AI agent.** The read-only MCP server already exposes our
+  databases to whatever agent the user runs, with better isolation and no
+  provider SDK, API-key storage, or per-provider maintenance. That is the
+  answer to "does it do AI", and it is a better one.
+- **No engines beyond SQLite, MySQL/MariaDB and PostgreSQL.** JDBC stays an
+  experimental escape hatch, not a supported path.
+- **No telemetry.** Not now, not opt-in, not anonymised.
+- No auto-update machinery, install channels, or license enforcement.
+- No cloud-vendor auth methods (SSO/Entra/IAM) — follows from the engine scope.
+
+Superseded non-goals, kept so nobody re-litigates them: the original plan ruled
+out a query builder, ER diagrams, DDL editing, SSH tunnels, SSL configuration,
+smarter-than-keyword completion, and multi-statement scripts. All seven now
+exist. The rule that replaced them: a feature earns its place if it is something
+a person does daily against a real database.
 
 ## Stack
 
@@ -282,11 +301,61 @@ sqlide/
 "Unverified" = written but not yet executed; see README "Try it" for the
 manual test path.
 
-## Risks / known limitations (v1)
+## Milestones — planned
 
-- Query console executes **one statement at a time** (sqlite3 `execute`).
-- Passwords are stored in plain text in the config JSON unless the
-  `keyring` extra is installed and a backend is available (see
-  README "Connection passwords").
-- JDBC: client-side pagination is slow on big offsets; JPype thread
-  attachment with the worker-thread model is untested.
+Each phase is independently shippable. The detailed design notes behind them
+are kept locally and are not part of this repository.
+
+10. **UI foundations and identity** — workspace and connection colours from a
+    fixed, contrast-checked palette; development/staging/production environment
+    classes that change how much friction destructive actions carry; a
+    persistent status bar; one rule per feedback surface; the destructive-action
+    ladder; empty states; keyboard completeness and accessibility basics.
+    Small, independent, and every later phase reports through what it builds.
+11. **Data editing completeness** — staged change sets (insert/update/delete)
+    applied in one transaction, row add/clone/delete, spreadsheet paste, a
+    modal editor for large/JSON values, editable query results, binary and
+    enum/generated-column awareness.
+12. **Schema editing** — a structured Structure tab replacing DDL-text editing:
+    columns, indexes, foreign keys, per-dialect capability matrix, table
+    properties. Includes fixing the SQLite rebuild path (see Risks).
+13. **Data movement** — chunked cursors first, then streaming export
+    (CSV/JSON/JSONL/SQL), multi-table export, run-to-file, and the file import
+    pipeline.
+14. **Editor maturity** — built-in schema-aware completion (so the LSP path is
+    the better experience, not the only one), dialect-aware query parameters,
+    formatter presets, manual-transaction safety net, result formatting
+    directives.
+15. **Navigation and workspace** — foreign-key navigation, record detail panel,
+    sidebar filter/pin/hide, quick search, tab management, grid state
+    persistence, connection URL import and sockets.
+16. **Configuration and security** — layered TOML config with an administrator
+    layer, configurable keybindings, read-only connections, PIN lock and
+    auto-disconnect, privacy mode, SSH agent/config resolution.
+17. **Backup/restore and plugins** — native `pg_dump`/`mysqldump`/`sqlite3`
+    integration, then (lowest priority, only if warranted) a sandboxed plugin
+    host.
+
+## Risks / known limitations
+
+Correctness bugs, to fix inside the milestone that touches them:
+
+- **The SQLite table rebuild loses indexes and triggers.** `DROP TABLE` takes
+  them with it and `rebuild_table_statements()` never recaptures them from
+  `sqlite_master`. Any definition-tab edit that falls back to a rebuild
+  silently drops them. Fix in milestone 12.
+- **Result sets are fully materialised.** Every row of every result is read into
+  Python lists, so a `SELECT *` against a large table will exhaust memory. The
+  chunked cursor in milestone 13 is the fix; the row cap is the stopgap.
+- Grid edits are applied as individual statements with no transaction boundary,
+  so a failure mid-batch leaves a partial write. Fixed by milestone 11.
+
+Standing limitations:
+
+- Passwords are stored in plain text in the workspace JSON unless the `keyring`
+  extra is installed and a backend is available (see README "Connection
+  passwords"). Milestone 16 makes where-it-is-stored visible in the UI.
+- JDBC: client-side pagination is slow on big offsets; JPype thread attachment
+  with the worker-thread model is untested. Unsupported by policy.
+- MySQL cannot roll back DDL — multi-statement schema changes are not atomic
+  there, and the UI must say so rather than implying otherwise.

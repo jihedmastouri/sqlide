@@ -51,8 +51,10 @@ from typing import Callable
 
 from gi.repository import Gdk, Gio, GLib, GObject, Gtk, Pango
 
+from sqlide.backend import identity
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import Connector
+from sqlide.frontend import identity as identity_ui
 from sqlide.frontend.util import run_async
 
 _EXPANDABLE = ("connection", "category", "table", "view")
@@ -481,7 +483,13 @@ class Sidebar(Gtk.ScrolledWindow):
     # Rows
 
     def _setup_row(self, _factory, list_item: Gtk.ListItem) -> None:
-        expander = Gtk.TreeExpander()
+        # The connection's identity colour runs down the leading edge of
+        # its row and of every row under it; the connection name at the
+        # top of that block is the non-colour cue.
+        row_box = Gtk.Box(spacing=0)
+        identity_bar = identity_ui.bar(identity.NONE)
+        row_box.append(identity_bar)
+        expander = Gtk.TreeExpander(hexpand=True)
         # The caret lives at the end of the row instead (icons stay
         # aligned at the left edge).
         expander.set_hide_expander(True)
@@ -500,6 +508,8 @@ class Sidebar(Gtk.ScrolledWindow):
         pk = Gtk.Label(label="PK")
         pk.add_css_class("caption")
         pk.add_css_class("accent")
+        badge = identity_ui.environment_badge(identity.UNSET)
+        badge.set_valign(Gtk.Align.CENTER)
         detail = Gtk.Label()
         detail.add_css_class("dim-label")
         detail.add_css_class("caption")
@@ -515,15 +525,18 @@ class Sidebar(Gtk.ScrolledWindow):
         menu_click = Gtk.GestureClick(button=Gdk.BUTTON_SECONDARY)
         menu_click.connect("pressed", self._row_menu_pressed, list_item)
         expander.add_controller(menu_click)
-        for child in (dot, icon, label, pk, detail, caret):
+        for child in (dot, icon, label, pk, badge, detail, caret):
             box.append(child)
         expander.set_child(box)
-        list_item.set_child(expander)
+        row_box.append(expander)
+        list_item.set_child(row_box)
+        list_item.identity_bar = identity_bar
         list_item.dot = dot
         list_item.dot_name = ""
         list_item.icon = icon
         list_item.label = label
         list_item.pk = pk
+        list_item.badge = badge
         list_item.detail = detail
         list_item.caret = caret
         list_item.row_handler = 0
@@ -531,14 +544,24 @@ class Sidebar(Gtk.ScrolledWindow):
     def _bind_row(self, _factory, list_item: Gtk.ListItem) -> None:
         row = list_item.get_item()  # TreeListRow (passthrough=False)
         node = row.get_item()
-        list_item.get_child().set_list_row(row)
+        list_item.get_child().get_last_child().set_list_row(row)
+        profile = _row_profile(row)
+        identity_ui.set_color(
+            list_item.identity_bar,
+            profile.color if profile is not None else identity.NONE,
+        )
         if node.kind == "connection":
             _style_dot(list_item.dot, node.connected)
             list_item.dot.set_visible(True)
             list_item.dot_name = node.label
             self._dots[node.label] = list_item.dot
+            identity_ui.set_environment(
+                list_item.badge,
+                profile.environment if profile is not None else identity.UNSET,
+            )
         else:
             list_item.dot.set_visible(False)
+            list_item.badge.set_visible(False)
         icon_name = _KIND_ICONS.get(node.kind)
         if icon_name:
             list_item.icon.set_from_icon_name(icon_name)
@@ -802,6 +825,17 @@ def _fuzzy_key(query: str, name: str) -> tuple[int, int, int] | None:
         position += 1
     spread = position - first - len(query)
     return (1 + spread, first, len(name))
+
+
+def _row_profile(row: Gtk.TreeListRow) -> ConnectionProfile | None:
+    """The connection a row belongs to. Column rows carry no profile of
+    their own, so the walk goes up until one appears."""
+    while row is not None:
+        node = row.get_item()
+        if node.profile is not None:
+            return node.profile
+        row = row.get_parent()
+    return None
 
 
 def _set_caret(caret: Gtk.Image, expanded: bool) -> None:

@@ -7,6 +7,8 @@ in a test: any future edit to the palette tables has to keep them.
 from __future__ import annotations
 
 import itertools
+import re
+from pathlib import Path
 
 import pytest
 
@@ -95,6 +97,29 @@ def test_color_hex_falls_back_for_none():
     assert identity.color_hex("none", dark=False) == ""
     assert identity.color_hex("nonsense", dark=True) == ""
     assert identity.color_hex("red", dark=True) == identity.DARK_COLORS["red"]
+
+
+def test_every_colored_surface_names_a_non_colour_cue():
+    for surface, cue in identity.COLOR_SURFACES.items():
+        assert cue.strip(), surface
+    with pytest.raises(ValueError):
+        identity.check_surface("button-background")
+
+
+def test_frontend_colours_only_registered_surfaces():
+    """The frontend passes a surface key wherever it paints an identity
+    colour, so the registry above (and with it the cue for each one)
+    stays a description of the app and not a wish."""
+    frontend = Path(__file__).resolve().parents[1] / "sqlide" / "frontend"
+    sources = "\n".join(
+        path.read_text() for path in sorted(frontend.glob("*.py"))
+    )
+    used = set(re.findall(r'surface: str = "([^"]+)"', sources))
+    used |= set(re.findall(r'surface="([^"]+)"', sources))
+    assert used == set(identity.COLOR_SURFACES), (
+        "surfaces in the frontend and in COLOR_SURFACES disagree: "
+        f"{used ^ set(identity.COLOR_SURFACES)}"
+    )
 
 
 def test_production_is_suggested_not_assumed():

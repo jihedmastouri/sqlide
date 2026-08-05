@@ -20,7 +20,7 @@ through what it builds. Ship it first.
 - [x] Colour pickers: create/edit workspace dialog, and an "Identity" group at
       the top of the connection dialog. Environment is *suggested* when the host
       or name looks like production, never set automatically.
-- [ ] Apply colour: window stripe, launcher dot, sidebar connection bar, tab
+- [x] Apply colour: window stripe, launcher dot, sidebar connection bar, tab
       stripe. Every one paired with a non-colour cue; a test enumerates this.
 - [ ] Environment classes change behaviour, not just appearance: confirmation
       friction, edit-lock re-arming, privacy default, read-only suggestion —

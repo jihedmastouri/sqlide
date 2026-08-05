@@ -38,6 +38,7 @@ from gi.repository import Adw, Gio, GLib, GObject, Gtk
 
 from sqlide.frontend.util import main_menu_button, run_async
 
+from sqlide.backend import identity
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import registry
 from sqlide.backend.db.base import Connector, ConnectorError, FilterCondition
@@ -46,6 +47,7 @@ from sqlide.frontend.cli_console import CliConsole
 from sqlide.frontend.connection_dialog import ConnectionDialog
 from sqlide.frontend.data_grid import ResultGrid, TableTab
 from sqlide.frontend.definition_tab import DefinitionTab, FunctionTab
+from sqlide.frontend import identity as identity_ui
 from sqlide.frontend.drop_dialog import present_drop_dialog
 from sqlide.frontend.mcp_tab import McpServerTab
 from sqlide.frontend.query_builder import QueryBuilderTab
@@ -54,6 +56,15 @@ from sqlide.frontend.relation_graph import RelationGraphTab
 from sqlide.frontend.side_panel import SidePanel
 from sqlide.frontend.sidebar import Sidebar
 from sqlide.frontend.table_designer import TableDesignerTab
+
+
+def _page_connection(child: Gtk.Widget | None) -> str:
+    """Which connection a tab is on: consoles follow their dropdown,
+    every other tab its profile. "" for tabs with no connection."""
+    if isinstance(child, (QueryConsole, CliConsole)):
+        return child.selected_connection()
+    profile = getattr(child, "profile", None)
+    return profile.name if profile is not None else ""
 
 
 class _HistoryTab(Gtk.Box):
@@ -273,9 +284,14 @@ class MainWindow(Adw.ApplicationWindow):
         self.add_breakpoint(breakpoint)
 
         # The header bar spans the full window width, above both the
-        # sidebar and the content area.
+        # sidebar and the content area; the workspace's identity stripe
+        # sits directly under it, full width. The window title carries
+        # the workspace name, so the stripe is never the only cue.
         top_view = Adw.ToolbarView()
         top_view.add_top_bar(content_header)
+        self._stripe = identity_ui.stripe(workspace.color)
+        top_view.add_top_bar(self._stripe)
+        self._refresh_workspace_identity()
         top_view.set_content(self._split)
 
         # Tab overview: zoomed-out grid of tab thumbnails. It must wrap
@@ -299,10 +315,56 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self.add_action(history_action)
 
+        # The launcher can recolour a workspace while its window is
+        # open, so the stripe is refreshed whenever the window comes
+        # back to the front.
+        self.connect(
+            "notify::is-active", lambda *_: self._refresh_workspace_identity()
+        )
+        identity_ui.subscribe(self._on_palette_changed)
+        self.connect(
+            "destroy", lambda *_: identity_ui.unsubscribe(
+                self._on_palette_changed
+            )
+        )
+
         for profile in workspace.connections:
             self._sidebar.add_profile(profile)
         self._restore_tabs()
         self._update_active_panel()
+
+    # Identity (colour + environment)
+
+    def _refresh_workspace_identity(self) -> None:
+        identity_ui.set_color(self._stripe, self.workspace.color)
+        color = identity.COLOR_LABELS[
+            identity.normalize_color(self.workspace.color)
+        ]
+        self._stripe.set_tooltip_text(
+            f"Workspace “{self.workspace.name}” · colour {color}"
+        )
+        self.set_title(f"sqlide — {self.workspace.name}")
+
+    def _on_palette_changed(self) -> None:
+        """The colour scheme flipped: CSS-driven surfaces restyle
+        themselves, tab icons are textures and must be redrawn."""
+        self._refresh_tab_identity()
+
+    def _refresh_tab_identity(self) -> None:
+        for pane in self._panes:
+            for i in range(pane.view.get_n_pages()):
+                page = pane.view.get_nth_page(i)
+                self._apply_page_identity(
+                    page, _page_connection(page.get_child())
+                )
+
+    def _apply_page_identity(self, page: Adw.TabPage, connection: str) -> None:
+        """A tab wears its connection's colour as a leading bar. The
+        connection name is already in the tab title, which is the
+        non-colour cue."""
+        profile = self.workspace.find_connection(connection)
+        color = profile.color if profile is not None else identity.NONE
+        page.set_icon(identity_ui.tab_icon(color))
 
     # Tab panes (split screen)
 
@@ -926,6 +988,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._sidebar.remove_profile(old_name)
         self._sidebar.add_profile(profile)
         self._sidebar.expand_profile(profile.name)
+        self._refresh_tab_identity()  # the colour may have changed too
 
     def _remove_connection(self, profile: ConnectionProfile) -> None:
         dialog = Adw.AlertDialog(
@@ -977,6 +1040,7 @@ class MainWindow(Adw.ApplicationWindow):
         page = view.append(tab)
         page.set_title(title)
         page.set_tooltip(tooltip)
+        self._apply_page_identity(page, _page_connection(tab))
         view.set_selected_page(page)
         return page
 
@@ -1179,6 +1243,7 @@ class MainWindow(Adw.ApplicationWindow):
             page.set_tooltip(
                 f"Query console on {name}" if name else "Query console"
             )
+            self._apply_page_identity(page, name)
             if not self._restoring:
                 self._save_state()
                 self._update_active_panel()  # Info follows the dropdown
@@ -1208,6 +1273,7 @@ class MainWindow(Adw.ApplicationWindow):
             page.set_tooltip(
                 f"CLI client on {name}" if name else "CLI client"
             )
+            self._apply_page_identity(page, name)
             if not self._restoring:
                 self._save_state()
                 self._update_active_panel()  # Info follows the dropdown

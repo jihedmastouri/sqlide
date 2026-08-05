@@ -14,11 +14,28 @@ name it stands for, so colour is never the only cue.
 
 from __future__ import annotations
 
-from gi.repository import Adw, Gdk, Gtk
+from typing import Callable
+
+from gi.repository import Adw, Gdk, GLib, Gtk
 
 from sqlide.backend import identity
 
 _provider: Gtk.CssProvider | None = None
+# Surfaces that cannot restyle themselves from CSS — currently the tab
+# icons, which are textures — ask to be redrawn when the palette
+# changes.
+_listeners: list[Callable[[], None]] = []
+
+
+def subscribe(listener: Callable[[], None]) -> None:
+    _listeners.append(listener)
+
+
+def unsubscribe(listener: Callable[[], None]) -> None:
+    """Windows must drop their listener on teardown, or the module
+    keeps them alive forever."""
+    if listener in _listeners:
+        _listeners.remove(listener)
 
 
 def install_provider() -> None:
@@ -43,6 +60,8 @@ def _reload() -> None:
         return
     dark = Adw.StyleManager.get_default().get_dark()
     _provider.load_from_string(identity.stylesheet(dark))
+    for listener in list(_listeners):
+        listener()
 
 
 def set_color(widget: Gtk.Widget, color: str) -> None:
@@ -55,29 +74,53 @@ def set_color(widget: Gtk.Widget, color: str) -> None:
     widget.add_css_class(wanted)
 
 
-def stripe(color: str) -> Gtk.Widget:
+def stripe(color: str, surface: str = "window-stripe") -> Gtk.Widget:
     """The workspace stripe: a full-width band under the header bar."""
+    identity.check_surface(surface)
     widget = Gtk.Box(height_request=4)
     widget.add_css_class("identity-stripe")
     set_color(widget, color)
     return widget
 
 
-def bar(color: str) -> Gtk.Widget:
+def bar(color: str, surface: str = "sidebar-bar") -> Gtk.Widget:
     """The connection bar: a vertical rule at a row's leading edge."""
+    identity.check_surface(surface)
     widget = Gtk.Box(width_request=3)
     widget.add_css_class("identity-bar")
     set_color(widget, color)
     return widget
 
 
-def dot(color: str) -> Gtk.Widget:
+def dot(color: str, surface: str = "launcher-dot") -> Gtk.Widget:
     """The launcher/status-bar swatch, always beside its name."""
+    identity.check_surface(surface)
     widget = Gtk.Box(width_request=12, height_request=12)
     widget.set_valign(Gtk.Align.CENTER)
     widget.add_css_class("identity-dot")
     set_color(widget, color)
     return widget
+
+
+def tab_icon(color: str, surface: str = "tab-icon") -> Gdk.Texture | None:
+    """A tab's leading colour bar. Adw.TabPage takes a Gio.Icon and
+    nothing else, and a symbolic icon would be recoloured by the theme,
+    so the bar is a solid texture (GdkTexture is a Gio.Icon). None for
+    "none", which leaves the tab as it was."""
+    identity.check_surface(surface)
+    hex_color = identity.color_hex(color, Adw.StyleManager.get_default().get_dark())
+    if not hex_color:
+        return None
+    value = hex_color.lstrip("#")
+    pixel = bytes(int(value[i : i + 2], 16) for i in (0, 2, 4)) + b"\xff"
+    width, height = 3, 16
+    return Gdk.MemoryTexture.new(
+        width,
+        height,
+        Gdk.MemoryFormat.R8G8B8A8,
+        GLib.Bytes.new(pixel * width * height),
+        width * 4,
+    )
 
 
 class ColorRow(Adw.ComboRow):

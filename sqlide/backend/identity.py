@@ -91,6 +91,33 @@ DARK_COLORS: dict[str, str] = {
 LIGHT_BACKGROUNDS: tuple[str, ...] = ("#fafafa", "#ffffff")
 DARK_BACKGROUNDS: tuple[str, ...] = ("#242424", "#1d1d20", "#000000")
 
+# Every surface a colour is allowed to appear on, and the non-colour
+# cue that appears with it. Colour is pre-attentive but it is also the
+# first thing a colour-blind user loses, so it never encodes anything
+# on its own. frontend/identity.py takes one of these keys on every
+# widget it builds, and tests/test_identity.py checks the two lists
+# agree — a new coloured surface cannot be added without naming its
+# cue.
+COLOR_SURFACES: dict[str, str] = {
+    "window-stripe": "the workspace name in the window title and its tooltip",
+    "launcher-dot": "the workspace name on the same row",
+    "sidebar-bar": "the connection name on (or above) the row",
+    "tab-icon": "the connection name in the tab title",
+}
+
+
+def check_surface(surface: str) -> str:
+    """Guard on the frontend's colour helpers: a surface must be
+    registered above, with its non-colour cue, before it can be
+    coloured."""
+    if surface not in COLOR_SURFACES:
+        raise ValueError(
+            f"Unregistered identity surface: {surface!r}. Add it to "
+            "COLOR_SURFACES with the non-colour cue that goes with it."
+        )
+    return surface
+
+
 UNSET = "unset"
 ENVIRONMENTS: tuple[str, ...] = (UNSET, "development", "staging", "production")
 

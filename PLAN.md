@@ -208,6 +208,8 @@ sqlide/
     ├── backend/               # NO GTK in here
     │   ├── __init__.py
     │   ├── connections.py     # ConnectionProfile dataclass
+    │   ├── identity.py        # colour palette + environment classes
+    │   ├── sql_risk.py        # destructive-statement classifier + ladder
     │   ├── workspaces.py      # Workspace/TabState + per-file JSON store
     │   ├── settings.py        # global settings store (theme, font, vim…)
     │   ├── saved.py           # saved snippets/queries (global JSON stores)
@@ -237,6 +239,11 @@ sqlide/
         ├── launcher.py        # workspace picker at startup
         ├── window.py          # one workspace: split view, tabs, connector cache
         ├── util.py            # run_async worker-thread helper
+        ├── identity.py        # palette provider + the coloured surfaces
+        ├── confirm.py         # the destructive-action ladder's dialogs
+        ├── feedback.py        # which surface carries which message
+        ├── status_bar.py      # identity · context · jobs · status zones
+        ├── shortcuts.py       # the keyboard shortcuts window
         ├── sidebar.py         # lazy schema tree (TreeListModel)
         ├── data_grid.py       # ResultGrid + TableTab
         ├── query_console.py
@@ -301,17 +308,23 @@ sqlide/
 "Unverified" = written but not yet executed; see README "Try it" for the
 manual test path.
 
+10. **UI foundations and identity** — workspace and connection colours from a
+    fixed palette whose 3:1 contrast (light, dark and both high-contrast
+    extremes) and colour-blind separation are asserted by tests, generated into
+    a `Gtk.CssProvider` at runtime and regenerated when the theme flips;
+    development/staging/production environment classes that change how much
+    friction destructive actions carry (confirm, then type-to-confirm, plus
+    edit-lock re-arming on production); a persistent status bar that never
+    shows a stale connection; one rule per feedback surface; empty states that
+    distinguish an empty table from a filter matching nothing; a shortcuts
+    window and an accessible label on every icon-only button. — **done**
+    (the privacy-mode default and the read-only suggestion wait for the
+    features they switch, in milestone 16.)
+
 ## Milestones — planned
 
 Each phase is independently shippable. The detailed design notes behind them
 are kept locally and are not part of this repository.
-
-10. **UI foundations and identity** — workspace and connection colours from a
-    fixed, contrast-checked palette; development/staging/production environment
-    classes that change how much friction destructive actions carry; a
-    persistent status bar; one rule per feedback surface; the destructive-action
-    ladder; empty states; keyboard completeness and accessibility basics.
-    Small, independent, and every later phase reports through what it builds.
 11. **Data editing completeness** — staged change sets (insert/update/delete)
     applied in one transaction, row add/clone/delete, spreadsheet paste, a
     modal editor for large/JSON values, editable query results, binary and

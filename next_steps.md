@@ -6,37 +6,7 @@ outside version control — read the notes for a milestone before starting it.
 
 ---
 
-## Now — milestone 10, UI foundations and identity
-
-Small and independent of everything below it, and every later milestone reports
-through what it builds. Ship it first.
-
-- [x] Identity palette: eight named colours plus none, generated into a
-      `Gtk.CssProvider` at runtime and regenerated when the colour scheme
-      changes. A test asserts 3:1 contrast against the window background in
-      light, dark and high-contrast themes.
-- [x] `color` on `Workspace`; `color` and `environment` on `ConnectionProfile`.
-      Unknown values load as `none`/`unset` rather than failing.
-- [x] Colour pickers: create/edit workspace dialog, and an "Identity" group at
-      the top of the connection dialog. Environment is *suggested* when the host
-      or name looks like production, never set automatically.
-- [x] Apply colour: window stripe, launcher dot, sidebar connection bar, tab
-      stripe. Every one paired with a non-colour cue; a test enumerates this.
-- [x] Environment classes change behaviour, not just appearance: confirmation
-      friction, edit-lock re-arming, privacy default, read-only suggestion —
-      see the design notes for the table.
-- [x] Persistent status bar (identity · context · jobs · status zones), replacing
-      the scattered per-tab state widgets. Never shows a stale connection.
-- [x] Feedback rules: toast / inline / banner / dialog, one per situation
-      (see the design notes). Move today's ad-hoc labels onto the right surface.
-- [x] Destructive-action ladder: inform → confirm → type-to-confirm, keyed to
-      environment. Cancel focused by default everywhere.
-- [x] Empty states for every empty view; empty-result and empty-filter say
-      different things.
-- [x] Shortcuts window; accessible labels on every icon-only button; verify at
-      200% text scale.
-
-## Next — milestone 11, data editing completeness
+## Now — milestone 11, data editing completeness
 
 - [ ] `ChangeSet` model in `backend/db/base.py` (inserts / updates / deletes,
       `KeyRef` row identity) plus `apply_changes()` and `changes_to_sql()` on
@@ -65,7 +35,7 @@ through what it builds. Ship it first.
       shown on every non-editable column.
 - [ ] "Create IN clause" from a cell selection.
 
-## After that — milestone 12, schema editing
+## Next — milestone 12, schema editing
 
 - [ ] **Fix the SQLite rebuild data loss first**, on its own, with a regression
       test: capture indexes and triggers from `sqlite_master` before
@@ -100,6 +70,21 @@ SQLite/MySQL/Postgres, telemetry, auto-update, cloud-vendor auth.
 
 ## Done
 
+- [x] Milestone 10, UI foundations and identity (2026-08-05): the identity
+      palette (`backend/identity.py`, contrast and colour-blind separation
+      asserted by tests) and its runtime CSS provider; `color` on workspaces,
+      `color` + `environment` on connections; colour pickers and the production
+      *suggestion* in the connection dialog; colour on the window stripe,
+      launcher dot, sidebar rows and tabs, each with a non-colour cue a test
+      enumerates; the destructive-action ladder (`backend/sql_risk.py` +
+      `frontend/confirm.py`) keyed to the environment class and defeatable from
+      Preferences; the persistent status bar; the feedback rules in
+      `frontend/feedback.py`; empty states; the shortcuts window and accessible
+      labels on every icon-only button.
+      Two rows of the environment table are **not** in it, because the features
+      they switch do not exist yet: the privacy-mode default and the read-only
+      suggestion for new connections. Both belong to milestone 16 and must be
+      wired to `environment` when that lands.
 - [x] Connection & workspace management UI: edit/rename/remove a saved
       connection from the sidebar (connection_dialog.py's "edit" mode,
       pre-filled from the profile, applied in place so open tabs keep

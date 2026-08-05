@@ -20,8 +20,11 @@ Pages:
   Activating a snippet inserts it into the console at the cursor;
   activating a saved query opens it in a new console. The + button
   saves the console's selection (or whole editor) under a name.
-- Aggregate: the count/sum/avg/min/max summary a grid's Aggregate
-  menu item produces; show_aggregate() fills it and switches to it.
+- Aggregate: the count/sum/avg/min/max summary of the cells selected
+  in the active grid. set_aggregate() keeps it current as the
+  selection changes — so opening the panel is enough to read it — and
+  show_aggregate() (the grid's Aggregate menu item) additionally
+  brings the page to the front.
 - Filters: the workspace's saved filter sets for the active table
   (keyed connection.database.table). Activating one applies it; the
   + button saves the table's current filter under a name. The window
@@ -337,7 +340,9 @@ class SidePanel(Gtk.Box):
         )
         self._agg_label.add_css_class("aggregate-summary")
         self._agg_placeholder = Gtk.Label(
-            label="Select cells in a grid and choose Aggregate", margin_top=24
+            label="Select cells in a grid to summarise them",
+            margin_top=24,
+            wrap=True,
         )
         self._agg_placeholder.add_css_class("dim-label")
         agg_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -396,6 +401,10 @@ class SidePanel(Gtk.Box):
 
     def set_context(self, context: str) -> None:
         names = _CONTEXT_PAGES.get(context, _CONTEXT_PAGES["other"])
+        if "aggregate" not in names:
+            # The summary belongs to a grid's selection; a tab without
+            # one must not leave the previous tab's numbers standing.
+            self.set_aggregate([])
         pages = self._stack.get_pages()
         for i in range(pages.get_n_items()):
             page = pages.get_item(i)
@@ -442,11 +451,18 @@ class SidePanel(Gtk.Box):
 
     # Aggregate
 
+    def set_aggregate(self, lines: list[str]) -> None:
+        """Fill (or, with no lines, empty) the aggregate page without
+        moving the panel: the grid calls this on every selection
+        change, whether or not anyone is looking."""
+        self._agg_label.set_text("\n".join(lines).expandtabs(12))
+        self._agg_label.set_visible(bool(lines))
+        self._agg_placeholder.set_visible(not lines)
+
     def show_aggregate(self, lines: list[str]) -> None:
         """Fill the aggregate page and switch to it (the window reveals
         the panel itself)."""
-        self._agg_label.set_text("\n".join(lines).expandtabs(12))
-        self._agg_placeholder.set_visible(False)
+        self.set_aggregate(lines)
         self._stack.set_visible_child_name("aggregate")
 
     def show_history(self) -> None:

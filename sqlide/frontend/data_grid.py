@@ -6,23 +6,28 @@ cells are Gtk.EditableLabel and committed edits go through a callback.
 Editing is locked until set_unlocked(True); mark_modified() highlights
 cells with uncommitted changes.
 
-Columns can be dragged to reorder and resized at their edges; when the
-grid is sortable (on_header_sort), sorting is on the header's
-right-click menu — never on left-click, which stays free for the
-reorder drag — and sorted columns show an arrow in their title. Cells
-are selectable for copying: click selects a cell, dragging (or
+Columns can be dragged to reorder and resized at their edges. Either
+mouse button on a column header opens the same menu — sort (when the
+grid is sortable through on_header_sort), copy and move — so there is
+nothing to learn about which button does what; sorted columns show an
+arrow in their title. The pointer says which of the three things a
+header press will do: grab (reorder), col-resize (at the edges), cell
+over the data.
+
+Cells are selectable for copying: click selects a cell, dragging (or
 Shift+click) extends to a rectangular block, a header click selects
-the whole column (and, without a drag, pops up a Copy / Copy As /
-Aggregate menu), a click on the row-number stub column selects the
+the whole column, a click on the row-number stub column selects the
 whole row, and the context menu selects a whole row or column.
 The selection renders as a border around the selected region.
 Ctrl+C (or the context menu's Copy) copies the selection as
 tab-separated text; row and block selections include a header line with
 the column names, following the current display order of the columns.
 "Copy As" offers CSV, INSERT statements, pretty (ASCII table) and
-Markdown. "Aggregate" computes a summary (count/sum/avg/min/max) of
-the selected cells and hands it to the on_aggregate callback, which
-the window routes to the Aggregate page of the right side panel.
+Markdown. Every selection is also summarised (count/sum/avg/min/max)
+and handed to the on_aggregate callback, which the window routes to
+the Aggregate page of the right side panel — the menu's "Aggregate"
+item only brings that page to the front, it is not what computes the
+summary.
 
 TableTab: a ResultGrid bound to one table — paged loading, refresh, and
 primary-key-based cell editing. Editing is opt-in: a toggle in the
@@ -74,6 +79,11 @@ COPY_FORMATS = (
 # on_edit(row_item, column_index, new_text_or_None_for_NULL)
 EditCallback = Callable[["RowItem", int, str | None], None]
 
+# on_aggregate(summary_lines, live). live=True is the running summary of
+# whatever is selected — fill the panel but leave it where it is;
+# live=False is the user asking for it, which may raise the panel.
+AggregateCallback = Callable[[list[str], bool], None]
+
 
 class RowItem(GObject.Object):
     """One result row; values indexed by column position."""
@@ -88,18 +98,17 @@ class ResultGrid(Gtk.ScrolledWindow):
         self,
         on_edit: EditCallback | None = None,
         table_name: str | None = None,
-        on_aggregate: Callable[[list[str]], None] | None = None,
+        on_aggregate: AggregateCallback | None = None,
         on_header_sort: Callable[[list[tuple[str, bool]]], None] | None = None,
     ) -> None:
         super().__init__(vexpand=True, hexpand=True)
         self.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self._on_edit = on_edit
         self._aggregate_cb = on_aggregate
-        # When set, each column header gets a right-click sort menu:
-        # the grid never sorts locally; it reports the composed column
-        # list as (name, descending) pairs, primary first, so the
-        # owner can re-query. Left-click on a header does nothing, so
-        # dragging it reorders columns without accidentally sorting.
+        # When set, the column-header menu grows a sort section: the
+        # grid never sorts locally; it reports the composed column list
+        # as (name, descending) pairs, primary first, so the owner can
+        # re-query.
         self._on_header_sort = on_header_sort
         self._sort_order: list[tuple[str, bool]] = []
         # Used by "Copy As > INSERT Statement"; falls back to a placeholder.
@@ -203,33 +212,36 @@ class ResultGrid(Gtk.ScrolledWindow):
         self._popover.set_parent(self._view)
         self._popover.set_has_arrow(False)
 
-        # Popped up by a plain left-click on a column header (the click
-        # already selected the whole column, so no Select items here).
-        header_menu = Gio.Menu()
-        header_menu.append("Copy", "grid.copy")
-        header_copy_as = Gio.Menu()
-        for label, fmt in COPY_FORMATS:
-            header_copy_as.append(label, f"grid.copy-as::{fmt}")
-        header_menu.append_submenu("Copy As", header_copy_as)
-        header_menu.append("Aggregate", "grid.aggregate")
-        self._header_popover = Gtk.PopoverMenu.new_from_model(header_menu)
+        # Popped up by either button on a column header; the model is
+        # rebuilt per column (see _column_menu).
+        self._header_popover = Gtk.PopoverMenu.new_from_model(Gio.Menu())
         self._header_popover.set_parent(self._view)
         self._header_popover.set_has_arrow(False)
 
         self._view.connect("destroy", self._on_view_destroy)
 
-        # Drag with the primary button to select a rectangular block
-        # (mouse-only alternative to Shift+click). The gesture sits on
-        # the view; it stays unclaimed until the pointer crosses into a
-        # different cell, so plain clicks, in-cell edits and header
-        # drags (reorder/resize) are unaffected.
+        # Hold the primary button and drag to select a rectangular
+        # block (mouse-only alternative to Shift+click). A gesture
+        # cannot do this: the cell's own click gesture claims the press
+        # (that is what keeps a locked cell from starting an edit), and
+        # claiming denies every other gesture in the chain — which is
+        # why the drag used to do nothing. A motion controller is not a
+        # gesture, so it keeps seeing the pointer either way; the press
+        # only leaves the anchor behind for it.
         self._drag_anchor: tuple[int, int] | None = None
-        self._drag_start = (0.0, 0.0)
-        drag = Gtk.GestureDrag(button=Gdk.BUTTON_PRIMARY)
-        drag.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        drag.connect("drag-begin", self._on_drag_begin)
-        drag.connect("drag-update", self._on_drag_update)
-        self._view.add_controller(drag)
+        self._drag_last: tuple[int, int] | None = None
+        self._cursor_name = ""
+        motion = Gtk.EventControllerMotion()
+        motion.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        motion.connect("motion", self._on_motion)
+        self._view.add_controller(motion)
+
+        # Secondary button on a header: same menu as the left click, so
+        # nothing depends on knowing which button to use.
+        header_menu_click = Gtk.GestureClick(button=Gdk.BUTTON_SECONDARY)
+        header_menu_click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        header_menu_click.connect("pressed", self._on_header_secondary)
+        self._view.add_controller(header_menu_click)
 
         # Drag a column header to reorder: begun over a header title
         # (away from its edges, which stay free for column resizing),
@@ -245,6 +257,8 @@ class ResultGrid(Gtk.ScrolledWindow):
         header_drag.connect("drag-update", self._on_header_drag_update)
         header_drag.connect("drag-end", self._on_header_drag_end)
         self._view.add_controller(header_drag)
+        # Data column the last header press was on, for its menu.
+        self._header_click_col: int | None = None
 
         shortcuts = Gtk.ShortcutController()
         shortcuts.set_scope(Gtk.ShortcutScope.LOCAL)
@@ -368,11 +382,10 @@ class ResultGrid(Gtk.ScrolledWindow):
             column = Gtk.ColumnViewColumn(title=name, factory=factory)
             column.set_resizable(True)
             column.set_expand(True)
-            if self._on_header_sort is not None:
-                # Sorting lives in the header's right-click menu (and
-                # the owner's sort panel) — never on left-click, which
-                # stays free for drag-reordering the column.
-                column.set_header_menu(self._header_menu(index))
+            # No set_header_menu(): GTK's own header menu would be a
+            # second, different menu on the secondary button, and it
+            # cannot tell the grid which column it was opened on. Both
+            # buttons go through _column_menu instead.
             self._column_objs.append(column)
 
         for index in display_order or range(len(self._column_objs)):
@@ -406,15 +419,32 @@ class ResultGrid(Gtk.ScrolledWindow):
             arrow = arrows.get(name)
             column.set_title(f"{name} {arrow}" if arrow else name)
 
-    def _header_menu(self, index: int) -> Gio.Menu:
-        """Right-click menu of one column header: sort this column
-        (made primary, previous columns demoted), stop sorting by it,
-        or clear the whole order."""
+    def _column_menu(self, index: int) -> Gio.Menu:
+        """Everything one column header offers, on either button:
+        sorting (this column made primary, previously sorted columns
+        demoted; or dropped from the order), the copy/aggregate items
+        for the column the press just selected, and moving the column.
+        Unsortable grids simply have no sort section."""
         menu = Gio.Menu()
-        menu.append("Sort Ascending", f"grid.header-sort::{index}|asc")
-        menu.append("Sort Descending", f"grid.header-sort::{index}|desc")
-        menu.append("Don't Sort", f"grid.header-sort::{index}|none")
-        menu.append("Clear Sort", f"grid.header-sort::{index}|clear")
+        if self._on_header_sort is not None:
+            sort = Gio.Menu()
+            sort.append("Sort Ascending", f"grid.header-sort::{index}|asc")
+            sort.append("Sort Descending", f"grid.header-sort::{index}|desc")
+            sort.append("Don't Sort", f"grid.header-sort::{index}|none")
+            sort.append("Clear Sort", f"grid.header-sort::{index}|clear")
+            menu.append_section(None, sort)
+        copy_section = Gio.Menu()
+        copy_section.append("Copy", "grid.copy")
+        copy_as = Gio.Menu()
+        for label, fmt in COPY_FORMATS:
+            copy_as.append(label, f"grid.copy-as::{fmt}")
+        copy_section.append_submenu("Copy As", copy_as)
+        copy_section.append("Aggregate", "grid.aggregate")
+        menu.append_section(None, copy_section)
+        move_section = Gio.Menu()
+        move_section.append("Move Column Left", "grid.move-left")
+        move_section.append("Move Column Right", "grid.move-right")
+        menu.append_section(None, move_section)
         return menu
 
     def _on_header_sort_action(self, _action, param) -> None:
@@ -496,6 +526,7 @@ class ResultGrid(Gtk.ScrolledWindow):
         # Anchor on the first display column so Shift+click extends
         # from this row like any other selection.
         self._anchor = (row, order[0]) if order else None
+        self._drag_anchor = None  # a row press starts no block drag
         self._select({row}, set(range(len(self._column_names))), "row")
 
     # Editable cells
@@ -610,6 +641,11 @@ class ResultGrid(Gtk.ScrolledWindow):
         self._sel_cols = cols
         self._sel_kind = kind
         self._restyle_cells()
+        # A selection is a question about those cells, so answer it
+        # straight away: the side panel's Aggregate page is filled as
+        # the selection changes and is simply there when it is opened.
+        if self._aggregate_cb is not None and rows and cols:
+            self._aggregate_cb(self._aggregate_lines(), True)
 
     def _on_cell_pressed(self, gesture, _n_press, x, y) -> None:
         widget = gesture.get_widget()
@@ -625,6 +661,7 @@ class ResultGrid(Gtk.ScrolledWindow):
         shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
         if button == Gdk.BUTTON_SECONDARY:
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            self._drag_anchor = None
             if row not in self._sel_rows or index not in self._sel_cols:
                 self._anchor = (row, index)
                 self._select({row}, {index}, "cell")
@@ -633,6 +670,8 @@ class ResultGrid(Gtk.ScrolledWindow):
         elif button == Gdk.BUTTON_PRIMARY:
             if shift and self._anchor is not None:
                 gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+                self._drag_anchor = self._anchor
+                self._drag_last = (row, index)
                 self._select_block(self._anchor, (row, index))
             else:
                 if self._editable_grid and not self._unlocked:
@@ -642,6 +681,9 @@ class ResultGrid(Gtk.ScrolledWindow):
                 # When unlocked the press is not claimed, so the same
                 # click still starts the edit.
                 self._anchor = (row, index)
+                # Held down, this is the start of a block drag; the
+                # motion controller takes it from here.
+                self._drag_anchor = self._drag_last = (row, index)
                 self._select({row}, {index}, "cell")
 
     def _cell_at(self, x: float, y: float) -> tuple[int, int] | None:
@@ -657,20 +699,64 @@ class ResultGrid(Gtk.ScrolledWindow):
             return None
         return (row, index)
 
-    def _on_drag_begin(self, _gesture, x, y) -> None:
-        self._drag_start = (x, y)
-        self._drag_anchor = self._cell_at(x, y)
+    # Pointer (block drag + cursor)
 
-    def _on_drag_update(self, gesture, dx, dy) -> None:
-        if self._drag_anchor is None:
+    def _on_motion(self, controller, x, y) -> None:
+        held = bool(
+            controller.get_current_event_state()
+            & Gdk.ModifierType.BUTTON1_MASK
+        )
+        if not held:
+            # The button is up again: the drag, if there was one, ended.
+            self._drag_anchor = None
+        elif self._drag_anchor is not None and self._header_drag_pos is None:
+            self._extend_drag(x, y)
+        self._update_cursor(x, y, held)
+
+    def _extend_drag(self, x: float, y: float) -> None:
+        """Grow the selection to the cell under the pointer."""
+        cell = self._cell_at(x, y)
+        if cell is None or cell == self._drag_last:
             return
-        x, y = self._drag_start
-        cell = self._cell_at(x + dx, y + dy)
-        if cell is None or cell == self._drag_anchor:
-            return
-        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        self._drag_last = cell
+        # An unlocked cell starts editing on the press that began this
+        # drag; the drag is clearly not an edit, so drop out of it.
+        self._stop_cell_editing()
         self._anchor = self._drag_anchor
         self._select_block(self._drag_anchor, cell)
+
+    def _stop_cell_editing(self) -> None:
+        for widget in self._bound_cells:
+            if isinstance(widget, Gtk.EditableLabel) and widget.get_property(
+                "editing"
+            ):
+                widget.stop_editing(False)
+
+    def _update_cursor(self, x: float, y: float, held: bool) -> None:
+        """Name the pointer after what a press would do here: reorder a
+        column, resize it, or select cells."""
+        if self._header_drag_pos is not None:
+            name = "grabbing"
+        elif self._header_title_at(x, y) is not None:
+            name = "grab"
+            spans = self._header_spans()
+            position = self._span_at(spans, x)
+            if position is None or position == 0:
+                name = "default"  # the row-number stub moves nowhere
+            else:
+                start, end = spans[position]
+                if x - start < self._RESIZE_EDGE or end - x < self._RESIZE_EDGE:
+                    name = "col-resize"
+        elif held and self._drag_anchor is not None:
+            name = "cell"
+        else:
+            name = "cell" if self._cell_at(x, y) is not None else "default"
+        if name == self._cursor_name:
+            return
+        self._cursor_name = name
+        self._view.set_cursor(
+            None if name == "default" else Gdk.Cursor.new_from_name(name)
+        )
 
     # Header drag-reorder
 
@@ -768,19 +854,17 @@ class ResultGrid(Gtk.ScrolledWindow):
 
     def _on_header_drag_begin(self, gesture, x, y) -> None:
         if self._begin_header_drag(x, y):
-            # Sorting is on right-click, so the left press is free:
-            # claim it, select the whole column (a plain click ends in
-            # the Copy/Aggregate menu at drag-end), and let any
+            # Claim the press, select the whole column (a plain click
+            # ends in the column menu at drag-end), and let any
             # movement reorder it.
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            self._cursor_name = "grabbing"
             self._view.set_cursor(Gdk.Cursor.new_from_name("grabbing"))
             self._header_moved = False
+            self._drag_anchor = None  # a header press selects no cell
             order = self._display_order()
-            self._select(
-                set(range(self._store.get_n_items())),
-                {order[self._header_drag_pos - 1]},
-                "column",
-            )
+            self._header_click_col = order[self._header_drag_pos - 1]
+            self._select_whole_column(self._header_click_col)
 
     def _on_header_drag_update(self, _gesture, dx, _dy) -> None:
         self._update_header_drag(self._header_drag_start[0] + dx)
@@ -793,13 +877,36 @@ class ResultGrid(Gtk.ScrolledWindow):
             and abs(dy) < self._CLICK_SLOP
         )
         self._header_drag_pos = None
+        self._cursor_name = ""
         self._view.set_cursor(None)
-        if was_click:
-            self._popup_header_menu()
+        if was_click and self._header_click_col is not None:
+            self._popup_header_menu(self._header_click_col)
 
-    def _popup_header_menu(self) -> None:
-        """Offer Copy / Copy As / Aggregate for the column a plain
-        header click just selected."""
+    def _on_header_secondary(self, gesture, _n_press, x, y) -> None:
+        """Secondary button on a header: select the column and open the
+        same menu the left click opens."""
+        if self._header_title_at(x, y) is None:
+            return
+        spans = self._header_spans()
+        position = self._span_at(spans, x)
+        order = self._display_order()
+        if position is None or not 1 <= position <= len(order):
+            return
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        column = order[position - 1]
+        self._drag_anchor = None
+        self._select_whole_column(column)
+        self._header_drag_start = (x, y)
+        self._popup_header_menu(column)
+
+    def _select_whole_column(self, column: int) -> None:
+        self._select(set(range(self._store.get_n_items())), {column}, "column")
+        # Move Column Left/Right read the menu's column from here.
+        self._menu_cell = (0, column)
+
+    def _popup_header_menu(self, column: int) -> None:
+        """Open one column's menu where the press landed."""
+        self._header_popover.set_menu_model(self._column_menu(column))
         x, y = self._header_drag_start
         rect = Gdk.Rectangle()
         rect.x, rect.y = int(x), int(y)
@@ -930,9 +1037,16 @@ class ResultGrid(Gtk.ScrolledWindow):
     # Aggregate
 
     def _on_aggregate(self, *_args) -> None:
+        """The menu item: the summary is already computed for every
+        selection, so this only asks for the panel showing it."""
+        if self._aggregate_cb is not None:
+            self._aggregate_cb(self._aggregate_lines(), False)
+
+    def _aggregate_lines(self) -> list[str]:
+        """count/sum/avg/min/max of the selected cells."""
         data = self._selection_data()
-        if data is None or self._aggregate_cb is None:
-            return
+        if data is None:
+            return []
         _headers, rows = data
         values = [v for row in rows for v in row]
         numbers = []
@@ -957,7 +1071,7 @@ class ResultGrid(Gtk.ScrolledWindow):
                 f"Min\t{_format_number(min(numbers))}",
                 f"Max\t{_format_number(max(numbers))}",
             ]
-        self._aggregate_cb(lines)
+        return lines
 
 
 def _cell_text(value: Any) -> str:
@@ -1321,7 +1435,7 @@ class TableTab(Gtk.Box):
         table: str,
         ensure_connector: Callable[[ConnectionProfile], Connector],
         show_error: Callable[[str], None],
-        on_aggregate: Callable[[list[str]], None] | None = None,
+        on_aggregate: AggregateCallback | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.profile = profile

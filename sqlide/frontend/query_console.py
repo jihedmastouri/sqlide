@@ -62,7 +62,11 @@ from sqlide.backend.db.base import Connector, ResultSet
 from sqlide.backend.sql_split import split_statements, statement_at
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend import confirm, feedback
-from sqlide.frontend.data_grid import ResultGrid, _format_json
+from sqlide.frontend.data_grid import (
+    AggregateCallback,
+    ResultGrid,
+    _format_json,
+)
 from sqlide.frontend.lsp_completion import LspCompletionProvider
 from sqlide.frontend.results_panel import ResultsPanel
 from sqlide.frontend.sql_editor import SqlEditor
@@ -82,7 +86,7 @@ class QueryConsole(Gtk.Box):
         sql: str = "",
         connection: str = "",
         on_ran: Callable[[str, str, bool], None] | None = None,
-        on_aggregate: Callable[[list[str]], None] | None = None,
+        on_aggregate: AggregateCallback | None = None,
         transaction_active: Callable[[str], bool] | None = None,
         placeholders: dict[str, str] | None = None,
     ) -> None:

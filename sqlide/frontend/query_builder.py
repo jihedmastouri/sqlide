@@ -32,6 +32,7 @@ from sqlide.backend.db.base import (
 )
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend.data_grid import (
+    AggregateCallback,
     ResultGrid,
     _FilterRow,
     _selected_string,
@@ -145,7 +146,7 @@ class QueryBuilderTab(Gtk.Box):
         ensure_connector: Callable[[ConnectionProfile], Connector],
         show_error: Callable[[str], None],
         table: str = "",
-        on_aggregate: Callable[[list[str]], None] | None = None,
+        on_aggregate: AggregateCallback | None = None,
         on_open_console: Callable[[ConnectionProfile, str], None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)

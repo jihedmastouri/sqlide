@@ -1049,8 +1049,16 @@ class MainWindow(Adw.ApplicationWindow):
         self._toasts.add_toast(Adw.Toast(title=message))
         self._status_bar.set_status(message, error=True)
 
-    def show_aggregate(self, lines: list[str]) -> None:
-        """Route a grid's Aggregate summary into the side panel."""
+    def show_aggregate(self, lines: list[str], live: bool = False) -> None:
+        """Route a grid's summary of its selection into the side panel.
+
+        Live summaries (every selection change) only fill the page, so
+        the panel keeps showing whatever the user put there; the
+        Aggregate menu item asks for the page and gets the panel
+        opened on it."""
+        if live:
+            self._side_panel.set_aggregate(lines)
+            return
         self._side_panel.show_aggregate(lines)
         self._history_split.set_show_sidebar(True)
 

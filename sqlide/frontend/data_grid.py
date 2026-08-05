@@ -56,6 +56,7 @@ from sqlide.backend.db.base import (
     SortSpec,
 )
 from sqlide.backend.workspaces import TabState
+from sqlide.frontend import confirm
 from sqlide.frontend.util import run_async
 
 PAGE_SIZE = 500
@@ -1246,7 +1247,12 @@ class TableTab(Gtk.Box):
 
     Cell editing is locked until the pencil toggle is pressed. Edits are
     held locally (pending) and only hit the database after Save, which
-    first shows the UPDATE statements in an UpdatePreviewDialog."""
+    first shows the UPDATE statements in an UpdatePreviewDialog naming
+    the connection they will run against.
+
+    On a production connection (backend/identity.py) unlocking asks
+    first, and the lock re-arms on every load — editing is never left
+    open behind the user's back."""
 
     def __init__(
         self,
@@ -1279,6 +1285,9 @@ class TableTab(Gtk.Box):
         self._pending: dict[
             RowItem, tuple[dict[str, Any], dict[str, str | None]]
         ] = {}
+        # Guards the re-entrant unlock on production connections: the
+        # confirmation flips the toggle back on itself.
+        self._unlock_confirmed = False
 
         # Filter and sort are separate panels behind separate toggles;
         # both can be revealed at the same time.
@@ -1416,6 +1425,10 @@ class TableTab(Gtk.Box):
                 [(s.column, s.descending) for s in order_by]
             )
             self._edit_toggle.set_sensitive(editable)
+            if self.profile.environment == "production":
+                # Production re-arms the lock on every load, so editing
+                # is never left open behind the user's back.
+                self._edit_toggle.set_active(False)
             self._grid.set_unlocked(editable and self._edit_toggle.get_active())
             count = len(result)
             page = f"{offset + 1}–{offset + count}" if count else "no rows"
@@ -1684,7 +1697,30 @@ class TableTab(Gtk.Box):
     def _on_edit_toggled(self, toggle: Gtk.ToggleButton) -> None:
         # Locking with pending edits keeps them pending; Save (or a
         # discarding Refresh) is still available.
+        if (
+            toggle.get_active()
+            and self.profile.environment == "production"
+            and not self._unlock_confirmed
+        ):
+            # Production re-arms the lock (see reload), so this asks
+            # once per unlock rather than once per tab.
+            toggle.set_active(False)
+            confirm.present(
+                self,
+                heading=f"Edit “{self.table}” on production?",
+                body="Cells you change here are written to "
+                f"{confirm.describe_connection(self.profile)} when you "
+                "save.",
+                confirm_label="Unlock Editing",
+                on_confirm=self._unlock_after_confirm,
+            )
+            return
         self._grid.set_unlocked(toggle.get_active())
+
+    def _unlock_after_confirm(self) -> None:
+        self._unlock_confirmed = True
+        self._edit_toggle.set_active(True)
+        self._unlock_confirmed = False
 
     def _commit_edit(
         self, row: RowItem, index: int, new_text: str | None
@@ -1738,7 +1774,10 @@ class TableTab(Gtk.Box):
             for pk_values, column, value in updates
         ]
         dialog = UpdatePreviewDialog(
-            statements, lambda: self._execute_updates(updates)
+            statements,
+            lambda: self._execute_updates(updates),
+            caption="Values are bound as parameters when executed. "
+            f"They are written to {confirm.describe_connection(self.profile)}.",
         )
         dialog.present(self)
 

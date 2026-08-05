@@ -60,6 +60,7 @@ from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import Connector, ResultSet
 from sqlide.backend.sql_split import split_statements, statement_at
 from sqlide.backend.workspaces import TabState
+from sqlide.frontend import confirm
 from sqlide.frontend.data_grid import ResultGrid, _format_json
 from sqlide.frontend.lsp_completion import LspCompletionProvider
 from sqlide.frontend.results_panel import ResultsPanel
@@ -586,7 +587,11 @@ class QueryConsole(Gtk.Box):
     ) -> None:
         """Execute statements (from the editor, a transaction button…)
         over the selected connection; with explain=True each one runs
-        behind the adapter's explain prefix instead."""
+        behind the adapter's explain prefix instead.
+
+        Destructive statements climb the ladder in frontend/confirm.py
+        first — how far depends on the connection's environment class.
+        Explain never runs the statement, so it never asks."""
         name = self.selected_connection()
         if not name:
             self._set_status("No connection selected", error=True)
@@ -595,6 +600,23 @@ class QueryConsole(Gtk.Box):
         if profile is None:
             self._set_status(f"Unknown connection: {name}", error=True)
             return
+        if explain:
+            self._start_statements(statements, profile, explain=True)
+            return
+        confirm.confirm_statements(
+            self,
+            statements,
+            profile,
+            lambda: self._start_statements(statements, profile),
+        )
+
+    def _start_statements(
+        self,
+        statements: list[str],
+        profile: ConnectionProfile,
+        explain: bool = False,
+    ) -> None:
+        name = profile.name
         self._run_button.set_sensitive(False)
         self._run_all_button.set_sensitive(False)
         self._explain_button.set_sensitive(False)

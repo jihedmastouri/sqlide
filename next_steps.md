@@ -22,7 +22,7 @@ through what it builds. Ship it first.
       or name looks like production, never set automatically.
 - [x] Apply colour: window stripe, launcher dot, sidebar connection bar, tab
       stripe. Every one paired with a non-colour cue; a test enumerates this.
-- [ ] Environment classes change behaviour, not just appearance: confirmation
+- [x] Environment classes change behaviour, not just appearance: confirmation
       friction, edit-lock re-arming, privacy default, read-only suggestion —
       see the design notes for the table.
 - [ ] Persistent status bar (identity · context · jobs · status zones), replacing

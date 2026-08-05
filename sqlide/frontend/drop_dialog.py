@@ -3,20 +3,23 @@
 One uniform, form-free flow for every kind (table, view, index,
 trigger, function, procedure, event): the exact DROP statement is
 built by the adapter on a worker thread (Postgres resolves function
-signatures from the catalog), shown in a destructive-styled
-AlertDialog — with a CASCADE checkbox where the dialect supports it —
-and executed on a worker thread when confirmed. The caller records
-the run in history and reloads the sidebar via `on_executed`.
+signatures from the catalog), shown on the destructive-action ladder
+(frontend/confirm.py — a production connection asks for the object's
+name) with a CASCADE checkbox where the dialect supports it, and
+executed on a worker thread when confirmed. The caller records the run
+in history and reloads the sidebar via `on_executed`.
 """
 
 from __future__ import annotations
 
 from typing import Callable
 
-from gi.repository import Adw, Gtk
+from gi.repository import Gtk
 
+from sqlide.backend import sql_risk
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import Connector
+from sqlide.frontend import confirm
 from sqlide.frontend.util import run_async
 
 
@@ -64,18 +67,10 @@ def _present(
     show_error: Callable[[str], None],
     on_executed: Callable[[str, bool], None],
 ) -> None:
-    dialog = Adw.AlertDialog(
-        heading=f"Drop {kind} “{name}”?",
-        body=f"This permanently removes the {kind} from "
-        f"“{profile.name}”. The statement below runs as shown.",
-    )
     statement = Gtk.Label(
         label=sql + ";", xalign=0, wrap=True, selectable=True
     )
     statement.add_css_class("monospace")
-
-    extra = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-    extra.append(statement)
     cascade = None
     if cascade_sql:
         cascade = Gtk.CheckButton(label="Also drop dependent objects (CASCADE)")
@@ -85,18 +80,8 @@ def _present(
                 (cascade_sql if button.get_active() else sql) + ";"
             ),
         )
-        extra.append(cascade)
-    dialog.set_extra_child(extra)
 
-    dialog.add_response("cancel", "Cancel")
-    dialog.add_response("drop", "Drop")
-    dialog.set_response_appearance("drop", Adw.ResponseAppearance.DESTRUCTIVE)
-    dialog.set_default_response("cancel")
-    dialog.set_close_response("cancel")
-
-    def respond(_dialog, response: str) -> None:
-        if response != "drop":
-            return
+    def run(*_args) -> None:
         chosen = (
             cascade_sql if cascade is not None and cascade.get_active()
             else sql
@@ -107,5 +92,21 @@ def _present(
             lambda exc: (show_error(str(exc)), on_executed(chosen, False)),
         )
 
-    dialog.connect("response", respond)
-    dialog.present(parent)
+    # A drop is always confirmed; on a production connection it also
+    # asks for the object's name (frontend/confirm.py's top rung).
+    level = confirm.level_for(sql_risk.classify(sql), profile)
+    dialog = confirm.present(
+        parent,
+        heading=f"Drop {kind} “{name}”?",
+        body=f"This permanently removes the {kind} from "
+        f"{confirm.describe_connection(profile)}. The statement below "
+        "runs as shown.",
+        confirm_label="Drop",
+        level=level,
+        type_target=name,
+        on_confirm=run,
+    )
+    extra = dialog.get_extra_child()
+    extra.prepend(statement)
+    if cascade is not None:
+        extra.append(cascade)

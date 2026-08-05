@@ -18,6 +18,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Callable
 
+from sqlide.frontend.util import describe
 from gi.repository import Adw, Gtk
 
 from sqlide.backend.workspaces import HistoryEntry
@@ -51,7 +52,7 @@ class HistoryPanel(Gtk.Box):
         self._scope.connect("notify::selected", lambda *_: self._rebuild())
         clear_button = Gtk.Button(icon_name="user-trash-symbolic")
         clear_button.add_css_class("flat")
-        clear_button.set_tooltip_text("Clear history")
+        describe(clear_button, "Clear history")
         clear_button.connect("clicked", lambda *_: on_clear())
         controls.append(self._scope)
         controls.append(clear_button)

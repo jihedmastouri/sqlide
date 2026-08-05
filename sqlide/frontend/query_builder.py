@@ -39,7 +39,7 @@ from sqlide.frontend.data_grid import (
     _SortRow,
 )
 from sqlide.frontend.results_panel import ResultsPanel
-from sqlide.frontend.util import run_async
+from sqlide.frontend.util import describe, run_async
 
 JOIN_KINDS = ("INNER JOIN", "LEFT JOIN", "RIGHT JOIN")
 DEFAULT_LIMIT = 500
@@ -74,7 +74,7 @@ class _JoinRow(Gtk.Box):
         )
         remove = Gtk.Button(icon_name="list-remove-symbolic")
         remove.add_css_class("flat")
-        remove.set_tooltip_text("Remove join")
+        describe(remove, "Remove join")
         remove.connect("clicked", lambda *_: on_remove(self))
         for widget in (self._kind, self._table):
             self.append(widget)

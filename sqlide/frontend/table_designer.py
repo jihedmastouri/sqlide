@@ -21,7 +21,7 @@ from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import ColumnInfo, Connector
 from sqlide.frontend.data_grid import UpdatePreviewDialog
 from sqlide.frontend.sql_editor import SqlEditor
-from sqlide.frontend.util import run_async
+from sqlide.frontend.util import describe, run_async
 
 
 class _ColumnRow(Gtk.ListBoxRow):
@@ -49,7 +49,7 @@ class _ColumnRow(Gtk.ListBoxRow):
         self.type.connect("changed", lambda *_: on_changed())
         self._type_menu = Gtk.MenuButton(icon_name="pan-down-symbolic")
         self._type_menu.add_css_class("flat")
-        self._type_menu.set_tooltip_text("Common types for this dialect")
+        describe(self._type_menu, "Common types for this dialect")
         self.set_types(types)
         self.pk = Gtk.CheckButton(label="PK")
         self.pk.set_tooltip_text("Part of the primary key")
@@ -64,7 +64,7 @@ class _ColumnRow(Gtk.ListBoxRow):
         self.default.connect("changed", lambda *_: on_changed())
         remove = Gtk.Button(icon_name="user-trash-symbolic")
         remove.add_css_class("flat")
-        remove.set_tooltip_text("Remove this column")
+        describe(remove, "Remove this column")
         remove.connect("clicked", lambda *_: on_remove(self))
         for child in (
             self.name, self.type, self._type_menu, self.pk, self.nullable,

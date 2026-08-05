@@ -28,7 +28,7 @@ from gi.repository import Adw, Gdk, Gtk, Pango, PangoCairo
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import ColumnInfo, Connector, RelationInfo
 from sqlide.backend.workspaces import TabState
-from sqlide.frontend.util import run_async
+from sqlide.frontend.util import describe, run_async
 
 _ZOOM_STEPS = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)
 
@@ -110,17 +110,17 @@ class RelationGraphTab(Gtk.Box):
         )
         refresh = Gtk.Button(icon_name="view-refresh-symbolic")
         refresh.add_css_class("flat")
-        refresh.set_tooltip_text(
+        describe(refresh, 
             "Reload tables and relations (recomputes the layout)"
         )
         refresh.connect("clicked", lambda *_: self.reload())
         zoom_box = Gtk.Box()
         zoom_box.add_css_class("linked")
         zoom_out = Gtk.Button(icon_name="zoom-out-symbolic")
-        zoom_out.set_tooltip_text("Zoom out")
+        describe(zoom_out, "Zoom out")
         zoom_out.connect("clicked", lambda *_: self._step_zoom(-1))
         zoom_in = Gtk.Button(icon_name="zoom-in-symbolic")
-        zoom_in.set_tooltip_text("Zoom in")
+        describe(zoom_in, "Zoom in")
         zoom_in.connect("clicked", lambda *_: self._step_zoom(1))
         zoom_box.append(zoom_out)
         zoom_box.append(zoom_in)

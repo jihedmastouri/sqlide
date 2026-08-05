@@ -33,7 +33,7 @@ through what it builds. Ship it first.
       environment. Cancel focused by default everywhere.
 - [x] Empty states for every empty view; empty-result and empty-filter say
       different things.
-- [ ] Shortcuts window; accessible labels on every icon-only button; verify at
+- [x] Shortcuts window; accessible labels on every icon-only button; verify at
       200% text scale.
 
 ## Next — milestone 11, data editing completeness

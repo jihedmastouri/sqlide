@@ -57,7 +57,7 @@ from sqlide.backend.db.base import (
 )
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend import confirm, feedback
-from sqlide.frontend.util import run_async
+from sqlide.frontend.util import describe, run_async
 
 PAGE_SIZE = 500
 
@@ -254,7 +254,29 @@ class ResultGrid(Gtk.ScrolledWindow):
                 Gtk.CallbackAction.new(self._on_copy_shortcut),
             )
         )
+        # Everything in the cell menu must be reachable without a
+        # mouse, so the platform's menu keys open it on the selection.
+        for trigger in ("Menu", "<Shift>F10"):
+            shortcuts.add_shortcut(
+                Gtk.Shortcut.new(
+                    Gtk.ShortcutTrigger.parse_string(trigger),
+                    Gtk.CallbackAction.new(self._on_menu_shortcut),
+                )
+            )
         self._view.add_controller(shortcuts)
+
+    def _on_menu_shortcut(self, _widget, _args) -> bool:
+        """Pop the cell menu up over the selection (the top-left cell
+        of it), or over the grid's corner when nothing is selected."""
+        if self._sel_rows and self._sel_cols:
+            self._menu_cell = (min(self._sel_rows), min(self._sel_cols))
+        rect = Gdk.Rectangle()
+        rect.x = rect.y = 8
+        rect.width = rect.height = 1
+        self._menu_rect = rect
+        self._popover.set_pointing_to(rect)
+        self._popover.popup()
+        return True
 
     def clear(self) -> None:
         self.set_result([], [])
@@ -1044,11 +1066,11 @@ class _FilterRow(Gtk.Box):
             self._value.connect("changed", lambda *_: on_change())
         self._remove = Gtk.Button(icon_name="list-remove-symbolic")
         self._remove.add_css_class("flat")
-        self._remove.set_tooltip_text("Remove condition")
+        describe(self._remove, "Remove condition")
         self._remove.connect("clicked", lambda *_: on_remove(self))
         self._close = Gtk.Button(icon_name="window-close-symbolic")
         self._close.add_css_class("flat")
-        self._close.set_tooltip_text("Close filters")
+        describe(self._close, "Close filters")
         self._close.set_visible(False)
         if on_close is not None:
             self._close.connect("clicked", lambda *_: on_close())
@@ -1143,19 +1165,19 @@ class _SortRow(Gtk.Box):
                 dropdown.connect("notify::selected", lambda *_: on_change())
         up = Gtk.Button(icon_name="go-up-symbolic")
         up.add_css_class("flat")
-        up.set_tooltip_text("Sort by this column earlier")
+        describe(up, "Sort by this column earlier")
         up.connect("clicked", lambda *_: on_move(self, -1))
         down = Gtk.Button(icon_name="go-down-symbolic")
         down.add_css_class("flat")
-        down.set_tooltip_text("Sort by this column later")
+        describe(down, "Sort by this column later")
         down.connect("clicked", lambda *_: on_move(self, 1))
         self._remove = Gtk.Button(icon_name="list-remove-symbolic")
         self._remove.add_css_class("flat")
-        self._remove.set_tooltip_text("Remove sort column")
+        describe(self._remove, "Remove sort column")
         self._remove.connect("clicked", lambda *_: on_remove(self))
         self._close = Gtk.Button(icon_name="window-close-symbolic")
         self._close.add_css_class("flat")
-        self._close.set_tooltip_text("Close sort")
+        describe(self._close, "Close sort")
         self._close.set_visible(False)
         if on_close is not None:
             self._close.connect("clicked", lambda *_: on_close())
@@ -1353,10 +1375,10 @@ class TableTab(Gtk.Box):
 
         bar = Gtk.ActionBar()
         self._prev = Gtk.Button(icon_name="go-previous-symbolic")
-        self._prev.set_tooltip_text("Previous page")
+        describe(self._prev, "Previous page")
         self._prev.connect("clicked", self._on_prev)
         self._next = Gtk.Button(icon_name="go-next-symbolic")
-        self._next.set_tooltip_text("Next page")
+        describe(self._next, "Next page")
         self._next.connect("clicked", self._on_next)
         self._page_label = Gtk.Label()
         bar.pack_start(self._prev)
@@ -1364,10 +1386,10 @@ class TableTab(Gtk.Box):
         bar.pack_start(self._next)
 
         refresh = Gtk.Button(icon_name="view-refresh-symbolic")
-        refresh.set_tooltip_text("Refresh (discards unsaved edits)")
+        describe(refresh, "Refresh (discards unsaved edits)")
         refresh.connect("clicked", lambda *_: self.reload())
         self._filter_toggle = Gtk.ToggleButton(icon_name="edit-find-symbolic")
-        self._filter_toggle.set_tooltip_text("Filter rows")
+        describe(self._filter_toggle, "Filter rows")
         self._filter_toggle.connect("toggled", self._on_filter_toggled)
         self._sort_toggle = Gtk.ToggleButton(
             icon_name="view-sort-descending-symbolic"
@@ -1375,7 +1397,7 @@ class TableTab(Gtk.Box):
         self._sort_toggle.set_tooltip_text("Sort rows")
         self._sort_toggle.connect("toggled", self._on_sort_toggled)
         self._edit_toggle = Gtk.ToggleButton(icon_name="document-edit-symbolic")
-        self._edit_toggle.set_tooltip_text("Unlock editing")
+        describe(self._edit_toggle, "Unlock editing")
         self._edit_toggle.set_sensitive(False)
         self._edit_toggle.connect("toggled", self._on_edit_toggled)
         self._save = Gtk.Button()

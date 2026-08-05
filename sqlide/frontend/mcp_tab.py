@@ -29,7 +29,7 @@ from sqlide.backend.mcp.server import (
     client_config_json,
     generate_token,
 )
-from sqlide.frontend.util import run_async
+from sqlide.frontend.util import describe, run_async
 
 
 class McpServerTab(Gtk.Box):
@@ -190,7 +190,7 @@ class McpServerTab(Gtk.Box):
         self._token_entry.set_visibility(False)
         regenerate = Gtk.Button(icon_name="view-refresh-symbolic")
         regenerate.add_css_class("flat")
-        regenerate.set_tooltip_text("Generate a new token")
+        describe(regenerate, "Generate a new token")
         regenerate.connect(
             "clicked",
             lambda *_: self._token_entry.set_text(generate_token()),
@@ -293,7 +293,7 @@ class McpServerTab(Gtk.Box):
         self._url_row = Adw.ActionRow(title="", selectable=True)
         copy_url = Gtk.Button(icon_name="edit-copy-symbolic")
         copy_url.add_css_class("flat")
-        copy_url.set_tooltip_text("Copy URL")
+        describe(copy_url, "Copy URL")
         copy_url.connect("clicked", self._copy_url)
         self._url_row.add_suffix(copy_url)
         url_group.add(self._url_row)

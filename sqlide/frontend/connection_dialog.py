@@ -26,7 +26,7 @@ from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import registry
 from sqlide.backend.db.base import ConnectorError
 from sqlide.frontend import identity as identity_ui
-from sqlide.frontend.util import run_async
+from sqlide.frontend.util import describe, run_async
 
 KIND_LABELS = ["SQLite", "MySQL", "PostgreSQL", "JDBC (generic)"]
 KIND_IDS = ["sqlite", "mysql", "postgres", "jdbc"]
@@ -112,7 +112,7 @@ class ConnectionDialog(Adw.Dialog):
         # SQLite
         self._file = Adw.EntryRow(title="Database file")
         browse = Gtk.Button(icon_name="document-open-symbolic")
-        browse.set_tooltip_text("Browse…")
+        describe(browse, "Browse…")
         browse.add_css_class("flat")
         browse.set_valign(Gtk.Align.CENTER)
         browse.connect("clicked", self._browse)
@@ -295,7 +295,7 @@ class ConnectionDialog(Adw.Dialog):
         """An EntryRow holding a file path, with a browse button."""
         row = Adw.EntryRow(title=title)
         browse = Gtk.Button(icon_name="document-open-symbolic")
-        browse.set_tooltip_text("Browse…")
+        describe(browse, "Browse…")
         browse.add_css_class("flat")
         browse.set_valign(Gtk.Align.CENTER)
         browse.connect("clicked", lambda *_: self._browse_into(row))

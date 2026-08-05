@@ -9,12 +9,14 @@ from __future__ import annotations
 
 from gi.repository import Adw, Gtk
 
-_SHORTCUTS = (
-    ("Run selection / statement at cursor", "Ctrl+Enter"),
-    ("Run every statement in the editor", "Ctrl+Shift+Enter"),
-    ("Copy selected cells from a grid", "Ctrl+C"),
-    ("Preferences", "Ctrl+,"),
-    ("Help", "F1"),
+from sqlide.frontend.shortcuts import SHORTCUTS, spell_accelerator
+
+# The bindings themselves live in shortcuts.py, which also backs the
+# shortcuts window — one list, so the two can't drift apart.
+_SHORTCUTS = tuple(
+    (action, spell_accelerator(accelerator))
+    for _group, items in SHORTCUTS
+    for action, accelerator in items
 )
 
 _SECTIONS = (

@@ -41,7 +41,7 @@ from typing import Callable
 
 from gi.repository import Adw, Gio, GLib, GObject, Gtk
 
-from sqlide.frontend.util import main_menu_button, run_async
+from sqlide.frontend.util import describe, main_menu_button, run_async
 
 from sqlide.backend import identity
 from sqlide.backend.connections import ConnectionProfile
@@ -137,11 +137,11 @@ class MainWindow(Adw.ApplicationWindow):
         sidebar_header.set_show_end_title_buttons(False)
         sidebar_header.set_title_widget(Gtk.Label(label="Connections"))
         add_button = Gtk.Button(icon_name="list-add-symbolic")
-        add_button.set_tooltip_text("Add connection")
+        describe(add_button, "Add connection")
         add_button.connect("clicked", self._add_connection)
         sidebar_header.pack_start(add_button)
         workspaces_button = Gtk.Button(icon_name="view-grid-symbolic")
-        workspaces_button.set_tooltip_text("Workspaces")
+        describe(workspaces_button, "Workspaces")
         workspaces_button.connect(
             "clicked", lambda *_: self.get_application().show_launcher()
         )
@@ -202,7 +202,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         content_header = Adw.HeaderBar()
         sidebar_toggle = Gtk.ToggleButton(icon_name="sidebar-show-symbolic")
-        sidebar_toggle.set_tooltip_text("Toggle sidebar")
+        describe(sidebar_toggle, "Toggle sidebar")
         self._split.bind_property(
             "show-sidebar",
             sidebar_toggle,
@@ -212,25 +212,25 @@ class MainWindow(Adw.ApplicationWindow):
         )
         content_header.pack_start(sidebar_toggle)
         new_query_button = Gtk.Button(icon_name="document-edit-symbolic")
-        new_query_button.set_tooltip_text("New query console")
+        describe(new_query_button, "New query console")
         new_query_button.connect(
             "clicked", lambda *_: self.new_query(self._default_query_profile())
         )
         content_header.pack_start(new_query_button)
         cli_button = Gtk.Button(icon_name="utilities-terminal-symbolic")
-        cli_button.set_tooltip_text("New CLI client console")
+        describe(cli_button, "New CLI client console")
         cli_button.connect("clicked", self._new_cli_console)
         content_header.pack_start(cli_button)
         builder_button = Gtk.Button(icon_name="system-run-symbolic")
-        builder_button.set_tooltip_text("New query builder")
+        describe(builder_button, "New query builder")
         builder_button.connect("clicked", self._new_query_builder)
         content_header.pack_start(builder_button)
         split_button = Gtk.Button(icon_name="view-dual-symbolic")
-        split_button.set_tooltip_text("Split: move current tab to a new pane")
+        describe(split_button, "Split: move current tab to a new pane")
         split_button.connect("clicked", self._split_current_tab)
         content_header.pack_start(split_button)
         mcp_button = Gtk.Button(icon_name="network-transmit-receive-symbolic")
-        mcp_button.set_tooltip_text("New MCP server")
+        describe(mcp_button, "New MCP server")
         mcp_button.connect("clicked", lambda *_: self.open_mcp_server())
         content_header.pack_start(mcp_button)
 

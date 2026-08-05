@@ -16,7 +16,7 @@ from gi.repository import Adw, Gtk
 from sqlide.backend import identity
 from sqlide.backend.workspaces import Workspace
 from sqlide.frontend import identity as identity_ui
-from sqlide.frontend.util import main_menu_button
+from sqlide.frontend.util import describe, main_menu_button
 
 
 class WorkspaceLauncher(Adw.ApplicationWindow):
@@ -29,7 +29,7 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
         header = Adw.HeaderBar()
         header.set_title_widget(Gtk.Label(label="Workspaces"))
         new_button = Gtk.Button(icon_name="list-add-symbolic")
-        new_button.set_tooltip_text("New workspace")
+        describe(new_button, "New workspace")
         new_button.connect("clicked", lambda *_: self._new_workspace())
         header.pack_start(new_button)
         header.pack_end(main_menu_button())
@@ -99,7 +99,7 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
         # Colour is never the only cue: the dot sits next to the name.
         row.add_prefix(identity_ui.dot(workspace.color))
         edit = Gtk.Button(icon_name="document-edit-symbolic")
-        edit.set_tooltip_text("Edit workspace name and colour")
+        describe(edit, "Edit workspace name and colour")
         edit.add_css_class("flat")
         edit.set_valign(Gtk.Align.CENTER)
         edit.connect("clicked", lambda *_: self._edit_workspace(workspace))

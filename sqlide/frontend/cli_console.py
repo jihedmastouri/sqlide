@@ -23,7 +23,7 @@ from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import cli
 from sqlide.backend.db.base import Connector
 from sqlide.backend.workspaces import TabState
-from sqlide.frontend.util import run_async
+from sqlide.frontend.util import describe, run_async
 
 
 class CliConsole(Gtk.Box):
@@ -58,7 +58,7 @@ class CliConsole(Gtk.Box):
         label.add_css_class("dim-label")
         clear = Gtk.Button(icon_name="edit-clear-all-symbolic")
         clear.add_css_class("flat")
-        clear.set_tooltip_text("Clear the scrollback")
+        describe(clear, "Clear the scrollback")
         clear.connect("clicked", lambda *_: self._clear())
         toolbar.append(label)
         toolbar.append(self._dropdown)

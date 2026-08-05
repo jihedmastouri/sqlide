@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from typing import Callable
 
+from sqlide.frontend.util import describe
 from gi.repository import Adw, Gtk, Pango
 
 from sqlide.backend.saved import SavedItem, SavedStore
@@ -110,7 +111,7 @@ class _SavedSqlList(Gtk.Box):
         controls.append(Gtk.Box(hexpand=True))
         add = Gtk.Button(icon_name="list-add-symbolic")
         add.add_css_class("flat")
-        add.set_tooltip_text(save_tooltip)
+        describe(add, save_tooltip)
         add.connect("clicked", self._save_current)
         controls.append(add)
         self.append(controls)
@@ -144,7 +145,7 @@ class _SavedSqlList(Gtk.Box):
             row.set_tooltip_text(item.sql)
             delete = Gtk.Button(icon_name="user-trash-symbolic")
             delete.add_css_class("flat")
-            delete.set_tooltip_text("Delete")
+            describe(delete, "Delete")
             delete.connect(
                 "clicked", lambda _b, it=item: self._store.remove(it)
             )
@@ -197,7 +198,7 @@ class _FiltersPage(Gtk.Box):
         controls.append(self._target_label)
         add = Gtk.Button(icon_name="list-add-symbolic")
         add.add_css_class("flat")
-        add.set_tooltip_text("Save the table's current filter")
+        describe(add, "Save the table's current filter")
         add.connect(
             "clicked",
             lambda *_: ask_name(self, "Save Filter As", "", on_save),
@@ -242,7 +243,7 @@ class _FiltersPage(Gtk.Box):
             row.set_subtitle_lines(2)
             delete = Gtk.Button(icon_name="user-trash-symbolic")
             delete.add_css_class("flat")
-            delete.set_tooltip_text("Delete")
+            describe(delete, "Delete")
             delete.connect(
                 "clicked", lambda _b, e=entry: self._on_delete(e)
             )

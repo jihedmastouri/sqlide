@@ -66,7 +66,7 @@ from sqlide.frontend.data_grid import ResultGrid, _format_json
 from sqlide.frontend.lsp_completion import LspCompletionProvider
 from sqlide.frontend.results_panel import ResultsPanel
 from sqlide.frontend.sql_editor import SqlEditor
-from sqlide.frontend.util import run_async
+from sqlide.frontend.util import describe, run_async
 from sqlide.lsp import servers as lsp_servers
 
 # Connection kinds where one server hosts multiple databases.
@@ -190,11 +190,11 @@ class QueryConsole(Gtk.Box):
         self._file_path: Path | None = None  # target of the Save button
         open_button = Gtk.Button(icon_name="document-open-symbolic")
         open_button.add_css_class("flat")
-        open_button.set_tooltip_text("Open a file in the editor")
+        describe(open_button, "Open a file in the editor")
         open_button.connect("clicked", self._open_file)
         save_button = Gtk.Button(icon_name="document-save-symbolic")
         save_button.add_css_class("flat")
-        save_button.set_tooltip_text(
+        describe(save_button, 
             "Save the editor to a file (the first save asks where)"
         )
         save_button.connect("clicked", self._save_file)
@@ -545,9 +545,17 @@ class QueryConsole(Gtk.Box):
         self._db_dropdown.set_visible(bool(names))
 
     def _on_key_pressed(self, _controller, keyval, _keycode, state) -> bool:
-        is_enter = keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter)
-        if is_enter and state & Gdk.ModifierType.CONTROL_MASK:
+        control = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and control:
             self._run(run_all=bool(state & Gdk.ModifierType.SHIFT_MASK))
+            return True
+        # The toolbar's file buttons, from the keyboard: every action
+        # in this tab has a binding (see frontend/shortcuts.py).
+        if control and keyval == Gdk.KEY_o:
+            self._open_file()
+            return True
+        if control and keyval == Gdk.KEY_s:
+            self._save_file()
             return True
         return False
 

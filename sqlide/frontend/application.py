@@ -27,6 +27,7 @@ from sqlide.frontend import identity
 from sqlide.frontend.help import help_dialog
 from sqlide.frontend.launcher import WorkspaceLauncher
 from sqlide.frontend.preferences import PreferencesDialog, about_dialog
+from sqlide.frontend.shortcuts import shortcuts_dialog
 from sqlide.frontend.window import MainWindow
 
 _COLOR_SCHEMES = {
@@ -78,6 +79,7 @@ class SqlideApplication(Adw.Application):
 
         for name, callback, accels in (
             ("preferences", self._show_preferences, ["<primary>comma"]),
+            ("shortcuts", self._show_shortcuts, ["<primary>question"]),
             ("help", self._show_help, ["F1"]),
             ("about", self._show_about, []),
         ):
@@ -86,6 +88,8 @@ class SqlideApplication(Adw.Application):
             self.add_action(action)
             if accels:
                 self.set_accels_for_action(f"app.{name}", accels)
+        # GTK provides window.close itself; it just has no binding.
+        self.set_accels_for_action("window.close", ["<primary>w"])
 
     def _apply_settings(self, settings: app_settings.Settings) -> None:
         Adw.StyleManager.get_default().set_color_scheme(
@@ -98,6 +102,9 @@ class SqlideApplication(Adw.Application):
 
     def _show_preferences(self, *_args) -> None:
         PreferencesDialog().present(self.get_active_window())
+
+    def _show_shortcuts(self, *_args) -> None:
+        shortcuts_dialog().present(self.get_active_window())
 
     def _show_help(self, *_args) -> None:
         help_dialog().present(self.get_active_window())

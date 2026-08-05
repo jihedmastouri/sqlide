@@ -38,7 +38,7 @@ from sqlide.backend.sql_split import split_statements
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend.data_grid import ResultGrid, RowItem, UpdatePreviewDialog
 from sqlide.frontend.sql_editor import SqlEditor
-from sqlide.frontend.util import run_async
+from sqlide.frontend.util import describe, run_async
 
 _REBUILD_CAPTION = (
     "Review carefully: a table rebuild carries only columns and the "
@@ -97,7 +97,7 @@ class DefinitionTab(Gtk.Box):
         save.connect("clicked", self._on_save_clicked)
         refresh = Gtk.Button(icon_name="view-refresh-symbolic")
         refresh.add_css_class("flat")
-        refresh.set_tooltip_text("Reload the definition (discards edits)")
+        describe(refresh, "Reload the definition (discards edits)")
         refresh.connect("clicked", lambda *_: self.reload())
         bar.append(switcher)
         bar.append(Gtk.Box(hexpand=True))
@@ -433,7 +433,7 @@ class FunctionTab(Gtk.Box):
         save.connect("clicked", self._on_save_clicked)
         refresh = Gtk.Button(icon_name="view-refresh-symbolic")
         refresh.add_css_class("flat")
-        refresh.set_tooltip_text("Reload the stored definition")
+        describe(refresh, "Reload the stored definition")
         refresh.connect("clicked", lambda *_: self.reload())
         self._status = Gtk.Label(xalign=1, hexpand=True)
         self._status.add_css_class("dim-label")

@@ -45,10 +45,14 @@ def icon_button(
 def main_menu_button(with_history: bool = False) -> Gtk.MenuButton:
     """Hamburger button for a header bar: Preferences, Keyboard
     Shortcuts, Help and About (application-level actions, see
-    application.py). Main windows also get Query History, backed by the
-    window-level "win.history" action (the launcher has no workspace,
-    hence the flag)."""
+    application.py). Main windows also get Query History and the
+    close-every-tab item, backed by window-level actions (the launcher
+    has no workspace and no tabs, hence the flag)."""
     menu = Gio.Menu()
+    if with_history:
+        tabs = Gio.Menu()
+        tabs.append("Close All Tabs", "win.close-all-tabs")
+        menu.append_section(None, tabs)
     menu.append("Preferences", "app.preferences")
     if with_history:
         menu.append("Query History", "win.history")

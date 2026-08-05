@@ -90,6 +90,12 @@ class SqlideApplication(Adw.Application):
                 self.set_accels_for_action(f"app.{name}", accels)
         # GTK provides window.close itself; it just has no binding.
         self.set_accels_for_action("window.close", ["<primary>w"])
+        # Tabs of a workspace window (no-ops in the launcher, which
+        # defines neither action).
+        self.set_accels_for_action("win.close-tab", ["<primary>F4"])
+        self.set_accels_for_action(
+            "win.close-all-tabs", ["<primary><shift>w"]
+        )
 
     def _apply_settings(self, settings: app_settings.Settings) -> None:
         Adw.StyleManager.get_default().set_color_scheme(

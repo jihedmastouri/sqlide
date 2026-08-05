@@ -28,6 +28,13 @@ SHORTCUTS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         ),
     ),
     (
+        "Tabs",
+        (
+            ("Close the current tab", "<primary>F4"),
+            ("Close every tab", "<primary><shift>w"),
+        ),
+    ),
+    (
         "Query console",
         (
             ("Run the selection or the statement at the cursor", "<primary>Return"),

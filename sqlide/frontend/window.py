@@ -24,7 +24,11 @@ Adw.TabView) side by side in nested Gtk.Paned splitters: the Split
 button moves the current tab into a new pane (two panes at most,
 sized evenly), so e.g. two tables can be shown next to each other.
 New tabs open in the last-clicked pane; a pane whose last tab is
-closed or moved away is removed.
+closed or moved away is removed. Right-clicking a tab closes it, the
+others, the ones to its right, or all of them across every pane; Close
+All Tabs is on the main menu and on ctrl+shift+w as well, and each
+close still goes through the guards below (an open transaction or a
+running MCP server asks first).
 The window owns the shared
 Gtk.StringList of connection names that every query console's dropdown
 observes, records each console run into the workspace history, and
@@ -95,6 +99,21 @@ class _HistoryTab(Gtk.Box):
 
     def tab_state(self) -> None:
         return None
+
+
+def _tab_menu() -> Gio.Menu:
+    """Right-click menu of a tab. The bulk-close items are the only way
+    to clear a workspace that has collected twenty tabs without closing
+    them one by one; they are also on the main menu, so they can be
+    found without knowing that tabs have a menu at all."""
+    menu = Gio.Menu()
+    menu.append("Close Tab", "win.close-tab")
+    section = Gio.Menu()
+    section.append("Close Other Tabs", "win.close-other-tabs")
+    section.append("Close Tabs to the Right", "win.close-tabs-right")
+    section.append("Close All Tabs", "win.close-all-tabs")
+    menu.append_section(None, section)
+    return menu
 
 
 class _TabPane(Gtk.Box):
@@ -326,11 +345,19 @@ class MainWindow(Adw.ApplicationWindow):
         self._close_confirmed = False
         self.connect("close-request", self._on_close_request)
 
-        history_action = Gio.SimpleAction.new("history", None)
-        history_action.connect(
-            "activate", lambda *_: self.open_history_tab()
-        )
-        self.add_action(history_action)
+        # Tab the context menu was opened on; None means "the selected
+        # one" (the menu bar and the keyboard).
+        self._menu_tab_page: Adw.TabPage | None = None
+        for name, callback in (
+            ("history", lambda *_: self.open_history_tab()),
+            ("close-tab", self._close_menu_tab),
+            ("close-other-tabs", self._close_other_tabs),
+            ("close-tabs-right", self._close_tabs_right),
+            ("close-all-tabs", self._close_all_tabs),
+        ):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", callback)
+            self.add_action(action)
 
         # The launcher can recolour a workspace while its window is
         # open, so the stripe is refreshed whenever the window comes
@@ -488,6 +515,12 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _add_pane(self) -> _TabPane:
         pane = _TabPane()
+        pane.view.set_menu_model(_tab_menu())
+        # setup-menu names the tab the menu was opened on (and hands
+        # back None when it closes); the actions fall back to the
+        # selected tab, which is what the menu bar and the shortcuts
+        # mean by "this tab".
+        pane.view.connect("setup-menu", self._on_tab_menu)
         pane.view.connect("page-attached", self._on_pages_changed)
         pane.view.connect("page-detached", self._on_pages_changed)
         pane.view.connect("page-reordered", self._on_pages_changed)
@@ -826,6 +859,63 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_pane_pressed(self, _gesture, _n, _x, _y, pane: _TabPane) -> None:
         if pane is not self._active_pane:
             self._set_active_pane(pane)
+
+    # Closing tabs
+
+    def _on_tab_menu(self, _view, page: Adw.TabPage | None) -> None:
+        self._menu_tab_page = page
+
+    def _target_tab(self) -> tuple[_TabPane, Adw.TabPage] | None:
+        """The tab the close actions act on: the one whose menu is
+        open, else the selected one. None when nothing is open."""
+        page = self._menu_tab_page
+        if page is None:
+            page = self._active_pane.view.get_selected_page()
+            if page is None:
+                return None
+            return self._active_pane, page
+        for pane in self._panes:
+            for i in range(pane.view.get_n_pages()):
+                if pane.view.get_nth_page(i) is page:
+                    return pane, page
+        return None
+
+    def _close_menu_tab(self, *_args) -> None:
+        target = self._target_tab()
+        if target is None:
+            self.show_error("No tab to close")
+            return
+        pane, page = target
+        pane.view.close_page(page)
+
+    def _close_other_tabs(self, *_args) -> None:
+        target = self._target_tab()
+        if target is None:
+            return
+        pane, page = target
+        pane.view.close_other_pages(page)
+
+    def _close_tabs_right(self, *_args) -> None:
+        target = self._target_tab()
+        if target is None:
+            return
+        pane, page = target
+        pane.view.close_pages_after(page)
+
+    def _close_all_tabs(self, *_args) -> None:
+        """Every tab in every pane. Pages are collected first: closing
+        one mutates the views (and may re-enter through a close
+        confirmation), so iterating them live would skip tabs."""
+        pages = [
+            (pane, pane.view.get_nth_page(i))
+            for pane in self._panes
+            for i in range(pane.view.get_n_pages())
+        ]
+        if not pages:
+            self.show_error("No tabs are open")
+            return
+        for pane, page in pages:
+            pane.view.close_page(page)
 
     def _split_current_tab(self, *_args) -> None:
         pane = self._active_pane

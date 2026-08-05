@@ -23,6 +23,7 @@ from gi.repository import Adw, Gdk, Gio, Gtk  # noqa: E402
 from sqlide import APP_ID
 from sqlide.backend import settings as app_settings
 from sqlide.backend.workspaces import Workspace, WorkspaceStore
+from sqlide.frontend import identity
 from sqlide.frontend.help import help_dialog
 from sqlide.frontend.launcher import WorkspaceLauncher
 from sqlide.frontend.preferences import PreferencesDialog, about_dialog
@@ -55,6 +56,7 @@ class SqlideApplication(Adw.Application):
             provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
         )
+        identity.install_provider()
         try:
             self.workspace_store.load()
         except Exception as exc:

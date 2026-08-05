@@ -128,6 +128,43 @@ listview.schema-tree .conn-dot-active {
   background-color: @success_bg_color;
 }
 
+/* Identity colours (frontend/identity.py). The colour itself comes
+   from the generated palette provider — one .identity-<name> class per
+   palette name, reloaded when the theme flips; these rules only give
+   the four surfaces their shape. */
+.identity-stripe {
+  min-height: 4px;
+}
+
+.identity-bar {
+  min-width: 3px;
+}
+
+.identity-dot {
+  min-width: 12px;
+  min-height: 12px;
+  border-radius: 6px;
+}
+
+/* Environment badge: the text half of the cue, never colour alone. */
+label.identity-badge {
+  font-size: 0.75em;
+  font-weight: bold;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background-color: alpha(currentColor, 0.12);
+}
+
+label.identity-badge.environment-staging {
+  color: @warning_fg_color;
+  background-color: @warning_bg_color;
+}
+
+label.identity-badge.environment-production {
+  color: @error_fg_color;
+  background-color: @error_bg_color;
+}
+
 /* CLI client console: a terminal-like scrollback and prompt line. The
    entry is made flat and monospace so it reads as the continuation of
    the scrollback rather than a form field. */

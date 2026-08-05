@@ -11,7 +11,7 @@ outside version control — read the notes for a milestone before starting it.
 Small and independent of everything below it, and every later milestone reports
 through what it builds. Ship it first.
 
-- [ ] Identity palette: eight named colours plus none, generated into a
+- [x] Identity palette: eight named colours plus none, generated into a
       `Gtk.CssProvider` at runtime and regenerated when the colour scheme
       changes. A test asserts 3:1 contrast against the window background in
       light, dark and high-contrast themes.

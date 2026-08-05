@@ -80,6 +80,84 @@ def dot(color: str) -> Gtk.Widget:
     return widget
 
 
+class ColorRow(Adw.ComboRow):
+    """Palette picker: a swatch *and* its name on every row, so the
+    choice is readable without seeing the colour."""
+
+    def __init__(self, title: str = "Colour", subtitle: str = "") -> None:
+        super().__init__(
+            title=title,
+            subtitle=subtitle,
+            model=Gtk.StringList.new(list(identity.COLOR_NAMES)),
+            factory=_color_factory(hint=False),
+            list_factory=_color_factory(hint=True),
+        )
+
+    def get_color(self) -> str:
+        return identity.COLOR_NAMES[self.get_selected()]
+
+    def set_color(self, color: str) -> None:
+        self.set_selected(
+            identity.COLOR_NAMES.index(identity.normalize_color(color))
+        )
+
+
+class EnvironmentRow(Adw.ComboRow):
+    """Environment class picker. Unlike the colour it changes what the
+    app does, so its subtitle says so."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            title="Environment",
+            subtitle="Staging and production ask before destructive "
+            "statements run",
+            model=Gtk.StringList.new(
+                [identity.ENVIRONMENT_LABELS[e] for e in identity.ENVIRONMENTS]
+            ),
+        )
+
+    def get_environment(self) -> str:
+        return identity.ENVIRONMENTS[self.get_selected()]
+
+    def set_environment(self, environment: str) -> None:
+        self.set_selected(
+            identity.ENVIRONMENTS.index(
+                identity.normalize_environment(environment)
+            )
+        )
+
+
+def _color_factory(hint: bool) -> Gtk.SignalListItemFactory:
+    factory = Gtk.SignalListItemFactory()
+
+    def setup(_factory, item: Gtk.ListItem) -> None:
+        box = Gtk.Box(spacing=9)
+        swatch = dot(identity.NONE)
+        label = Gtk.Label(xalign=0)
+        box.append(swatch)
+        box.append(label)
+        if hint:
+            note = Gtk.Label(xalign=0, hexpand=True, halign=Gtk.Align.END)
+            note.add_css_class("dim-label")
+            note.add_css_class("caption")
+            box.append(note)
+            item.note = note
+        item.swatch = swatch
+        item.name_label = label
+        item.set_child(box)
+
+    def bind(_factory, item: Gtk.ListItem) -> None:
+        name = item.get_item().get_string()
+        set_color(item.swatch, name)
+        item.name_label.set_text(identity.COLOR_LABELS[name])
+        if hint:
+            item.note.set_text(identity.COLOR_HINTS.get(name, ""))
+
+    factory.connect("setup", setup)
+    factory.connect("bind", bind)
+    return factory
+
+
 def environment_badge(environment: str) -> Gtk.Label:
     """The environment's text badge — the non-colour half of the cue.
     Invisible for development and unset: a badge on every connection is

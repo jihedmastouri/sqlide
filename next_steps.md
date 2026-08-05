@@ -17,7 +17,7 @@ through what it builds. Ship it first.
       light, dark and high-contrast themes.
 - [x] `color` on `Workspace`; `color` and `environment` on `ConnectionProfile`.
       Unknown values load as `none`/`unset` rather than failing.
-- [ ] Colour pickers: create/edit workspace dialog, and an "Identity" group at
+- [x] Colour pickers: create/edit workspace dialog, and an "Identity" group at
       the top of the connection dialog. Environment is *suggested* when the host
       or name looks like production, never set automatically.
 - [ ] Apply colour: window stripe, launcher dot, sidebar connection bar, tab

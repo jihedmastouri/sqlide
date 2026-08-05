@@ -1,10 +1,11 @@
 """Workspace launcher window.
 
 The small window shown at startup (and from the sidebar's Workspaces
-button): pick an existing workspace or create a new one by name.
-Activating a workspace asks the application to open its main window
-and closes the launcher; each row also has a rename button. The list
-is rebuilt every time the window is mapped so it stays in sync with
+button): pick an existing workspace or create a new one by name and
+identity colour. Activating a workspace asks the application to open
+its main window and closes the launcher; each row shows its colour as
+a dot beside the name and has an edit button for both. The list is
+rebuilt every time the window is mapped so it stays in sync with
 workspaces created elsewhere.
 """
 
@@ -12,7 +13,9 @@ from __future__ import annotations
 
 from gi.repository import Adw, Gtk
 
+from sqlide.backend import identity
 from sqlide.backend.workspaces import Workspace
+from sqlide.frontend import identity as identity_ui
 from sqlide.frontend.util import main_menu_button
 
 
@@ -93,46 +96,50 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
             subtitle=subtitle,
             activatable=True,
         )
-        rename = Gtk.Button(icon_name="document-edit-symbolic")
-        rename.set_tooltip_text("Rename workspace")
-        rename.add_css_class("flat")
-        rename.set_valign(Gtk.Align.CENTER)
-        rename.connect("clicked", lambda *_: self._rename_workspace(workspace))
-        row.add_suffix(rename)
+        # Colour is never the only cue: the dot sits next to the name.
+        row.add_prefix(identity_ui.dot(workspace.color))
+        edit = Gtk.Button(icon_name="document-edit-symbolic")
+        edit.set_tooltip_text("Edit workspace name and colour")
+        edit.add_css_class("flat")
+        edit.set_valign(Gtk.Align.CENTER)
+        edit.connect("clicked", lambda *_: self._edit_workspace(workspace))
+        row.add_suffix(edit)
         row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
         row.connect("activated", lambda *_: self._open(workspace))
         return row
 
-    def _rename_workspace(self, workspace: Workspace) -> None:
+    def _edit_workspace(self, workspace: Workspace) -> None:
         dialog = Adw.AlertDialog(
-            heading="Rename Workspace",
+            heading="Edit Workspace",
             body="Connections and open tabs stay the same.",
         )
-        entry = Gtk.Entry(
-            text=workspace.name,
-            placeholder_text="Workspace name",
-            activates_default=True,
-        )
-        dialog.set_extra_child(entry)
+        name, color = self._identity_fields(workspace.name, workspace.color)
+        dialog.set_extra_child(self._identity_group(name, color))
         dialog.add_response("cancel", "Cancel")
-        dialog.add_response("rename", "Rename")
+        dialog.add_response("save", "Save")
         dialog.set_response_appearance(
-            "rename", Adw.ResponseAppearance.SUGGESTED
+            "save", Adw.ResponseAppearance.SUGGESTED
         )
-        dialog.set_default_response("rename")
+        dialog.set_default_response("save")
         dialog.set_close_response("cancel")
-        dialog.connect("response", self._rename_response, workspace, entry)
+        dialog.connect("response", self._edit_response, workspace, name, color)
         dialog.present(self)
 
-    def _rename_response(
-        self, _dialog, response: str, workspace: Workspace, entry: Gtk.Entry
+    def _edit_response(
+        self,
+        _dialog,
+        response: str,
+        workspace: Workspace,
+        name: Adw.EntryRow,
+        color: identity_ui.ColorRow,
     ) -> None:
-        if response != "rename":
+        if response != "save":
             return
-        name = entry.get_text().strip()
-        if name:
-            workspace.name = name
-            self.get_application().workspace_store.save(workspace)
+        text = name.get_text().strip()
+        if text:
+            workspace.name = text
+        workspace.color = color.get_color()
+        self.get_application().workspace_store.save(workspace)
         self._refresh()
 
     def _new_workspace(self) -> None:
@@ -140,10 +147,8 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
             heading="New Workspace",
             body="Connections and open tabs are kept per workspace.",
         )
-        entry = Gtk.Entry(
-            placeholder_text="Workspace name", activates_default=True
-        )
-        dialog.set_extra_child(entry)
+        name, color = self._identity_fields("", identity.NONE)
+        dialog.set_extra_child(self._identity_group(name, color))
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("create", "Create")
         dialog.set_response_appearance(
@@ -151,15 +156,42 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
         )
         dialog.set_default_response("create")
         dialog.set_close_response("cancel")
-        dialog.connect("response", self._create_response, entry)
+        dialog.connect("response", self._create_response, name, color)
         dialog.present(self)
 
-    def _create_response(self, _dialog, response: str, entry: Gtk.Entry) -> None:
+    def _create_response(
+        self,
+        _dialog,
+        response: str,
+        name: Adw.EntryRow,
+        color: identity_ui.ColorRow,
+    ) -> None:
         if response != "create":
             return
-        name = entry.get_text().strip() or "Workspace"
-        workspace = self.get_application().workspace_store.create(name)
+        workspace = self.get_application().workspace_store.create(
+            name.get_text().strip() or "Workspace", color.get_color()
+        )
         self._open(workspace)
+
+    @staticmethod
+    def _identity_fields(
+        name: str, color: str
+    ) -> tuple[Adw.EntryRow, identity_ui.ColorRow]:
+        name_row = Adw.EntryRow(title="Name", text=name)
+        color_row = identity_ui.ColorRow(
+            subtitle="Tints this workspace's window and launcher row"
+        )
+        color_row.set_color(color)
+        return name_row, color_row
+
+    @staticmethod
+    def _identity_group(
+        name: Adw.EntryRow, color: identity_ui.ColorRow
+    ) -> Gtk.Widget:
+        group = Adw.PreferencesGroup()
+        group.add(name)
+        group.add(color)
+        return group
 
     def _open(self, workspace: Workspace) -> None:
         self.get_application().open_workspace(workspace)

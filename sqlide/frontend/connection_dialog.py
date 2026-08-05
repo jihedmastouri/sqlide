@@ -2,7 +2,11 @@
 
 An Adw.Dialog (attached to the main window, Esc to dismiss) with a
 kind dropdown (SQLite / MySQL / PostgreSQL / JDBC); the visible field
-group follows the kind. "Test connection" opens and closes a throwaway
+group follows the kind. Above the credentials sits the Identity group
+(colour + environment class): a connection that looks like production
+gets a *suggestion* row there, which the user accepts or dismisses —
+never an automatic classification, because a wrong one teaches people
+the badge lies. "Test connection" opens and closes a throwaway
 connector on a worker thread. Passing an existing `profile` switches
 the dialog to edit mode: the title changes and every field is
 pre-filled from it, but `on_save` still just receives a freshly built
@@ -17,9 +21,11 @@ from typing import Callable
 
 from gi.repository import Adw, GLib, Gtk
 
+from sqlide.backend import identity
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import registry
 from sqlide.backend.db.base import ConnectorError
+from sqlide.frontend import identity as identity_ui
 from sqlide.frontend.util import run_async
 
 KIND_LABELS = ["SQLite", "MySQL", "PostgreSQL", "JDBC (generic)"]
@@ -69,6 +75,40 @@ class ConnectionDialog(Adw.Dialog):
         general.add(self._name)
         general.add(self._kind)
 
+        # Identity: what this connection looks like in the sidebar and
+        # the status bar, and how much friction destructive statements
+        # get. Above the credentials on purpose — it is the first thing
+        # you set, not an afterthought buried under SSL.
+        self._color = identity_ui.ColorRow(
+            subtitle="Marks this connection's rows, tabs and status bar"
+        )
+        self._environment = identity_ui.EnvironmentRow()
+        self._environment.connect(
+            "notify::selected", lambda *_: self._refresh_suggestion()
+        )
+        self._suggestion = Adw.ActionRow(visible=False)
+        self._suggestion.add_prefix(
+            Gtk.Image(icon_name="dialog-warning-symbolic")
+        )
+        accept = Gtk.Button(label="Set Production", valign=Gtk.Align.CENTER)
+        accept.connect("clicked", self._accept_suggestion)
+        dismiss = Gtk.Button(
+            icon_name="window-close-symbolic", valign=Gtk.Align.CENTER
+        )
+        dismiss.add_css_class("flat")
+        dismiss.set_tooltip_text("Dismiss this suggestion")
+        dismiss.connect("clicked", self._dismiss_suggestion)
+        self._suggestion.add_suffix(accept)
+        self._suggestion.add_suffix(dismiss)
+        self._suggestion_dismissed = False
+        identity_group = Adw.PreferencesGroup(title="Identity")
+        identity_group.add(self._color)
+        identity_group.add(self._environment)
+        identity_group.add(self._suggestion)
+        self._kind.connect(
+            "notify::selected", lambda *_: self._refresh_suggestion()
+        )
+
         # SQLite
         self._file = Adw.EntryRow(title="Database file")
         browse = Gtk.Button(icon_name="document-open-symbolic")
@@ -89,6 +129,10 @@ class ConnectionDialog(Adw.Dialog):
         self._server_group = Adw.PreferencesGroup(title="Server")
         for row in (self._host, self._port, self._user, self._password, self._database):
             self._server_group.add(row)
+        # Never classified silently: the fields that make a connection
+        # look like production only ever re-run the *suggestion*.
+        for row in (self._name, self._host, self._database):
+            row.connect("changed", lambda *_: self._refresh_suggestion())
 
         # Advanced (MySQL / PostgreSQL): SSL and SSH tunnel
         self._ssl_mode = Adw.ComboRow(
@@ -154,6 +198,7 @@ class ConnectionDialog(Adw.Dialog):
         page = Adw.PreferencesPage()
         for group in (
             general,
+            identity_group,
             self._sqlite_group,
             self._server_group,
             self._ssl_group,
@@ -171,9 +216,12 @@ class ConnectionDialog(Adw.Dialog):
         if profile is not None:
             self._prefill(profile)
         self._on_kind_changed()
+        self._refresh_suggestion()
 
     def _prefill(self, profile: ConnectionProfile) -> None:
         self._name.set_text(profile.name)
+        self._color.set_color(profile.color)
+        self._environment.set_environment(profile.environment)
         self._kind.set_selected(KIND_IDS.index(profile.kind))
         self._file.set_text(profile.file_path)
         self._host.set_text(profile.host)
@@ -200,6 +248,39 @@ class ConnectionDialog(Adw.Dialog):
 
     def _kind_id(self) -> str:
         return KIND_IDS[self._kind.get_selected()]
+
+    # Production suggestion (never an automatic classification)
+
+    def _refresh_suggestion(self) -> None:
+        if (
+            self._suggestion_dismissed
+            or self._environment.get_environment() != identity.UNSET
+        ):
+            self._suggestion.set_visible(False)
+            return
+        reason = identity.suggests_production(
+            self._name.get_text(),
+            self._host.get_text(),
+            self._database.get_text(),
+            self._kind_id(),
+        )
+        self._suggestion.set_visible(bool(reason))
+        if reason:
+            self._suggestion.set_title("This looks like production")
+            self._suggestion.set_subtitle(
+                f"Suggested because {reason}. Marking it production asks "
+                "before destructive statements run."
+            )
+
+    def _accept_suggestion(self, *_args) -> None:
+        self._environment.set_environment("production")
+        if self._color.get_color() == identity.NONE:
+            self._color.set_color("red")
+        self._refresh_suggestion()
+
+    def _dismiss_suggestion(self, *_args) -> None:
+        self._suggestion_dismissed = True
+        self._suggestion.set_visible(False)
 
     def _on_kind_changed(self, *_args) -> None:
         kind = self._kind_id()
@@ -262,6 +343,8 @@ class ConnectionDialog(Adw.Dialog):
         return ConnectionProfile(
             name=name,
             kind=kind,
+            color=self._color.get_color(),
+            environment=self._environment.get_environment(),
             file_path=self._file.get_text().strip(),
             host=self._host.get_text().strip() or "localhost",
             port=port,

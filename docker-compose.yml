@@ -8,12 +8,21 @@
 # (MySQL root password is also sqlide) on 127.0.0.1 at the ports
 # below. tests/ connects to these same ports and skips any server
 # that isn't running.
+#
+# Each server also gets a second database, `demo`, holding the same
+# small schema as the SQLite demo (scripts/init/*.sql, mounted below
+# and applied at first start). `sqlide` stays empty for the tests to
+# reseed; `demo` is what to point the app at. A container whose volume
+# already exists will not re-run these files — use
+# `python3 scripts/init_databases.py` for that.
 
 x-postgres-common: &postgres
   environment:
     POSTGRES_USER: sqlide
     POSTGRES_PASSWORD: sqlide
     POSTGRES_DB: sqlide
+  volumes:
+    - ./scripts/init/postgres.sql:/docker-entrypoint-initdb.d/10-demo.sql:ro
   healthcheck:
     test: ["CMD-SHELL", "pg_isready -U sqlide -d sqlide"]
     interval: 2s
@@ -27,6 +36,8 @@ x-mysql-common: &mysql
     MYSQL_USER: sqlide
     MYSQL_PASSWORD: sqlide
     MYSQL_DATABASE: sqlide
+  volumes:
+    - ./scripts/init/mysql.sql:/docker-entrypoint-initdb.d/10-demo.sql:ro
   healthcheck:
     test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
     interval: 2s

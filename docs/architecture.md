@@ -1,7 +1,7 @@
 ---
 title: Architecture
 description: How the backend and frontend are split, and where things live.
-order: 8
+order: 9
 ---
 
 Two top-level packages, strictly separated:

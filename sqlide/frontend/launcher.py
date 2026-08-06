@@ -18,7 +18,20 @@ from gi.repository import Adw, GLib, Gtk
 from sqlide.backend import identity
 from sqlide.backend.workspaces import Workspace
 from sqlide.frontend import identity as identity_ui
+from sqlide.frontend import transfer
 from sqlide.frontend.util import describe, main_menu_button
+
+
+def _unique_name(name: str, taken: list[str]) -> str:
+    """Imported workspaces keep their name unless one like it is
+    already listed — two rows with the same title would be a puzzle,
+    not a convenience."""
+    if name not in taken:
+        return name
+    n = 2
+    while f"{name} ({n})" in taken:
+        n += 1
+    return f"{name} ({n})"
 
 
 class WorkspaceLauncher(Adw.ApplicationWindow):
@@ -34,6 +47,10 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
         describe(new_button, "New workspace")
         new_button.connect("clicked", lambda *_: self._new_workspace())
         header.pack_start(new_button)
+        import_button = Gtk.Button(icon_name="document-open-symbolic")
+        describe(import_button, "Import a workspace from an XML file")
+        import_button.connect("clicked", lambda *_: self._import_workspace())
+        header.pack_start(import_button)
         header.pack_end(main_menu_button())
 
         self._list = Gtk.ListBox()
@@ -194,6 +211,31 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
         group.add(name)
         group.add(color)
         return group
+
+    def _import_workspace(self) -> None:
+        """Read a workspace out of an exported XML file. It arrives as
+        a new workspace with its own id, so it never lands on top of
+        one that is already here — copying a setup between machines and
+        re-importing the same file are then the same, safe operation."""
+        transfer.import_workspace(self, self._workspace_imported, self._toast)
+
+    def _workspace_imported(self, workspace: Workspace) -> None:
+        store = self.get_application().workspace_store
+        workspace.name = _unique_name(
+            workspace.name, [w.name for w in store.workspaces]
+        )
+        store.workspaces.append(workspace)
+        try:
+            store.save(workspace)
+        except Exception as exc:
+            self._toast(f"Could not save the imported workspace: {exc}")
+            return
+        self._refresh()
+        count = len(workspace.connections)
+        self._toast(f"Imported “{workspace.name}” ({count} connection(s))")
+
+    def _toast(self, message: str) -> None:
+        self._toasts.add_toast(Adw.Toast(title=message))
 
     def _open(self, workspace: Workspace) -> None:
         """Open a workspace and hand it the foreground.

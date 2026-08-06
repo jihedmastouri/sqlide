@@ -20,16 +20,18 @@ SQLite needs nothing extra.
 
 ## Try it (SQLite)
 
-Nothing here has been executed yet — this is the intended manual test path:
+```sh
+make demo    # writes ./demo.db
+make run     # launches the app
+```
+
+`make` on its own lists every development entry point: `install`
+(venv + drivers + pytest), `test`, `check`, `lint`, `servers` (the
+throwaway MySQL/PostgreSQL containers), `init-db`, `flatpak`, `web`.
+Without make, the same two steps are:
 
 ```sh
-# 0. optional sanity check: everything should compile and import
-python3 -m compileall -q sqlide && python3 -c "import sqlide.backend.db.registry"
-
-# 1. create a demo database
 python3 scripts/make_demo_db.py          # writes ./demo.db
-
-# 2. launch
 python3 -m sqlide
 ```
 
@@ -52,6 +54,37 @@ Then, in the app:
    console text (`~/.config/sqlide/workspaces/<id>.json`). Other
    workspaces are only visible in the launcher (the grid icon in the
    sidebar header reopens it).
+
+## MySQL and PostgreSQL to try it against
+
+`docker-compose.yml` runs throwaway servers (PostgreSQL 10–16, MySQL
+5.7 and 8.0) on fixed ports, all with user/password `sqlide`/`sqlide`:
+
+```sh
+make servers              # postgres16 + mysql8
+make servers-all          # every version
+docker compose up -d postgres14   # or just one
+```
+
+Each server holds two databases: `sqlide`, which the tests reseed, and
+`demo`, which carries the same schema as the SQLite demo — a table with
+a primary key and one without, a view, an index, a trigger, a stored
+function and a foreign key, so every part of the app has something to
+show. Containers get it at first start; `make init-db` (or
+`python3 scripts/init_databases.py`) rebuilds it on servers that are
+already running.
+
+## Moving a setup to another machine
+
+Workspaces live in `~/.config/sqlide/workspaces/` as JSON keyed by a
+local id, with passwords in the keyring — not something to copy
+around. **Export Workspace…** and **Export Connections…** (a
+workspace window's main menu) write a small, readable XML file
+instead; the launcher's folder button imports one as a new workspace,
+and **Import Connections…** merges connections into the open one.
+Passwords are left out unless the export explicitly asks for them, and
+an import never overwrites what is already there. See
+[docs/transfer.md](docs/transfer.md).
 
 ## Language servers (smarter completion)
 
@@ -196,8 +229,13 @@ the new machine.
 
 - `sqlide/backend/` — connectors, connection profiles, and the workspace
   store (one JSON file per workspace), zero GTK. One folder per database
-  under `backend/db/`; the read-only MCP server lives under `backend/mcp/`.
-- `sqlide/frontend/` — all GTK/libadwaita UI.
+  under `backend/db/`; the read-only MCP server lives under `backend/mcp/`;
+  `backend/exchange.py` is the portable XML transfer format.
+- `sqlide/frontend/` — all GTK/libadwaita UI. The two cairo diagrams
+  (`relation_graph.py` for schemas, `plan_graph.py` for explain plans)
+  share their palette and primitives through `canvas.py`.
 - `sqlide/lsp/` — the LSP client and per-connection server management
   (zero GTK); `frontend/lsp_completion.py` is the editor-facing bridge.
-- `scripts/make_demo_db.py` — builds the demo SQLite database.
+- `scripts/make_demo_db.py` — builds the demo SQLite database;
+  `scripts/init/*.sql` and `scripts/init_databases.py` do the same for
+  the MySQL/PostgreSQL containers.

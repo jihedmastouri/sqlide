@@ -66,6 +66,7 @@ from sqlide.frontend.side_panel import SidePanel
 from sqlide.frontend.sidebar import Sidebar
 from sqlide.frontend.status_bar import StatusBar
 from sqlide.frontend.table_designer import TableDesignerTab
+from sqlide.frontend import transfer
 
 
 def _page_connection(child: Gtk.Widget | None) -> str:
@@ -354,6 +355,9 @@ class MainWindow(Adw.ApplicationWindow):
             ("close-other-tabs", self._close_other_tabs),
             ("close-tabs-right", self._close_tabs_right),
             ("close-all-tabs", self._close_all_tabs),
+            ("export-workspace", self._export_workspace),
+            ("export-connections", self._export_connections),
+            ("import-connections", self._import_connections),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", callback)
@@ -1139,6 +1143,13 @@ class MainWindow(Adw.ApplicationWindow):
         self._toasts.add_toast(Adw.Toast(title=message))
         self._status_bar.set_status(message, error=True)
 
+    def show_message(self, message: str) -> None:
+        """Something worked and left no visible trace of its own (an
+        export writing a file, say) — the same two surfaces as an
+        error, without the error styling."""
+        self._toasts.add_toast(Adw.Toast(title=message))
+        self._status_bar.set_status(message, error=False)
+
     def show_aggregate(self, lines: list[str], live: bool = False) -> None:
         """Route a grid's summary of its selection into the side panel.
 
@@ -1151,6 +1162,38 @@ class MainWindow(Adw.ApplicationWindow):
             return
         self._side_panel.show_aggregate(lines)
         self._history_split.set_show_sidebar(True)
+
+    # Transfer (frontend/transfer.py, backend/exchange.py)
+
+    def _export_workspace(self, *_args) -> None:
+        transfer.export_workspace(
+            self, self.workspace, self.show_message, self.show_error
+        )
+
+    def _export_connections(self, *_args) -> None:
+        if not self.workspace.connections:
+            self.show_error("This workspace has no connections to export")
+            return
+        transfer.export_connections(
+            self, self.workspace, self.show_message, self.show_error
+        )
+
+    def _import_connections(self, *_args) -> None:
+        transfer.import_connections(
+            self, self._connections_imported, self.show_error
+        )
+
+    def _connections_imported(self, profiles: list[ConnectionProfile]) -> None:
+        """Add imported connections to this workspace. add_connection
+        renames collisions rather than replacing anything, so importing
+        a file twice cannot silently rewrite a connection that is
+        already there."""
+        for profile in profiles:
+            self._profile_added(profile)
+        self.show_message(
+            f"Imported {len(profiles)} connection(s) into "
+            f"“{self.workspace.name}”"
+        )
 
     def _add_connection(self, *_args) -> None:
         ConnectionDialog(on_save=self._profile_added).present(self)

@@ -137,13 +137,15 @@ class SqlideApplication(Adw.Application):
         self._launcher = None
         return False
 
-    def open_workspace(self, workspace: Workspace) -> None:
+    def open_workspace(self, workspace: Workspace) -> MainWindow:
+        """Open (or re-focus) a workspace's window and return it."""
         window = self._workspace_windows.get(workspace.id)
         if window is None:
             window = MainWindow(application=self, workspace=workspace)
             window.connect("close-request", self._workspace_closed, workspace.id)
             self._workspace_windows[workspace.id] = window
         window.present()
+        return window
 
     def _workspace_closed(self, _window, workspace_id: str) -> bool:
         self._workspace_windows.pop(workspace_id, None)

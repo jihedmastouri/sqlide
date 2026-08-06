@@ -3,15 +3,17 @@
 The small window shown at startup (and from the sidebar's Workspaces
 button): pick an existing workspace or create a new one by name and
 identity colour. Activating a workspace asks the application to open
-its main window and closes the launcher; each row shows its colour as
-a dot beside the name and has an edit button for both. The list is
+its main window, waits for that window to appear, and only then closes
+itself and raises it — otherwise the workspace opens behind whatever
+was under the launcher (see _open). Each row shows its colour as a dot
+beside the name and has an edit button for both. The list is
 rebuilt every time the window is mapped so it stays in sync with
 workspaces created elsewhere.
 """
 
 from __future__ import annotations
 
-from gi.repository import Adw, Gtk
+from gi.repository import Adw, GLib, Gtk
 
 from sqlide.backend import identity
 from sqlide.backend.workspaces import Workspace
@@ -194,5 +196,29 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
         return group
 
     def _open(self, workspace: Workspace) -> None:
-        self.get_application().open_workspace(workspace)
-        self.close()
+        """Open a workspace and hand it the foreground.
+
+        The order matters. Closing the launcher first gives focus back
+        to whatever was behind it, and the workspace window — mapped a
+        moment later, without a user event of its own to point at —
+        stays where the compositor first put it, which is behind
+        everything. So: open it, wait until it is on screen, then close
+        the launcher and present it once more, this time as the only
+        window of the app that wants attention."""
+        window = self.get_application().open_workspace(workspace)
+
+        def foreground() -> bool:
+            self.close()
+            window.present()
+            return GLib.SOURCE_REMOVE
+
+        if window.get_mapped():
+            GLib.idle_add(foreground)
+            return
+        handler = 0
+
+        def mapped(*_args) -> None:
+            window.disconnect(handler)
+            GLib.idle_add(foreground)
+
+        handler = window.connect("map", mapped)

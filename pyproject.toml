@@ -33,3 +33,9 @@ include = ["sqlide*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.lint.per-file-ignores]
+# gi.require_version() has to run before anything imports gi.repository,
+# so these two files import after code on purpose.
+"sqlide/frontend/application.py" = ["E402"]
+"scripts/init_databases.py" = ["E402"]

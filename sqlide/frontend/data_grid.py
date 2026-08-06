@@ -47,6 +47,7 @@ from typing import Any, Callable
 import csv
 import io
 import json
+from decimal import Decimal
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
@@ -1051,10 +1052,15 @@ class ResultGrid(Gtk.ScrolledWindow):
         values = [v for row in rows for v in row]
         numbers = []
         for value in values:
+            # bool is an int in Python; True+True=2 is not a sum anyone
+            # asked for. Decimal covers the money columns — postgres
+            # numeric and mysql DECIMAL arrive as Decimal, and leaving
+            # them out made "Sum" silently mean "sum of the integer
+            # columns you happened to select".
             if isinstance(value, bool):
                 continue
-            if isinstance(value, (int, float)):
-                numbers.append(value)
+            if isinstance(value, (int, float, Decimal)):
+                numbers.append(float(value))
             elif isinstance(value, str):
                 try:
                     numbers.append(float(value))

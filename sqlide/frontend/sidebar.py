@@ -13,7 +13,11 @@ dropping (JDBC stays template-only).
 Column rows show "name  type" with a PK marker and are informational.
 Rows lead with a per-kind icon (connections also get a connection
 status dot) and expandable rows end with a caret; the built-in
-expander arrow is hidden. Activating a table/view opens a data tab;
+expander arrow is hidden. A connection row also carries a + button:
+left-clicking it opens the same "New ▸" list as the context menu —
+tables, views, indexes, triggers and, where the dialect has them,
+functions, procedures and events — so creating an object never
+depends on knowing that the row has a right-click menu. Activating a table/view opens a data tab;
 activating a connection or category toggles it; clicking the caret on
 a table/view expands its columns without opening a tab. Activating a
 function (or its Edit Definition context item) opens its definition
@@ -55,7 +59,7 @@ from sqlide.backend import identity
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import Connector
 from sqlide.frontend import identity as identity_ui
-from sqlide.frontend.util import run_async
+from sqlide.frontend.util import describe, run_async
 
 _EXPANDABLE = ("connection", "category", "table", "view")
 
@@ -82,6 +86,10 @@ _NEW_LABELS = {
     "procedure": "Procedure",
     "event": "Event",
 }
+
+# What the + button offers before the connection has reported its own
+# kinds: the three every dialect creates.
+_DEFAULT_NEW_KINDS = ("table", "view", "index")
 
 # Lazily loaded category → the object row kind it holds.
 _LAZY_CATEGORIES = {
@@ -171,6 +179,10 @@ class Sidebar(Gtk.ScrolledWindow):
         # Currently bound status dot per connection name, so
         # set_connected() can restyle a visible row.
         self._dots: dict[str, Gtk.Box] = {}
+        # Connection node behind each bound + button (rows are
+        # recycled, so the handler resolves the node through this
+        # rather than through a captured reference).
+        self._new_buttons: dict[Gtk.Widget, Node] = {}
 
         self._roots = Gio.ListStore(item_type=Node)
         self._tree = Gtk.TreeListModel.new(
@@ -536,6 +548,12 @@ class Sidebar(Gtk.ScrolledWindow):
         detail = Gtk.Label()
         detail.add_css_class("dim-label")
         detail.add_css_class("caption")
+        new_button = Gtk.Button(icon_name="list-add-symbolic")
+        new_button.add_css_class("flat")
+        new_button.add_css_class("row-action")
+        new_button.set_valign(Gtk.Align.CENTER)
+        new_button.set_visible(False)
+        new_button.connect("clicked", self._new_pressed)
         caret = Gtk.Image(icon_name="pan-end-symbolic")
         caret.add_css_class("dim-label")
         caret.set_visible(False)
@@ -548,7 +566,7 @@ class Sidebar(Gtk.ScrolledWindow):
         menu_click = Gtk.GestureClick(button=Gdk.BUTTON_SECONDARY)
         menu_click.connect("pressed", self._row_menu_pressed, list_item)
         expander.add_controller(menu_click)
-        for child in (dot, icon, label, pk, badge, detail, caret):
+        for child in (dot, icon, label, pk, badge, detail, new_button, caret):
             box.append(child)
         expander.set_child(box)
         row_box.append(expander)
@@ -561,6 +579,7 @@ class Sidebar(Gtk.ScrolledWindow):
         list_item.pk = pk
         list_item.badge = badge
         list_item.detail = detail
+        list_item.new_button = new_button
         list_item.caret = caret
         list_item.row_handler = 0
 
@@ -582,9 +601,16 @@ class Sidebar(Gtk.ScrolledWindow):
                 list_item.badge,
                 profile.environment if profile is not None else identity.UNSET,
             )
+            self._new_buttons[list_item.new_button] = node
+            list_item.new_button.set_visible(True)
+            describe(
+                list_item.new_button, f"New object in “{node.label}”"
+            )
         else:
             list_item.dot.set_visible(False)
             list_item.badge.set_visible(False)
+            self._new_buttons.pop(list_item.new_button, None)
+            list_item.new_button.set_visible(False)
         icon_name = _KIND_ICONS.get(node.kind)
         if icon_name:
             list_item.icon.set_from_icon_name(icon_name)
@@ -609,6 +635,7 @@ class Sidebar(Gtk.ScrolledWindow):
         if list_item.row_handler:
             list_item.get_item().disconnect(list_item.row_handler)
             list_item.row_handler = 0
+        self._new_buttons.pop(list_item.new_button, None)
         if list_item.dot_name:
             if self._dots.get(list_item.dot_name) is list_item.dot:
                 del self._dots[list_item.dot_name]
@@ -640,16 +667,7 @@ class Sidebar(Gtk.ScrolledWindow):
             menu.append("Query Builder", "schema.query-builder")
             menu.append("MCP Server", "schema.mcp-server")
             if node.ddl_kinds:
-                sub = Gio.Menu()
-                for kind in node.ddl_kinds:
-                    item = Gio.MenuItem.new(
-                        _NEW_LABELS.get(kind, kind.capitalize()), None
-                    )
-                    item.set_action_and_target_value(
-                        "schema.new-object", GLib.Variant.new_string(kind)
-                    )
-                    sub.append_item(item)
-                menu.append_submenu("New", sub)
+                menu.append_submenu("New", _new_items(node.ddl_kinds))
             menu.append("Refresh", "schema.refresh")
             menu.append("Edit…", "schema.edit-connection")
             menu.append("Remove…", "schema.remove-connection")
@@ -688,6 +706,30 @@ class Sidebar(Gtk.ScrolledWindow):
         rect.width = rect.height = 1
         self._popover.set_pointing_to(rect)
         self._popover.popup()
+
+    def _new_pressed(self, button: Gtk.Button) -> None:
+        """The connection row's + button: the "New ▸" list, one left
+        click away."""
+        node = self._new_buttons.get(button)
+        if node is None or node.profile is None:
+            return
+        self._menu_node = node
+        menu = Gio.Menu()
+        # DEFAULT_KINDS until the adapter has said what it can create —
+        # every dialect has these three, and expanding the connection
+        # (below) replaces the guess with its real list.
+        menu.append_section(
+            "New", _new_items(node.ddl_kinds or _DEFAULT_NEW_KINDS)
+        )
+        self._popover.set_menu_model(menu)
+        ok, bounds = button.compute_bounds(self._view)
+        rect = Gdk.Rectangle()
+        rect.x = int(bounds.origin.x) if ok else 0
+        rect.y = int(bounds.origin.y + bounds.size.height) if ok else 0
+        rect.width = rect.height = 1
+        self._popover.set_pointing_to(rect)
+        self._popover.popup()
+        self._load_children(node)  # connects, so the next list is exact
 
     def _menu_view_data(self, *_args) -> None:
         node = self._menu_node
@@ -828,6 +870,20 @@ class Sidebar(Gtk.ScrolledWindow):
             self._on_open_function(node.profile, node.label)
         elif node.kind in ("connection", "category"):
             row.set_expanded(not row.get_expanded())
+
+
+def _new_items(kinds: tuple[str, ...]) -> Gio.Menu:
+    """One "New ▸" item per creatable object kind, in the adapter's
+    order (tables and views first, functions and procedures where the
+    dialect has them)."""
+    menu = Gio.Menu()
+    for kind in kinds:
+        item = Gio.MenuItem.new(_NEW_LABELS.get(kind, kind.capitalize()), None)
+        item.set_action_and_target_value(
+            "schema.new-object", GLib.Variant.new_string(kind)
+        )
+        menu.append_item(item)
+    return menu
 
 
 def _fuzzy_key(query: str, name: str) -> tuple[int, int, int] | None:

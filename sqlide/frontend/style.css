@@ -113,6 +113,15 @@ label.aggregate-summary {
   padding: 6px;
 }
 
+/* Buttons living inside a schema-tree row (the connection row's +):
+   sized down so the row keeps its height and the icon still lines up
+   with the caret next to it. */
+listview.schema-tree button.row-action {
+  min-height: 20px;
+  min-width: 20px;
+  padding: 0 2px;
+}
+
 /* Sidebar connection rows: status dot — gray while the connection is
    idle (never opened), green once its connector exists. The widget is
    an 8×8 box; the radius turns it into a circle. */

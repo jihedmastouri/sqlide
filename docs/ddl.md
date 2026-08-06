@@ -4,9 +4,12 @@ description: Building and dropping schema objects from the sidebar.
 order: 5
 ---
 
-Right-click a connection row for **New ▸**: tables, views, indexes,
-triggers, and — where the dialect supports them — functions, procedures,
-and events.
+The **+** button on a connection row — or **New ▸** on its right-click
+menu, the same list either way — offers tables, views, indexes,
+triggers, and, where the dialect supports them, functions, procedures
+and events. A connection that has not been opened yet shows the three
+kinds every dialect has and connects in the background, so the next
+press lists what that adapter can really create.
 
 - **Tables** open a small designer tab: name, columns, types,
   primary-key/nullable/default flags, and a live preview of the

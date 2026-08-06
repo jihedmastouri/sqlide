@@ -70,6 +70,13 @@ SQLite/MySQL/Postgres, telemetry, auto-update, cloud-vendor auth.
 
 ## Done
 
+- [x] Backlog round, 2026-08-06 (milestone 10b in PLAN.md): the grid's
+      pointer (click-drag selection, cursors that name the action, one
+      column-header menu on both buttons, a live selection summary),
+      bulk tab closing, "New ▸" on a left click, the EXPLAIN plan graph,
+      a seeded `demo` database on every compose server, the Makefile,
+      XML import/export of workspaces and connections, and the launcher
+      handing the foreground to the workspace it opens.
 - [x] Milestone 10, UI foundations and identity (2026-08-05): the identity
       palette (`backend/identity.py`, contrast and colour-blind separation
       asserted by tests) and its runtime CSS provider; `color` on workspaces,

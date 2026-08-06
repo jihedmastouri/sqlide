@@ -24,7 +24,8 @@ anything else with a JDBC driver.
 
 - **No cloud.** No hosted workspaces, no team sync, no per-item sharing or
   permissions, no accounts, no billing. Workspaces are local files; the user
-  syncs them with their own tooling if they want to.
+  syncs them with their own tooling if they want to — `backend/exchange.py`
+  exports one as portable XML for exactly that.
 - **No embedded AI agent.** The read-only MCP server already exposes our
   databases to whatever agent the user runs, with better isolation and no
   provider SDK, API-key storage, or per-provider maintenance. That is the
@@ -199,9 +200,13 @@ stored plainly for v1 — known limitation).
 sqlide/
 ├── PLAN.md
 ├── README.md
+├── Makefile                   # venv, tests, app, compose servers, lint
 ├── pyproject.toml
+├── docker-compose.yml         # throwaway MySQL/PostgreSQL servers
 ├── scripts/
-│   └── make_demo_db.py        # builds demo.db for manual testing
+│   ├── make_demo_db.py        # builds demo.db for manual testing
+│   ├── init_databases.py      # replays the demo schema onto running servers
+│   └── init/                  # that schema, per engine (also mounted by compose)
 └── sqlide/
     ├── __init__.py
     ├── __main__.py            # python -m sqlide
@@ -215,6 +220,7 @@ sqlide/
     │   ├── saved.py           # saved snippets/queries (global JSON stores)
     │   ├── placeholders.py    # :name / ? scanner + literal substitution
     │   ├── backup.py          # config zip export/restore
+    │   ├── exchange.py        # portable XML workspace/connection transfer
     │   ├── secrets.py         # connection passwords: system keyring or plain text
     │   └── db/
     │       ├── __init__.py
@@ -246,6 +252,9 @@ sqlide/
         ├── shortcuts.py       # the keyboard shortcuts window
         ├── sidebar.py         # lazy schema tree (TreeListModel)
         ├── data_grid.py       # ResultGrid + TableTab
+        ├── canvas.py          # palette + cairo primitives for the diagrams
+        ├── plan_graph.py      # EXPLAIN output parsed and drawn as a tree
+        ├── transfer.py        # the import/export file dialogs
         ├── query_console.py
         ├── cli_console.py     # psql/mysql/sqlite-style CLI client tab
         ├── sql_editor.py      # GtkSourceView 5 with TextView fallback (+ Vim mode)
@@ -320,6 +329,18 @@ manual test path.
     window and an accessible label on every icon-only button. — **done**
     (the privacy-mode default and the read-only suggestion wait for the
     features they switch, in milestone 16.)
+
+10b. **Backlog round (2026-08)** — grid pointer work (click-drag block
+    selection, a cursor named after what a press will do, one column-header
+    menu on both mouse buttons, a live selection summary in the Aggregate
+    page); bulk tab closing from a tab's own menu, the main menu and
+    ctrl+shift+w; "New ▸" on a left click in the sidebar; EXPLAIN drawn as a
+    plan graph (`frontend/plan_graph.py`, sharing `frontend/canvas.py` with
+    the relation graph); a `demo` database seeded onto every compose server
+    from `scripts/init/`; a Makefile over the project's routines; portable
+    XML import/export of workspaces and connections
+    (`backend/exchange.py`); the launcher handing the foreground to the
+    workspace it opens. — **done**
 
 ## Milestones — planned
 

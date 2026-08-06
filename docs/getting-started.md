@@ -41,7 +41,21 @@ The `log` table has no primary key and shows as read-only, as does
 Click the terminal icon on the connection row to open a query console.
 Type SQL and press **Ctrl+Enter** (or the Run button).
 
-## 6. Restart and pick up where you left off
+**Explain** runs the same statement as a plan instead, and shows it
+three ways: as a **Graph** (the tree a plan actually is — zoomable,
+with each step's full text on hover), as the **Table** the server
+returned, and as **JSON**.
+
+## 6. Read a selection
+
+Selecting cells in any grid — click, click-and-drag, Shift+click, a
+click on a row number or a column header — fills the side panel's
+**Aggregate** page with a count/sum/avg/min/max of what is selected,
+so opening the panel is enough to read it. **Ctrl+C** copies the
+selection; the column header's menu (either mouse button) sorts,
+copies and moves the column.
+
+## 7. Restart and pick up where you left off
 
 Close and relaunch — the launcher lists the workspace, and opening it
 restores both the connections and the tabs you left open, including
@@ -56,3 +70,5 @@ header reopens the launcher to switch workspaces.
 - [MCP Server](/docs/mcp-server/) to let an AI assistant query read-only.
 - [Connection Security](/docs/connection-security/) for keyring-backed
   passwords.
+- [Import and Export](/docs/transfer/) to carry a workspace to another
+  machine.

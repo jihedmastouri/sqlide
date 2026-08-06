@@ -23,16 +23,22 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Callable
 
-from gi.repository import Adw, Gdk, Gtk, Pango, PangoCairo
+from gi.repository import Adw, Gdk, Gtk, Pango
 
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import ColumnInfo, Connector, RelationInfo
 from sqlide.backend.workspaces import TabState
+from sqlide.frontend.canvas import (
+    FONT,
+    Palette,
+    draw_text,
+    palette,
+    rgb,
+    text_size,
+)
 from sqlide.frontend.util import describe, run_async
 
 _ZOOM_STEPS = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)
-
-_FONT = "Sans 10"
 _PAD_X = 8  # text padding inside a row
 _PAD_Y = 3
 _MARGIN = 24  # canvas margin around the graph
@@ -63,25 +69,6 @@ class _Node:
             if info.name == column:
                 return self.y + self.header_height + (i + 0.5) * self.row_height
         return self.y + self.header_height / 2
-
-
-@dataclass
-class _Palette:
-    fg: str
-    border: str
-    header_bg: str
-    row_bg: str
-    edge: str
-
-
-def _palette(dark: bool) -> _Palette:
-    if dark:
-        return _Palette("#eeeeec", "#5e5c64", "#3d3846", "#241f31", "#9a9996")
-    return _Palette("#241f31", "#9a9996", "#deddda", "#ffffff", "#5e5c64")
-
-
-def _rgb(hex_color: str) -> tuple[float, float, float]:
-    return tuple(int(hex_color[i : i + 2], 16) / 255 for i in (1, 3, 5))
 
 
 class RelationGraphTab(Gtk.Box):
@@ -222,29 +209,20 @@ class RelationGraphTab(Gtk.Box):
 
     def _pango_layout(self) -> Pango.Layout:
         layout = self._canvas.create_pango_layout("")
-        layout.set_font_description(Pango.FontDescription.from_string(_FONT))
+        layout.set_font_description(Pango.FontDescription.from_string(FONT))
         return layout
 
     def _measure_nodes(self) -> None:
         """Size every node from its rendered text (must run on the main
         thread — Pango layouts come from the widget)."""
         layout = self._pango_layout()
-
-        def text_size(text: str, bold: bool = False) -> tuple[float, float]:
-            layout.set_text(text, -1)
-            attrs = Pango.AttrList()
-            if bold:
-                attr = Pango.attr_weight_new(Pango.Weight.BOLD)
-                attrs.insert(attr)
-            layout.set_attributes(attrs)
-            _ink, logical = layout.get_pixel_extents()
-            return logical.width, logical.height
-
         for node in self._nodes:
-            width, header_h = text_size(node.name, bold=True)
+            width, header_h = text_size(layout, node.name, bold=True)
             row_h = header_h
             for column in node.columns:
-                w, h = text_size(_column_text(column), bold=column.is_pk)
+                w, h = text_size(
+                    layout, _column_text(column), bold=column.is_pk
+                )
                 width = max(width, w)
                 row_h = max(row_h, h)
             node.width = width + 2 * _PAD_X
@@ -353,18 +331,20 @@ class RelationGraphTab(Gtk.Box):
     # Drawing
 
     def _draw(self, _area, cr, _width, _height) -> None:
-        palette = _palette(Adw.StyleManager.get_default().get_dark())
+        colors = palette(Adw.StyleManager.get_default().get_dark())
         cr.scale(self._zoom(), self._zoom())
         nodes = {n.name: n for n in self._nodes}
         for rel in self._relations:
             source, target = nodes.get(rel.table), nodes.get(rel.ref_table)
             if source is not None and target is not None:
-                self._draw_edge(cr, source, target, rel, palette)
+                self._draw_edge(cr, source, target, rel, colors)
         layout = self._pango_layout()
         for node in self._nodes:
-            self._draw_node(cr, layout, node, palette)
+            self._draw_node(cr, layout, node, colors)
 
-    def _draw_edge(self, cr, source: _Node, target: _Node, rel, palette) -> None:
+    def _draw_edge(
+        self, cr, source: _Node, target: _Node, rel, colors: Palette
+    ) -> None:
         y1 = source.row_anchor_y(rel.column)
         y2 = target.row_anchor_y(rel.ref_column)
         # Leave each node through the side facing the other one.
@@ -375,7 +355,7 @@ class RelationGraphTab(Gtk.Box):
             x1, x2 = source.x, target.x + target.width
             direction = -1
         offset = max(24.0, min(72.0, abs(x2 - x1) / 2)) * direction
-        cr.set_source_rgb(*_rgb(palette.edge))
+        cr.set_source_rgb(*rgb(colors.edge))
         cr.set_line_width(1.2)
         cr.move_to(x1, y1)
         cr.curve_to(x1 + offset, y1, x2 - offset, y2, x2, y2)
@@ -389,13 +369,13 @@ class RelationGraphTab(Gtk.Box):
         cr.close_path()
         cr.fill()
 
-    def _draw_node(self, cr, layout, node: _Node, palette) -> None:
+    def _draw_node(self, cr, layout, node: _Node, colors: Palette) -> None:
         # Header
-        cr.set_source_rgb(*_rgb(palette.header_bg))
+        cr.set_source_rgb(*rgb(colors.header_bg))
         cr.rectangle(node.x, node.y, node.width, node.header_height)
         cr.fill()
         # Rows
-        cr.set_source_rgb(*_rgb(palette.row_bg))
+        cr.set_source_rgb(*rgb(colors.row_bg))
         cr.rectangle(
             node.x,
             node.y + node.header_height,
@@ -404,7 +384,7 @@ class RelationGraphTab(Gtk.Box):
         )
         cr.fill()
         # Border and row separators
-        cr.set_source_rgb(*_rgb(palette.border))
+        cr.set_source_rgb(*rgb(colors.border))
         cr.set_line_width(1.0)
         cr.rectangle(node.x + 0.5, node.y + 0.5, node.width - 1, node.height - 1)
         cr.stroke()
@@ -414,12 +394,12 @@ class RelationGraphTab(Gtk.Box):
             cr.line_to(node.x + node.width, y + 0.5)
             cr.stroke()
         # Text
-        cr.set_source_rgb(*_rgb(palette.fg))
-        self._draw_text(
+        cr.set_source_rgb(*rgb(colors.fg))
+        draw_text(
             cr, layout, node.name, node.x + _PAD_X, node.y + _PAD_Y, bold=True
         )
         for i, column in enumerate(node.columns):
-            self._draw_text(
+            draw_text(
                 cr,
                 layout,
                 _column_text(column),
@@ -427,16 +407,6 @@ class RelationGraphTab(Gtk.Box):
                 node.y + node.header_height + i * node.row_height + _PAD_Y,
                 bold=column.is_pk,
             )
-
-    @staticmethod
-    def _draw_text(cr, layout, text: str, x: float, y: float, bold: bool) -> None:
-        layout.set_text(text, -1)
-        attrs = Pango.AttrList()
-        if bold:
-            attrs.insert(Pango.attr_weight_new(Pango.Weight.BOLD))
-        layout.set_attributes(attrs)
-        cr.move_to(x, y)
-        PangoCairo.show_layout(cr, layout)
 
     def _show_message(self, title: str, description: str) -> None:
         self._placeholder.set_title(title)

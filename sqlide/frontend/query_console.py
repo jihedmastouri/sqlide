@@ -22,8 +22,10 @@ The editor holds a script of any number of statements. Run (Ctrl+Enter)
 executes the selection if there is one, otherwise the statement under
 the cursor; Run All (Ctrl+Shift+Enter) executes the whole buffer.
 Explain runs the same statements behind the adapter's explain prefix
-(EXPLAIN QUERY PLAN on SQLite); each plan tab offers a Table and a
-JSON rendering. Statements run sequentially through Connector.execute()
+(EXPLAIN QUERY PLAN on SQLite); each plan tab offers the plan as a
+graph (frontend/plan_graph.py — the shape a plan actually has), as the
+table the server returned, and as JSON.
+Statements run sequentially through Connector.execute()
 on a worker thread, stopping at the first failure. After a run the
 bottom panel always shows at least two tabs: a Status tab first (each
 statement's outcome, timing and SQL), then one result tab per
@@ -68,6 +70,7 @@ from sqlide.frontend.data_grid import (
     _format_json,
 )
 from sqlide.frontend.lsp_completion import LspCompletionProvider
+from sqlide.frontend.plan_graph import plan_graph
 from sqlide.frontend.results_panel import ResultsPanel
 from sqlide.frontend.sql_editor import SqlEditor
 from sqlide.frontend.util import describe, run_async
@@ -674,7 +677,7 @@ class QueryConsole(Gtk.Box):
             self._explain_button.set_sensitive(True)
             self._set_transaction_open(in_transaction)
             self._show_outcomes(
-                outcomes, planned=len(statements), json_view=explain
+                outcomes, planned=len(statements), explain=explain
             )
             if self.on_ran is not None:
                 for sql, result, _elapsed in outcomes:
@@ -747,7 +750,7 @@ class QueryConsole(Gtk.Box):
         self,
         outcomes: list[tuple[str, ResultSet | int | Exception, float]],
         planned: int,
-        json_view: bool = False,
+        explain: bool = False,
     ) -> None:
         self._results_area.reveal()
         while self._results.get_n_pages():
@@ -769,9 +772,10 @@ class QueryConsole(Gtk.Box):
                     f"{_format_elapsed(elapsed)} and matched nothing.",
                 )
                 grid.set_result(result.columns, result.rows)
-                # Explain plans also offer a JSON rendering of the rows.
+                # An explain plan is a tree, a table and JSON;
+                # a result is just a table.
                 page: Gtk.Widget = (
-                    _with_json_view(grid, result) if json_view else grid
+                    _explain_views(grid, result) if explain else grid
                 )
                 counts.append(f"{len(result)} row(s)")
             elif isinstance(result, Exception):
@@ -878,10 +882,14 @@ def _format_elapsed(seconds: float) -> str:
     return f"{seconds:.2f} s"
 
 
-def _with_json_view(grid: ResultGrid, result: ResultSet) -> Gtk.Widget:
-    """An explain result tab: Table/JSON switcher over the grid and
-    the same rows pretty-printed as JSON."""
+def _explain_views(grid: ResultGrid, result: ResultSet) -> Gtk.Widget:
+    """An explain result tab: Graph / Table / JSON over the same plan.
+    The graph is what a plan actually is, so it leads — and is skipped
+    only when the rows carry no plan we can read."""
     stack = Gtk.Stack(vexpand=True)
+    graph = plan_graph(result.columns, [tuple(row) for row in result.rows])
+    if graph is not None:
+        stack.add_titled(graph, "graph", "Graph")
     stack.add_titled(grid, "table", "Table")
     text = Gtk.TextView(
         editable=False,

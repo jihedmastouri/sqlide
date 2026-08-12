@@ -226,3 +226,7 @@ __marimo__/
 
 # Internal design notes and competitive analysis — never distributed.
 confidential/
+
+# Nix build output symlinks
+result
+result-*

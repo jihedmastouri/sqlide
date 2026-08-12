@@ -18,6 +18,10 @@ included (experimental). See [PLAN.md](PLAN.md) for design and status.
 
 SQLite needs nothing extra.
 
+On a machine with Nix, none of the above is needed: `nix run .` launches
+the app and `nix develop` gives you a shell with GTK, the drivers and
+the dev tools already on `PATH`. See [docs/nix.md](docs/nix.md).
+
 ## Try it (SQLite)
 
 ```sh

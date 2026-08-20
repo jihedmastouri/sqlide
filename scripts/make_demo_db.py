@@ -1,72 +1,34 @@
 #!/usr/bin/env python3
-"""Create a small SQLite demo database for trying sqlide.
+"""Create the SQLite demo database for trying sqlide.
 
 Usage: python3 scripts/make_demo_db.py [path]   (default: demo.db)
+
+The schema comes from sqlide/backend/demo/sqlite.sql — the same demo
+the app builds from its connection dialog, and the same shape the
+PostgreSQL and MySQL files in that directory build. This script is
+just the command-line way in.
 """
 
-import sqlite3
+from __future__ import annotations
+
 import sys
+from pathlib import Path
 
-path = sys.argv[1] if len(sys.argv) > 1 else "demo.db"
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
-conn = sqlite3.connect(path)
-conn.executescript(
-    """
-    CREATE TABLE IF NOT EXISTS customers (
-        id INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        email TEXT,
-        city TEXT
-    );
+from sqlide.backend import demo  # noqa: E402
 
-    CREATE TABLE IF NOT EXISTS orders (
-        id INTEGER PRIMARY KEY,
-        customer_id INTEGER NOT NULL REFERENCES customers(id),
-        item TEXT NOT NULL,
-        amount REAL NOT NULL,
-        placed_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
+path = Path(sys.argv[1] if len(sys.argv) > 1 else "demo.db")
 
-    -- No primary key on purpose: shows up read-only in the grid.
-    CREATE TABLE IF NOT EXISTS log (
-        at TEXT,
-        message TEXT
-    );
+# The demo refuses to overwrite; re-running the script to rebuild it
+# is normal, so this one removes the old file first (the app's own
+# path has no such licence — there the file is one the user named).
+if path.exists():
+    path.unlink()
 
-    CREATE VIEW IF NOT EXISTS order_totals AS
-        SELECT c.name, COUNT(o.id) AS orders, SUM(o.amount) AS total
-        FROM customers c LEFT JOIN orders o ON o.customer_id = c.id
-        GROUP BY c.id;
-
-    DELETE FROM customers;
-    DELETE FROM orders;
-    DELETE FROM log;
-    """
-)
-
-conn.executemany(
-    "INSERT INTO customers (id, name, email, city) VALUES (?, ?, ?, ?)",
-    [
-        (1, "Ada Lovelace", "ada@example.com", "London"),
-        (2, "Alan Turing", "alan@example.com", "Manchester"),
-        (3, "Grace Hopper", "grace@example.com", "New York"),
-        (4, "Edsger Dijkstra", None, "Nuenen"),
-    ],
-)
-conn.executemany(
-    "INSERT INTO orders (customer_id, item, amount) VALUES (?, ?, ?)",
-    [
-        (1, "Analytical Engine plans", 120.0),
-        (1, "Punch cards (box)", 9.5),
-        (2, "Enigma replica", 300.0),
-        (3, "COBOL manual", 25.0),
-        (3, "Compiler license", 199.99),
-    ],
-)
-conn.executemany(
-    "INSERT INTO log (at, message) VALUES (datetime('now'), ?)",
-    [("demo database created",), ("this table has no primary key",)],
-)
-conn.commit()
-conn.close()
-print(f"Created {path}")
+try:
+    created = demo.create("sqlite", file_path=str(path))
+except demo.DemoError as exc:
+    sys.exit(f"{exc}")
+print(f"Created {created}")

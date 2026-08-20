@@ -198,3 +198,95 @@ def test_event_roundtrip(mysql):
     finally:
         db.execute(db.drop_sql("event", "sqlide_evt"))
     assert "sqlide_evt" not in db.list_events()
+
+
+def test_build_demo_database(mysql):
+    """The whole two-phase build, against a real server.
+
+    Built as root: on MySQL, creating a database is an administrator's
+    act, and the compose file's `sqlide` user only owns the `sqlide`
+    database (it may create another one but cannot then use it). That
+    is the same reason scripts/init_databases.py seeds MySQL as root.
+    """
+    from sqlide.backend import demo
+    from sqlide.backend.db.mysql.connector import MysqlConnector
+
+    _, db = mysql
+    name = "demo_test_my"
+
+    def connect_to(database: str):
+        connector = MysqlConnector(
+            host=db.host, port=db.port, user="root",
+            password=db.password, database=database,
+        )
+        connector.connect()
+        return connector
+
+    admin = connect_to(db.database)
+    admin.execute(f"DROP DATABASE IF EXISTS {admin.quote_ident(name)}")
+    try:
+        assert demo.create(
+            "mysql", server=admin, connect=connect_to, database=name
+        ) == name
+        built = connect_to(name)
+        try:
+            kinds = {t.name: t.kind for t in built.list_tables()}
+            assert kinds["customers"] == "table"
+            assert kinds["order_totals"] == "view"
+            assert not any(c.is_pk for c in built.list_columns("log"))
+            assert built.execute("SELECT count(*) FROM orders").rows == [(5,)]
+            assert "customer_total" in [f.name for f in built.list_functions()]
+            assert any(
+                r.table == "orders" and r.ref_table == "customers"
+                for r in built.list_relations()
+            )
+        finally:
+            built.close()
+    finally:
+        admin.execute(f"DROP DATABASE IF EXISTS {admin.quote_ident(name)}")
+        admin.close()
+
+
+def test_schema_ddl_survives_circular_foreign_keys(mysql):
+    """MySQL bakes references into each CREATE TABLE, so no ordering
+    of the tables satisfies a pair that reference each other — the
+    script turns the checks off instead, as mysqldump does."""
+    _, db = mysql
+    db.execute("SET FOREIGN_KEY_CHECKS = 0")
+    db.execute("DROP TABLE IF EXISTS ring_b")
+    db.execute("DROP TABLE IF EXISTS ring_a")
+    db.execute("SET FOREIGN_KEY_CHECKS = 1")
+    db.execute("CREATE TABLE ring_a (id int PRIMARY KEY, b_id int)")
+    db.execute(
+        "CREATE TABLE ring_b (id int PRIMARY KEY, a_id int, "
+        "FOREIGN KEY (a_id) REFERENCES ring_a(id))"
+    )
+    db.execute(
+        "ALTER TABLE ring_a ADD CONSTRAINT ring_a_b_fk "
+        "FOREIGN KEY (b_id) REFERENCES ring_b(id)"
+    )
+    try:
+        statements = db.schema_ddl()
+        assert statements[0] == "SET FOREIGN_KEY_CHECKS = 0"
+        assert statements[-1] == "SET FOREIGN_KEY_CHECKS = 1"
+        assert any("ring_a_b_fk" in s for s in statements)
+    finally:
+        db.execute("SET FOREIGN_KEY_CHECKS = 0")
+        db.execute("DROP TABLE IF EXISTS ring_b")
+        db.execute("DROP TABLE IF EXISTS ring_a")
+        db.execute("SET FOREIGN_KEY_CHECKS = 1")
+
+
+def test_schema_ddl_includes_triggers(mysql):
+    """Triggers are not in information_schema.routines, so the generic
+    walk misses them."""
+    _, db = mysql
+    db.execute("DROP TRIGGER IF EXISTS users_touch")
+    db.execute(
+        "CREATE TRIGGER users_touch BEFORE INSERT ON users "
+        "FOR EACH ROW SET NEW.name = NEW.name"
+    )
+    try:
+        assert any("users_touch" in s for s in db.schema_ddl())
+    finally:
+        db.execute("DROP TRIGGER IF EXISTS users_touch")

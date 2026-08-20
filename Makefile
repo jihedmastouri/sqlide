@@ -21,7 +21,7 @@ SERVERS ?= postgres16 mysql8
 DEMO_DB ?= demo.db
 
 .DEFAULT_GOAL := help
-.PHONY: help venv install run demo test test-sqlite lint fmt check \
+.PHONY: help venv install run run-fresh demo test test-sqlite lint fmt check \
         servers servers-all servers-stop servers-clean init-db \
         flatpak web clean
 
@@ -49,6 +49,15 @@ endif
 
 run:  ## Launch the app (system python: GTK lives there)
 	$(PYTHON) -m sqlide
+
+# Startup goes straight into the last-used workspace, so the only way
+# back to a first run is a config directory that has never seen one.
+# SCRATCH_CONFIG defaults to a fresh mktemp dir per run; point it at a
+# fixed path to keep a throwaway profile between runs.
+run-fresh:  ## Launch with a throwaway config (a real first run)
+	@dir="$${SCRATCH_CONFIG:-$$(mktemp -d -t sqlide-config-XXXXXX)}"; \
+	echo "→ XDG_CONFIG_HOME=$$dir"; \
+	XDG_CONFIG_HOME="$$dir" $(PYTHON) -m sqlide
 
 demo:  ## Build the SQLite demo database (demo.db)
 	$(PYTHON) scripts/make_demo_db.py $(DEMO_DB)

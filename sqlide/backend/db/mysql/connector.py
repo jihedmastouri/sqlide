@@ -25,6 +25,7 @@ from sqlide.backend.db.base import (
     SortSpec,
     TableInfo,
     TriggerInfo,
+    TypeSpec,
     build_filter_clauses,
 )
 
@@ -375,16 +376,48 @@ class MysqlConnector(Connector):
     def create_template(self, kind: str) -> str:
         return _TEMPLATES.get(kind, "")
 
-    def column_types(self) -> list[str]:
+    def column_type_specs(self) -> list[TypeSpec]:
         return [
-            "INT", "BIGINT", "VARCHAR(255)", "TEXT", "DATETIME", "DATE",
-            "DECIMAL(10,2)", "DOUBLE", "TINYINT(1)", "JSON", "BLOB",
+            TypeSpec("INT"),
+            TypeSpec("BIGINT"),
+            TypeSpec("SMALLINT"),
+            TypeSpec("MEDIUMINT"),
+            TypeSpec("TINYINT", ("display width",)),
+            TypeSpec("BOOLEAN", note="synonym for TINYINT(1)"),
+            TypeSpec("DECIMAL", ("precision", "scale"), ("10", "2")),
+            TypeSpec("FLOAT"),
+            TypeSpec("DOUBLE"),
+            TypeSpec("BIT", ("bits",), ("1",)),
+            TypeSpec("VARCHAR", ("length",), ("255",), "length required"),
+            TypeSpec("CHAR", ("length",), ("1",)),
+            TypeSpec("TEXT", note="up to 64 KiB"),
+            TypeSpec("MEDIUMTEXT", note="up to 16 MiB"),
+            TypeSpec("LONGTEXT", note="up to 4 GiB"),
+            TypeSpec("TINYTEXT", note="up to 255 bytes"),
+            TypeSpec("JSON"),
+            TypeSpec(
+                "ENUM", ("values",), ("'a', 'b'",), "quoted, comma separated",
+            ),
+            TypeSpec(
+                "SET", ("values",), ("'a', 'b'",), "quoted, comma separated",
+            ),
+            TypeSpec("DATE"),
+            TypeSpec("DATETIME", ("fractional digits",)),
+            TypeSpec("TIMESTAMP", ("fractional digits",)),
+            TypeSpec("TIME", ("fractional digits",)),
+            TypeSpec("YEAR"),
+            TypeSpec("BINARY", ("length",), ("16",)),
+            TypeSpec("VARBINARY", ("length",), ("255",), "length required"),
+            TypeSpec("BLOB"),
+            TypeSpec("MEDIUMBLOB"),
+            TypeSpec("LONGBLOB"),
         ]
 
     def get_ddl(self, name: str) -> str:
         # SHOW CREATE TABLE covers views too (the DDL is always the
-        # second column); stored routines need their own SHOW forms.
-        for shape in ("TABLE", "FUNCTION", "PROCEDURE"):
+        # second column); stored routines and triggers need their own
+        # SHOW forms, which all put the statement in the third.
+        for shape in ("TABLE", "FUNCTION", "PROCEDURE", "TRIGGER"):
             try:
                 _, rows, _ = self._run(
                     f"SHOW CREATE {shape} {self.quote_ident(name)}"
@@ -395,6 +428,35 @@ class MysqlConnector(Connector):
                 ddl = rows[0][2] if shape != "TABLE" else rows[0][1]
                 return ddl or ""
         return ""
+
+    def schema_ddl(self) -> list[str]:
+        """The generic walk, plus triggers, between two
+        FOREIGN_KEY_CHECKS statements.
+
+        MySQL needs no separate CREATE INDEX pass — SHOW CREATE TABLE
+        writes a table's keys and foreign keys inside the statement —
+        but that is also why the script has to turn the checks off
+        first: the references are baked into each CREATE TABLE, and no
+        ordering of the tables satisfies a pair that reference each
+        other. (PostgreSQL's adapter solves the same problem the other
+        way, by adding its foreign keys afterwards; MySQL cannot,
+        because it does not hand them over separately.) This is what
+        mysqldump writes at the top of its files, for the same reason.
+
+        Its triggers also live outside list_functions() — that is
+        information_schema.routines, so stored routines only — and a
+        schema without them is not the schema.
+        """
+        statements = super().schema_ddl() + self.ddl_for(
+            [t.name for t in self.list_triggers()]
+        )
+        if not statements:
+            return []
+        return [
+            "SET FOREIGN_KEY_CHECKS = 0",
+            *statements,
+            "SET FOREIGN_KEY_CHECKS = 1",
+        ]
 
     def modify_column_sql(self, table: str, column: ColumnInfo) -> str:
         null = "NULL" if column.nullable else "NOT NULL"

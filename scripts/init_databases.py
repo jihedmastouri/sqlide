@@ -16,25 +16,24 @@ Servers that are not running (or whose driver is not installed) are
 reported and skipped, exactly like the test fixtures do, so running
 this with only two containers up is normal.
 
-The SQL comes from scripts/init/<engine>.sql — the same files the
-containers use. Two of their statements are directives rather than
-plain SQL: CREATE DATABASE is applied only when the database is
-missing, and \\connect / USE switch the connection to another database
-(psql spells it one way, MySQL the other).
+The SQL comes from sqlide/backend/demo/<engine>.sql — the same files
+the containers mount and the app itself builds its demo from.
+backend/demo parses them (see its docstring for the two directives
+they carry); this script only has to run the pieces in order, against
+an admin connection first and the new database after.
 """
 
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from sqlide.backend import demo  # noqa: E402
 from sqlide.backend.db import registry  # noqa: E402
-from sqlide.backend.sql_split import split_statements  # noqa: E402
 
 # Creating a database and granting access to it are admin jobs. The
 # compose file's PostgreSQL superuser *is* `sqlide`; its MySQL `sqlide`
@@ -59,24 +58,7 @@ SERVERS: dict[str, tuple[str, int, str]] = {
     "mysql8": ("mysql", 33080, "sqlide"),
 }
 
-DEMO_DATABASE = "demo"
-
-_CREATE_DATABASE = re.compile(
-    r"^CREATE\s+DATABASE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w$]+)", re.IGNORECASE
-)
-_USE = re.compile(r"^USE\s+([\w$]+)\s*$", re.IGNORECASE)
-
-
-def statements(kind: str) -> list[str]:
-    """The engine's seed statements, with psql's \\connect rewritten to
-    the USE form so one file serves both the container and this
-    script."""
-    path = ROOT / "scripts" / "init" / f"{kind}.sql"
-    text = "\n".join(
-        f"USE {line.split()[1]};" if line.startswith("\\connect ") else line
-        for line in path.read_text().splitlines()
-    )
-    return [s.text for s in split_statements(text)]
+DEMO_DATABASE = demo.DEFAULT_DATABASE
 
 
 def connect(kind: str, port: int, database: str):
@@ -85,17 +67,6 @@ def connect(kind: str, port: int, database: str):
     )
     connector.connect()
     return connector
-
-
-def bare(sql: str) -> str:
-    """A statement without its leading comment lines — the file's
-    header comment belongs to its first statement, and the directives
-    are recognised by what the statement actually says."""
-    return "\n".join(
-        line
-        for line in sql.splitlines()
-        if line.strip() and not line.strip().startswith("--")
-    ).strip()
 
 
 def seed(name: str, drop: bool) -> str:
@@ -110,36 +81,28 @@ def seed(name: str, drop: bool) -> str:
             f"{name}: skipped, not reachable ({exc}); "
             f"start it with: docker compose up -d {name}"
         )
-    connector = admin
+    script = demo.load(kind)
+    connector = None
     try:
-        if DEMO_DATABASE in set(admin.list_databases()):
+        if script.database in set(admin.list_databases()):
             if not drop:
                 return (
                     f"{name}: demo database already there "
                     "(--drop rebuilds it from scratch)"
                 )
-            admin.execute(f"DROP DATABASE {admin.quote_ident(DEMO_DATABASE)}")
-        ran = 0
-        for sql in statements(kind):
-            statement = bare(sql)
-            database = _CREATE_DATABASE.match(statement)
-            switch = _USE.match(statement)
-            if database:
-                admin.execute(
-                    f"CREATE DATABASE {admin.quote_ident(database.group(1))}"
-                )
-            elif switch:
-                if connector is not admin:
-                    connector.close()
-                connector = connect(kind, port, switch.group(1))
-            else:
-                connector.execute(statement)
-                ran += 1
-        return f"{name}: demo database created ({ran} statement(s))"
+            admin.execute(f"DROP DATABASE {admin.quote_ident(script.database)}")
+        # Seeded as an administrator on the `sqlide` user's behalf, so
+        # unlike the app's own path this one does run the GRANTs.
+        for sql in script.setup + script.grants:
+            admin.execute(sql)
+        connector = connect(kind, port, script.database)
+        for sql in script.body:
+            connector.execute(sql)
+        return f"{name}: demo database created ({len(script.body)} statement(s))"
     except Exception as exc:
         return f"{name}: FAILED — {exc}"
     finally:
-        if connector is not admin:
+        if connector is not None:
             connector.close()
         admin.close()
 

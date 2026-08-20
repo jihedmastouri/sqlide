@@ -5,6 +5,20 @@ the schemas on the connection's search_path (excluding pg_catalog and
 information_schema) so bare table names resolve the same way a plain
 SELECT would. Identifiers are double-quoted; pagination is LIMIT/OFFSET.
 
+Schemas. A PostgreSQL database holds many of them, and the app works
+in one at a time: a profile's `schema`, when set, becomes the
+connection's search_path, so the catalog, bare-name SELECTs and DDL
+all agree on which `orders` is meant. Left empty, the server's own
+search_path stands (usually "$user", public) and objects outside it
+stay invisible — the schema dropdown is how you reach them.
+
+Name resolution never trusts relname alone: two schemas on the
+search_path may both hold an `orders`, so anything that turns a name
+into one relation goes through to_regclass(), which applies exactly
+the precedence rule a plain SELECT would. Listings that cannot do
+that (list_tables) keep the first match in search_path order, for the
+same reason.
+
 One connection is shared by all of the app's worker threads, so every
 statement is serialized behind a lock (like the SQLite and MySQL
 adapters). autocommit is on: statements commit unless the user runs an
@@ -38,6 +52,7 @@ from sqlide.backend.db.base import (
     SortSpec,
     TableInfo,
     TriggerInfo,
+    TypeSpec,
     build_filter_clauses,
 )
 
@@ -116,6 +131,11 @@ _USER_SCHEMAS = (
     "WHERE nspname NOT IN ('pg_catalog', 'information_schema')"
 )
 
+# Where a name sits in the search_path: 1 for the first schema, 2 for
+# the next. Ties in a listing break toward the lower number, which is
+# the schema an unqualified reference would actually hit.
+_SEARCH_PATH_RANK = "array_position(current_schemas(false), n.nspname)"
+
 
 class PostgresConnector(Connector):
     def __init__(
@@ -125,6 +145,7 @@ class PostgresConnector(Connector):
         user: str,
         password: str,
         database: str,
+        schema: str = "",
         ssl: dict | None = None,
         ssh: dict | None = None,
     ) -> None:
@@ -133,6 +154,7 @@ class PostgresConnector(Connector):
         self.user = user
         self.password = password
         self.database = database
+        self.schema = schema
         self.ssl = ssl
         self.ssh = ssh
         self._conn: psycopg.Connection | None = None
@@ -189,6 +211,38 @@ class PostgresConnector(Connector):
         except psycopg.Error as exc:
             self._stop_tunnel()
             raise ConnectorError(_message(exc)) from exc
+        if self.schema:
+            # One schema on the path, so every later query — catalog
+            # lookups, bare-name SELECTs, CREATE without a qualifier —
+            # lands in the schema the profile asked for. pg_catalog
+            # stays implicitly first, as always.
+            #
+            # Checked first: SET search_path accepts a schema that does
+            # not exist (the name is only resolved when something uses
+            # it), and the result would be a connection that opens
+            # fine and then shows an empty database with no reason
+            # given. A typo should say so here.
+            try:
+                with self._conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT 1 FROM pg_namespace WHERE nspname = %s",
+                        (self.schema,),
+                    )
+                    exists = cur.fetchone() is not None
+                if not exists:
+                    raise ConnectorError(
+                        f"No schema named {self.schema!r} in database "
+                        f"{self.database!r}"
+                    )
+                self._conn.execute(
+                    f"SET search_path TO {self.quote_ident(self.schema)}"
+                )
+            except psycopg.Error as exc:
+                self.close()
+                raise ConnectorError(_message(exc)) from exc
+            except ConnectorError:
+                self.close()
+                raise
 
     def close(self) -> None:
         if self._conn is not None:
@@ -279,15 +333,42 @@ class PostgresConnector(Connector):
         )
         return [name for (name,) in rows]
 
+    def list_schemas(self) -> list[str]:
+        """Every schema in the database the user could work in, system
+        and temp catalogs excluded — the schema dropdown's list."""
+        _, rows, _ = self._run(
+            "SELECT nspname FROM pg_namespace "
+            "WHERE nspname NOT IN ('pg_catalog', 'information_schema') "
+            "AND nspname NOT LIKE 'pg\\_toast%' "
+            "AND nspname NOT LIKE 'pg\\_temp%' "
+            "ORDER BY nspname"
+        )
+        return [name for (name,) in rows]
+
+    def current_schema(self) -> str:
+        """The schema unqualified names resolve to right now: the
+        profile's pick, or whatever the server's search_path starts
+        with when the profile left it open."""
+        if self.schema:
+            return self.schema
+        _, rows, _ = self._run("SELECT current_schema()")
+        return (rows[0][0] or "") if rows else ""
+
     def list_tables(self) -> list[TableInfo]:
         # relkind: r ordinary table, p partitioned table, v view,
         # m materialized view, f foreign table.
+        #
+        # DISTINCT ON: with several schemas on the search_path the same
+        # relname can appear more than once, and only the earliest is
+        # the one a bare `SELECT * FROM orders` would read. Listing all
+        # of them would put rows in the tree that resolve to a single
+        # table.
         _, rows, _ = self._run(
-            "SELECT c.relname, c.relkind "
+            "SELECT DISTINCT ON (c.relname) c.relname, c.relkind "
             "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
             "WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') "
             f"AND n.nspname IN ({_USER_SCHEMAS}) "
-            "ORDER BY c.relname"
+            f"ORDER BY c.relname, {_SEARCH_PATH_RANK}"
         )
         return [
             TableInfo(
@@ -298,21 +379,23 @@ class PostgresConnector(Connector):
         ]
 
     def list_columns(self, table: str) -> list[ColumnInfo]:
+        # attrelid = to_regclass(…), not relname = …: matching on the
+        # bare name would pull in a same-named table from every other
+        # schema on the search_path and hand back their columns merged
+        # into one table that does not exist.
         _, rows, _ = self._run(
             "SELECT a.attname, format_type(a.atttypid, a.atttypmod), "
             "a.attnotnull, "
             "COALESCE(bool_or(ct.contype = 'p'), false) AS is_pk "
             "FROM pg_attribute a "
-            "JOIN pg_class c ON c.oid = a.attrelid "
-            "JOIN pg_namespace n ON n.oid = c.relnamespace "
-            "LEFT JOIN pg_constraint ct ON ct.conrelid = c.oid "
+            "LEFT JOIN pg_constraint ct ON ct.conrelid = a.attrelid "
             "AND ct.contype = 'p' AND a.attnum = ANY(ct.conkey) "
-            "WHERE c.relname = %s AND a.attnum > 0 AND NOT a.attisdropped "
-            f"AND n.nspname IN ({_USER_SCHEMAS}) "
+            "WHERE a.attrelid = to_regclass(%s) "
+            "AND a.attnum > 0 AND NOT a.attisdropped "
             "GROUP BY a.attname, a.atttypid, a.atttypmod, a.attnotnull, "
             "a.attnum "
             "ORDER BY a.attnum",
-            (table,),
+            (self._relation_ref(table),),
         )
         return [
             ColumnInfo(
@@ -332,8 +415,10 @@ class PostgresConnector(Connector):
             "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
             f"WHERE n.nspname IN ({_USER_SCHEMAS}) "
             "UNION "
-            "SELECT tgname AS name FROM pg_trigger "
-            "WHERE NOT tgisinternal "
+            "SELECT t.tgname AS name FROM pg_trigger t "
+            "JOIN pg_class c ON c.oid = t.tgrelid "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            f"WHERE NOT t.tgisinternal AND n.nspname IN ({_USER_SCHEMAS}) "
             "ORDER BY name"
         )
         return [FunctionInfo(name=name) for (name,) in rows]
@@ -361,6 +446,16 @@ class PostgresConnector(Connector):
             for table, column, ref_table, ref_column in rows
         ]
 
+    def _relation_ref(self, name: str) -> str:
+        """`name` as text to_regclass() can resolve.
+
+        Quoted, so a name that is a keyword, has capitals or contains a
+        dot stays one identifier instead of being read as
+        schema.table — and so no name can steer the lookup somewhere
+        the caller did not mean.
+        """
+        return self.quote_ident(name)
+
     def get_ddl(self, name: str) -> str:
         """CREATE statement for a table, view, function/procedure or
         trigger named `name` (the sidebar preview and definition tab)."""
@@ -369,7 +464,7 @@ class PostgresConnector(Connector):
         _, rows, _ = self._run(
             "SELECT c.relkind, c.oid FROM pg_class c "
             "WHERE c.oid = to_regclass(%s)",
-            (name,),
+            (self._relation_ref(name),),
         )
         if rows:
             relkind, oid = rows[0]
@@ -407,45 +502,143 @@ class PostgresConnector(Connector):
             return trows[0][0]
         return ""
 
-    def _table_ddl(self, table: str) -> str:
+    def _table_ddl(self, table: str, foreign_keys: bool = True) -> str:
         """Synthesize a CREATE TABLE from the catalog (Postgres has no
-        pg_get_tabledef): columns with types, NOT NULL, defaults, and
-        the primary key."""
+        pg_get_tabledef): columns with types, identity/defaults, NOT
+        NULL, and the table's constraints.
+
+        `foreign_keys=False` omits them, for schema_ddl's separate
+        pass."""
+        # attidentity: '' plain, 'a' GENERATED ALWAYS, 'd' GENERATED BY
+        # DEFAULT. An identity column has no pg_attrdef row, so without
+        # this it would come back as a bare integer and the rebuilt
+        # table would have lost its generator.
         _, rows, _ = self._run(
             "SELECT a.attname, format_type(a.atttypid, a.atttypmod), "
-            "a.attnotnull, pg_get_expr(ad.adbin, ad.adrelid) AS default "
+            "a.attnotnull, pg_get_expr(ad.adbin, ad.adrelid) AS default, "
+            "a.attidentity "
             "FROM pg_attribute a "
-            "JOIN pg_class c ON c.oid = a.attrelid "
-            "JOIN pg_namespace n ON n.oid = c.relnamespace "
             "LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid "
             "AND ad.adnum = a.attnum "
-            "WHERE c.relname = %s AND a.attnum > 0 AND NOT a.attisdropped "
-            f"AND n.nspname IN ({_USER_SCHEMAS}) "
+            "WHERE a.attrelid = to_regclass(%s) "
+            "AND a.attnum > 0 AND NOT a.attisdropped "
             "ORDER BY a.attnum",
-            (table,),
+            (self._relation_ref(table),),
         )
         if not rows:
             return ""
         defs = []
-        for attname, ctype, notnull, default in rows:
+        for attname, ctype, notnull, default, identity in rows:
             line = f"  {self.quote_ident(attname)} {ctype}"
-            if default is not None:
+            if identity in ("a", "d"):
+                always = "ALWAYS" if identity == "a" else "BY DEFAULT"
+                line += f" GENERATED {always} AS IDENTITY"
+            elif default is not None:
                 line += f" DEFAULT {default}"
             if notnull:
                 line += " NOT NULL"
             defs.append(line)
-        pks = [c.name for c in self.list_columns(table) if c.is_pk]
-        if pks:
-            defs.append(
-                "  PRIMARY KEY ("
-                + ", ".join(self.quote_ident(p) for p in pks)
-                + ")"
-            )
+        defs.extend(
+            f"  {c}" for _n, c in self._table_constraints(table, foreign_keys)
+        )
         return (
             f"CREATE TABLE {self.quote_ident(table)} (\n"
             + ",\n".join(defs)
             + "\n)"
         )
+
+    def _table_constraints(
+        self, table: str, foreign_keys: bool = True
+    ) -> list[tuple[str, str]]:
+        """The table's constraints as (name, definition) pairs, spelled
+        the way PostgreSQL spells them.
+
+        pg_get_constraintdef rather than a hand-built PRIMARY KEY line:
+        a table's shape is also its foreign keys, its UNIQUE and its
+        CHECK constraints, and DDL that quietly drops them is DDL that
+        rebuilds a different table.
+
+        `foreign_keys=False` leaves the foreign keys out, for a caller
+        that will add them separately (see schema_ddl).
+        """
+        # p primary key, u unique, f foreign key, c check. Others
+        # (trigger constraints) are not part of a CREATE TABLE.
+        kinds = "'p', 'u', 'f', 'c'" if foreign_keys else "'p', 'u', 'c'"
+        _, rows, _ = self._run(
+            "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = to_regclass(%s) "
+            f"AND contype IN ({kinds}) "
+            "ORDER BY contype, conname",
+            (self._relation_ref(table),),
+        )
+        return [(name, defn) for name, defn in rows if defn]
+
+    def _foreign_key_statements(self, tables: list[str]) -> list[str]:
+        """Every table's foreign keys as standalone ALTER TABLE …
+        ADD CONSTRAINT, for the end of a schema script."""
+        statements = []
+        for table in tables:
+            for name, definition in self._foreign_keys(table):
+                statements.append(
+                    f"ALTER TABLE {self.quote_ident(table)} "
+                    f"ADD CONSTRAINT {self.quote_ident(name)} {definition}"
+                )
+        return statements
+
+    def _foreign_keys(self, table: str) -> list[tuple[str, str]]:
+        _, rows, _ = self._run(
+            "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = to_regclass(%s) AND contype = 'f' "
+            "ORDER BY conname",
+            (self._relation_ref(table),),
+        )
+        return [(name, defn) for name, defn in rows if defn]
+
+    def schema_ddl(self) -> list[str]:
+        """Tables, their foreign keys, their indexes, then views and
+        programmable objects.
+
+        The generic walk is not enough here, for two reasons.
+
+        A PostgreSQL CREATE TABLE carries its constraints but not its
+        indexes, which are objects of their own and need their own
+        CREATE INDEX (pg_get_indexdef writes it). Constraint-backed
+        indexes are left out — their CREATE TABLE already made them,
+        and issuing them again would fail.
+
+        And foreign keys come last, as ALTER TABLE … ADD CONSTRAINT,
+        rather than inside the CREATE TABLE where get_ddl puts them.
+        Tables can only be listed in one order, and any order is the
+        wrong one for some pair of tables that reference each other —
+        including a table that references itself. Adding the
+        references once every table exists is the only ordering that
+        always replays.
+        """
+        objects = self.list_tables()
+        tables = [t.name for t in objects if t.kind != "view"]
+        statements = [
+            ddl
+            for t in tables
+            if (ddl := self._table_ddl(t, foreign_keys=False).strip())
+        ]
+        statements.extend(self._foreign_key_statements(tables))
+        _, rows, _ = self._run(
+            "SELECT pg_get_indexdef(i.indexrelid) FROM pg_index i "
+            "JOIN pg_class c ON c.oid = i.indexrelid "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            f"WHERE n.nspname IN ({_USER_SCHEMAS}) "
+            "AND NOT EXISTS (SELECT 1 FROM pg_constraint con "
+            "WHERE con.conindid = i.indexrelid) "
+            "ORDER BY c.relname"
+        )
+        statements.extend(sql for (sql,) in rows if sql)
+        statements.extend(
+            self.ddl_for(
+                [t.name for t in objects if t.kind == "view"]
+                + [f.name for f in self.list_functions()]
+            )
+        )
+        return statements
 
     def list_indexes(self) -> list[IndexInfo]:
         # Indexes backing PRIMARY KEY/UNIQUE constraints cannot be
@@ -487,7 +680,10 @@ class PostgresConnector(Connector):
                 _, rows, _ = self._run(
                     "SELECT c.relname FROM pg_trigger t "
                     "JOIN pg_class c ON c.oid = t.tgrelid "
-                    "WHERE t.tgname = %s AND NOT t.tgisinternal LIMIT 1",
+                    "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "WHERE t.tgname = %s AND NOT t.tgisinternal "
+                    f"AND n.nspname IN ({_USER_SCHEMAS}) "
+                    f"ORDER BY {_SEARCH_PATH_RANK} LIMIT 1",
                     (name,),
                 )
                 if not rows:
@@ -516,6 +712,7 @@ class PostgresConnector(Connector):
             "SELECT p.oid::regprocedure::text, p.prokind = 'p' "
             "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
             f"WHERE p.proname = %s AND n.nspname IN ({_USER_SCHEMAS}) "
+            f"ORDER BY {_SEARCH_PATH_RANK} "
             "LIMIT 1"
         )
         try:
@@ -532,11 +729,34 @@ class PostgresConnector(Connector):
     def create_template(self, kind: str) -> str:
         return _TEMPLATES.get(kind, "")
 
-    def column_types(self) -> list[str]:
+    def column_type_specs(self) -> list[TypeSpec]:
         return [
-            "integer", "bigint", "text", "varchar(255)", "boolean",
-            "date", "timestamptz", "numeric(10,2)", "double precision",
-            "jsonb", "uuid",
+            TypeSpec("integer"),
+            TypeSpec("bigint"),
+            TypeSpec("smallint"),
+            TypeSpec("serial", note="integer + own sequence"),
+            TypeSpec("bigserial", note="bigint + own sequence"),
+            TypeSpec("numeric", ("precision", "scale"), ("10", "2")),
+            TypeSpec("real"),
+            TypeSpec("double precision"),
+            TypeSpec("money"),
+            TypeSpec("text", note="unlimited; no length needed"),
+            TypeSpec("varchar", ("length",), ("255",)),
+            TypeSpec("char", ("length",), ("1",), "blank-padded"),
+            TypeSpec("boolean"),
+            TypeSpec("date"),
+            TypeSpec("time", ("precision",)),
+            TypeSpec("timestamp", ("precision",), note="without time zone"),
+            TypeSpec("timestamptz", ("precision",), note="with time zone"),
+            TypeSpec("interval"),
+            TypeSpec("uuid"),
+            TypeSpec("json"),
+            TypeSpec("jsonb", note="binary, indexable"),
+            TypeSpec("bytea"),
+            TypeSpec("inet"),
+            TypeSpec("cidr"),
+            TypeSpec("macaddr"),
+            TypeSpec("xml"),
         ]
 
     def drop_function_sql(self, name: str) -> str:
@@ -549,7 +769,10 @@ class PostgresConnector(Connector):
         _, rows, _ = self._run(
             "SELECT c.relname FROM pg_trigger t "
             "JOIN pg_class c ON c.oid = t.tgrelid "
-            "WHERE t.tgname = %s AND NOT t.tgisinternal LIMIT 1",
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE t.tgname = %s AND NOT t.tgisinternal "
+            f"AND n.nspname IN ({_USER_SCHEMAS}) "
+            f"ORDER BY {_SEARCH_PATH_RANK} LIMIT 1",
             (name,),
         )
         if rows:

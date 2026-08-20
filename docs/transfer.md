@@ -29,7 +29,8 @@ exported — they describe the machine you left, not the databases.
 
 ## Importing
 
-- **Import Workspace…** — the folder icon in the launcher's header.
+- **Import Workspace…** — the folder icon in the workspace list's
+  header (the grid icon in the sidebar header opens it).
   The file always becomes a *new* workspace, with its own id and a name
   made unique against the ones already listed. An import can never
   overwrite a workspace you already have, so re-importing the same file

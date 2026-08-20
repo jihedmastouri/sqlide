@@ -130,6 +130,9 @@ class Node(GObject.Object):
         self.is_pk = is_pk
         self.table = table
         self.store: Gio.ListStore | None = None  # cached child model
+        # The row this one was loaded under, so Refresh on a leaf can
+        # refetch the category that owns it. Roots keep None.
+        self.parent: Node | None = None
         self.loaded = False
         self.loading = False
         self.connected = False  # connection rows: status dot state
@@ -156,6 +159,7 @@ class Sidebar(Gtk.ScrolledWindow):
         ],  # (profile, kind, name, owning table)
         on_new_object: Callable[[ConnectionProfile, str], None],
         on_mcp_server: Callable[[ConnectionProfile], None],
+        on_save_schema: Callable[[ConnectionProfile], None],
         on_edit_connection: Callable[[ConnectionProfile], None],
         on_remove_connection: Callable[[ConnectionProfile], None],
         on_add_connection: Callable[[], None],
@@ -173,6 +177,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_drop_object = on_drop_object
         self._on_new_object = on_new_object
         self._on_mcp_server = on_mcp_server
+        self._on_save_schema = on_save_schema
         self._on_edit_connection = on_edit_connection
         self._on_remove_connection = on_remove_connection
         self._show_error = show_error
@@ -232,6 +237,7 @@ class Sidebar(Gtk.ScrolledWindow):
             ("drop-object", self._menu_drop),
             ("refresh", self._menu_refresh),
             ("mcp-server", self._menu_mcp_server),
+            ("save-schema", self._menu_save_schema),
             ("edit-connection", self._menu_edit_connection),
             ("remove-connection", self._menu_remove_connection),
         ):
@@ -368,6 +374,52 @@ class Sidebar(Gtk.ScrolledWindow):
                 self._load_children(node)
             return
 
+    def reload_all(self) -> None:
+        """Refetch every connection's schema (the sidebar header's
+        refresh button). Connections that were never expanded just drop
+        their cache; nothing reconnects behind the user's back."""
+        for i in range(self._roots.get_n_items()):
+            self.reload_connection(self._roots.get_item(i).label)
+
+    def refresh_node(self, node: Node) -> None:
+        """Refetch one row's children: the connection, one category, or
+        a table's columns. An expanded row reloads immediately, a
+        collapsed one just forgets what it cached."""
+        if node.kind == "connection":
+            self.reload_connection(node.label)
+            return
+        if node.kind == "category" and node.category in ("tables", "views"):
+            # Both are filled from the connection's single list_tables()
+            # call, so only reloading the connection refetches them.
+            root = self._root_node(node.profile)
+            if root is not None:
+                self.reload_connection(root.label)
+            return
+        if node.kind not in _EXPANDABLE:
+            # Leaves (a function, an index) carry no children of their
+            # own; refreshing one means refetching the list it came from.
+            if node.parent is not None:
+                self.refresh_node(node.parent)
+            return
+        node.loaded = False
+        node.loading = False
+        node.ddl = None  # the hover DDL is stale too
+        if node.store is not None:
+            node.store.remove_all()
+        row = self._row_for(node)
+        if row is not None and row.get_expanded():
+            self._load_children(node)
+
+    def _row_for(self, node: Node) -> Gtk.TreeListRow | None:
+        """The tree row showing `node`, if it is currently on screen —
+        the model only exposes rows under expanded parents, which is
+        exactly the set worth reloading eagerly."""
+        for i in range(self._tree.get_n_items()):
+            row = self._tree.get_row(i)
+            if row is not None and row.get_item() is node:
+                return row
+        return None
+
     def _root_node(self, profile: ConnectionProfile | None) -> Node | None:
         """The connection row a (possibly nested) node belongs to —
         the keeper of the adapter's capability flags."""
@@ -403,6 +455,7 @@ class Sidebar(Gtk.ScrolledWindow):
             node.store.append(Node(kind, info.name, profile=node.profile))
         if not node.payload:
             node.store.append(Node("note", "(none)"))
+        _adopt(node)
         node.loaded = True
 
     def _on_row_expanded(
@@ -506,6 +559,7 @@ class Sidebar(Gtk.ScrolledWindow):
             node.loaded = True
             store.remove_all()
             fill(result)
+            _adopt(node)
 
         def failed(exc):
             node.loading = False  # loaded stays False: re-expand retries
@@ -656,8 +710,17 @@ class Sidebar(Gtk.ScrolledWindow):
             menu.append("Query Console", "schema.query-console")
             menu.append("Table Definition", "schema.definition")
             menu.append("Query Builder", "schema.query-builder")
+            menu.append("Refresh Columns", "schema.refresh")
             if can_drop:
                 menu.append("Drop…", "schema.drop-object")
+            return menu
+        if node.kind == "category":
+            menu = Gio.Menu()
+            menu.append("Refresh", "schema.refresh")
+            if node.category in ("tables", "views") and root is not None:
+                menu.append_submenu(
+                    "New", _new_items(root.ddl_kinds or _DEFAULT_NEW_KINDS)
+                )
             return menu
         if node.kind == "connection":
             menu = Gio.Menu()
@@ -666,8 +729,10 @@ class Sidebar(Gtk.ScrolledWindow):
             menu.append("Relation Graph", "schema.relation-graph")
             menu.append("Query Builder", "schema.query-builder")
             menu.append("MCP Server", "schema.mcp-server")
-            if node.ddl_kinds:
-                menu.append_submenu("New", _new_items(node.ddl_kinds))
+            menu.append("Save Schema…", "schema.save-schema")
+            menu.append_submenu(
+                "New", _new_items(node.ddl_kinds or _DEFAULT_NEW_KINDS)
+            )
             menu.append("Refresh", "schema.refresh")
             menu.append("Edit…", "schema.edit-connection")
             menu.append("Remove…", "schema.remove-connection")
@@ -675,14 +740,17 @@ class Sidebar(Gtk.ScrolledWindow):
         if node.kind == "function" and node.profile is not None:
             menu = Gio.Menu()
             menu.append("Edit Definition", "schema.edit-function")
+            menu.append("Refresh", "schema.refresh")
             # SQLite lists its triggers under Functions; they drop from
             # the Triggers category instead, so no "function" kind here.
             if can_drop and "function" in root.ddl_kinds:
                 menu.append("Drop…", "schema.drop-object")
             return menu
-        if node.kind in ("index", "trigger", "event") and can_drop:
+        if node.kind in ("index", "trigger", "event"):
             menu = Gio.Menu()
-            menu.append("Drop…", "schema.drop-object")
+            menu.append("Refresh", "schema.refresh")
+            if can_drop:
+                menu.append("Drop…", "schema.drop-object")
             return menu
         return None
 
@@ -714,22 +782,44 @@ class Sidebar(Gtk.ScrolledWindow):
         if node is None or node.profile is None:
             return
         self._menu_node = node
-        menu = Gio.Menu()
-        # DEFAULT_KINDS until the adapter has said what it can create —
-        # every dialect has these three, and expanding the connection
-        # (below) replaces the guess with its real list.
-        menu.append_section(
-            "New", _new_items(node.ddl_kinds or _DEFAULT_NEW_KINDS)
-        )
-        self._popover.set_menu_model(menu)
         ok, bounds = button.compute_bounds(self._view)
         rect = Gdk.Rectangle()
         rect.x = int(bounds.origin.x) if ok else 0
         rect.y = int(bounds.origin.y + bounds.size.height) if ok else 0
         rect.width = rect.height = 1
+
+        if node.ddl_kinds:
+            self._popup_new_menu(rect, node.ddl_kinds)
+            return
+
+        # Which kinds a connection can create is the adapter's answer,
+        # and the adapter only answers once we have connected. Asking
+        # first costs one round trip and is the difference between
+        # offering triggers, functions and procedures and offering the
+        # three-kind guess every dialect shares.
+        def done(loaded) -> None:
+            node.ddl_kinds, node.supports_drop = loaded
+            self._popup_new_menu(rect, node.ddl_kinds)
+
+        def failed(exc: Exception) -> None:
+            self._popup_new_menu(rect, _DEFAULT_NEW_KINDS)
+            self._show_error(str(exc))
+
+        def work():
+            connector = self._ensure(node.profile)
+            return connector.ddl_kinds(), connector.supports_drop
+
+        run_async(work, done, failed)
+        self._load_children(node)  # the tree fills while the menu opens
+
+    def _popup_new_menu(
+        self, rect: Gdk.Rectangle, kinds: tuple[str, ...]
+    ) -> None:
+        menu = Gio.Menu()
+        menu.append_section("New", _new_items(kinds))
+        self._popover.set_menu_model(menu)
         self._popover.set_pointing_to(rect)
         self._popover.popup()
-        self._load_children(node)  # connects, so the next list is exact
 
     def _menu_view_data(self, *_args) -> None:
         node = self._menu_node
@@ -784,14 +874,18 @@ class Sidebar(Gtk.ScrolledWindow):
             self._on_new_object(node.profile, param.get_string())
 
     def _menu_refresh(self, *_args) -> None:
-        node = self._menu_node
-        if node is not None and node.kind == "connection":
-            self.reload_connection(node.label)
+        if self._menu_node is not None:
+            self.refresh_node(self._menu_node)
 
     def _menu_mcp_server(self, *_args) -> None:
         node = self._menu_node
         if node is not None and node.profile is not None:
             self._on_mcp_server(node.profile)
+
+    def _menu_save_schema(self, *_args) -> None:
+        node = self._menu_node
+        if node is not None and node.profile is not None:
+            self._on_save_schema(node.profile)
 
     def _menu_edit_connection(self, *_args) -> None:
         node = self._menu_node
@@ -870,6 +964,15 @@ class Sidebar(Gtk.ScrolledWindow):
             self._on_open_function(node.profile, node.label)
         elif node.kind in ("connection", "category"):
             row.set_expanded(not row.get_expanded())
+
+
+def _adopt(node: Node) -> None:
+    """Point a freshly filled node's children back at it, so Refresh on
+    any of them knows which list to refetch."""
+    if node.store is None:
+        return
+    for i in range(node.store.get_n_items()):
+        node.store.get_item(i).parent = node
 
 
 def _new_items(kinds: tuple[str, ...]) -> Gio.Menu:

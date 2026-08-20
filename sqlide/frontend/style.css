@@ -183,9 +183,23 @@ label.identity-badge.environment-production {
 
 /* CLI client console: a terminal-like scrollback and prompt line. The
    entry is made flat and monospace so it reads as the continuation of
-   the scrollback rather than a form field. */
+   the scrollback rather than a form field. Both the view and its text
+   node drop their background: a GtkTextView otherwise paints
+   @view_bg_color, which on the window's darker ground reads as a
+   highlighted block sitting inside the tab instead of as a terminal. */
+.cli-output,
 .cli-output text {
   font-family: monospace;
+  background: none;
+  background-color: transparent;
+}
+
+/* Nothing in the scrollback is focusable, so the focus ring it gets
+   from being a text view is a lie. */
+.cli-output:focus,
+.cli-output text:focus {
+  outline: none;
+  box-shadow: none;
 }
 
 .cli-prompt {
@@ -200,4 +214,18 @@ entry.cli-entry {
   box-shadow: none;
   min-height: 0;
   padding: 2px 0;
+}
+
+/* First-run home page (frontend/welcome.py). The cards carry
+   libadwaita's .card for their background and corners; these rules
+   only give them room to breathe and settle the hero above them. */
+box.welcome-card {
+  padding: 16px;
+}
+
+.welcome-icon {
+  /* The app icon is a rounded square of its own, so it needs no frame
+     — just the shadow that lifts it off the window's ground. */
+  box-shadow: 0 2px 8px alpha(black, 0.18);
+  border-radius: 22px;
 }

@@ -17,14 +17,16 @@ window.py's `_connection_edited`).
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from typing import Callable
 
 from gi.repository import Adw, GLib, Gtk
 
-from sqlide.backend import identity
+from sqlide.backend import demo, identity
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import registry
 from sqlide.backend.db.base import ConnectorError
+from sqlide.backend.db.sqlite import connector as sqlite
 from sqlide.frontend import identity as identity_ui
 from sqlide.frontend.util import describe, run_async
 
@@ -40,6 +42,21 @@ SSL_MODE_LABELS = {
     "Verify Full": "verify-full",
 }
 SSL_MODE_IDS = list(SSL_MODE_LABELS.values())
+
+
+def _free_database_name(base: str, existing: list[str]) -> str:
+    """`base`, or base_2 / base_3 … when the server already has it.
+
+    Underscore rather than the SQLite path's hyphen: an unquoted
+    identifier with a hyphen in it is not one.
+    """
+    taken = set(existing)
+    if base not in taken:
+        return base
+    n = 2
+    while f"{base}_{n}" in taken:
+        n += 1
+    return f"{base}_{n}"
 
 
 class ConnectionDialog(Adw.Dialog):
@@ -109,13 +126,21 @@ class ConnectionDialog(Adw.Dialog):
             "notify::selected", lambda *_: self._refresh_suggestion()
         )
 
-        # SQLite
+        # SQLite. Two ways in, because "point at a file" and "start a
+        # database" are different intentions and connect() deliberately
+        # refuses to create a file for the first one.
         self._file = Adw.EntryRow(title="Database file")
+        create_file = Gtk.Button(icon_name="document-new-symbolic")
+        describe(create_file, "New database file…")
+        create_file.add_css_class("flat")
+        create_file.set_valign(Gtk.Align.CENTER)
+        create_file.connect("clicked", self._create_database)
         browse = Gtk.Button(icon_name="document-open-symbolic")
         describe(browse, "Browse…")
         browse.add_css_class("flat")
         browse.set_valign(Gtk.Align.CENTER)
         browse.connect("clicked", self._browse)
+        self._file.add_suffix(create_file)
         self._file.add_suffix(browse)
         self._sqlite_group = Adw.PreferencesGroup(title="SQLite")
         self._sqlite_group.add(self._file)
@@ -126,8 +151,20 @@ class ConnectionDialog(Adw.Dialog):
         self._user = Adw.EntryRow(title="User")
         self._password = Adw.PasswordEntryRow(title="Password")
         self._database = Adw.EntryRow(title="Database")
+        # PostgreSQL only: a database there holds many schemas, and the
+        # app browses one at a time. Blank keeps the server's own
+        # search_path. MySQL has no row of its own because its schemas
+        # *are* its databases — the field above already picks one.
+        self._schema = Adw.EntryRow(title="Schema (blank for the default)")
         self._server_group = Adw.PreferencesGroup(title="Server")
-        for row in (self._host, self._port, self._user, self._password, self._database):
+        for row in (
+            self._host,
+            self._port,
+            self._user,
+            self._password,
+            self._database,
+            self._schema,
+        ):
             self._server_group.add(row)
         # Never classified silently: the fields that make a connection
         # look like production only ever re-run the *suggestion*.
@@ -195,6 +232,27 @@ class ConnectionDialog(Adw.Dialog):
         test_group = Adw.PreferencesGroup()
         test_group.add(self._test_button)
 
+        # Nothing to connect to yet is the commonest reason this dialog
+        # is open and gets closed again. The demo builds a small
+        # database of the same shape on any engine that has a dialect
+        # file for it, and points the fields at what it built.
+        self._demo_button = Gtk.Button(
+            label="Create demo database", halign=Gtk.Align.CENTER
+        )
+        self._demo_button.add_css_class("pill")
+        self._demo_button.connect("clicked", self._create_demo)
+        self._demo_group = Adw.PreferencesGroup(
+            title="Nothing to connect to?",
+            description=(
+                "Builds a small sample database — customers, orders, a "
+                "view, an index, a trigger and a foreign key — and fills "
+                "this dialog in with it. SQLite gets a new file under "
+                "~/.local/share/sqlide; the servers get a new database "
+                "called demo."
+            ),
+        )
+        self._demo_group.add(self._demo_button)
+
         page = Adw.PreferencesPage()
         for group in (
             general,
@@ -205,6 +263,7 @@ class ConnectionDialog(Adw.Dialog):
             self._ssh_group,
             self._jdbc_group,
             test_group,
+            self._demo_group,
         ):
             page.add(group)
 
@@ -229,6 +288,7 @@ class ConnectionDialog(Adw.Dialog):
         self._user.set_text(profile.user)
         self._password.set_text(profile.password)
         self._database.set_text(profile.database)
+        self._schema.set_text(profile.schema)
         self._jdbc_url.set_text(profile.jdbc_url)
         self._driver_class.set_text(profile.driver_class)
         self._jar_path.set_text(profile.jar_path)
@@ -287,9 +347,13 @@ class ConnectionDialog(Adw.Dialog):
         server = kind in ("mysql", "postgres")
         self._sqlite_group.set_visible(kind == "sqlite")
         self._server_group.set_visible(server)
+        self._schema.set_visible(kind == "postgres")
         self._ssl_group.set_visible(server)
         self._ssh_group.set_visible(server)
         self._jdbc_group.set_visible(kind == "jdbc")
+        # JDBC has no demo: without knowing the driver's dialect there
+        # is no DDL that can be trusted to work.
+        self._demo_group.set_visible(kind in demo.KINDS)
 
     def _file_entry_row(self, title: str) -> Adw.EntryRow:
         """An EntryRow holding a file path, with a browse button."""
@@ -304,6 +368,129 @@ class ConnectionDialog(Adw.Dialog):
 
     def _browse(self, *_args) -> None:
         self._browse_into(self._file, title="Select database file")
+
+    def _create_database(self, *_args) -> None:
+        """Pick a path for a database that doesn't exist yet, and make
+        it. Picking an existing file adopts it rather than wiping it."""
+        dialog = Gtk.FileDialog(
+            title="New SQLite database", initial_name="database.db"
+        )
+        root = self.get_root()
+        parent = root if isinstance(root, Gtk.Window) else None
+        dialog.save(parent, None, self._create_finished)
+
+    def _create_finished(self, dialog, result) -> None:
+        try:
+            file = dialog.save_finish(result)
+        except GLib.Error:
+            return  # cancelled
+        path = file.get_path() if file is not None else ""
+        if not path:
+            return
+
+        def done(_result) -> None:
+            self._file.set_text(path)
+            if not self._name.get_text().strip():
+                self._name.set_text(os.path.basename(path))
+            self._toasts.add_toast(
+                Adw.Toast(title=f"Created {os.path.basename(path)}")
+            )
+
+        run_async(
+            lambda: sqlite.create_database_file(path),
+            done,
+            lambda exc: self._toasts.add_toast(Adw.Toast(title=str(exc))),
+        )
+
+    # Demo database
+
+    def _create_demo(self, *_args) -> None:
+        """Build the demo for the selected kind.
+
+        No file chooser on SQLite, and no name to invent on the
+        servers: the button's whole job is that there is nothing to
+        connect to yet, and a form to fill in first is the thing it
+        exists to skip. The path it chose lands in the field below —
+        visible, and editable before Save like anything else there.
+        """
+        kind = self._kind_id()
+        if kind == "sqlite":
+            self._build_demo_file()
+            return
+        self._build_demo_on_server(kind)
+
+    def _build_demo_file(self) -> None:
+        def done(created: str) -> None:
+            self._file.set_text(created)
+            if not self._name.get_text().strip():
+                self._name.set_text(os.path.basename(created))
+            self._toasts.add_toast(Adw.Toast(title=f"Created {created}"))
+
+        self._run_demo(lambda: demo.create("sqlite"), done)
+
+    def _build_demo_on_server(self, kind: str) -> None:
+        """CREATE DATABASE demo on the server in the fields, then fill
+        its schema in through a second connection to it (neither
+        engine can switch database mid-session)."""
+        profile = self._build_profile()
+
+        def connect_to(database: str):
+            # schema="" on purpose: the demo builds into the default
+            # schema, and a schema typed in the dialog names one in the
+            # *old* database that the new one has never heard of.
+            target = replace(profile, database=database, schema="")
+            connector = registry.create_connector(
+                kind, **target.connect_params()
+            )
+            connector.connect()
+            return connector
+
+        def work() -> str:
+            # Any database on the server will do for CREATE DATABASE;
+            # the profile's own is the one the user has credentials for.
+            server = connect_to(profile.database)
+            try:
+                # A free name, like the SQLite path: a second press
+                # means a second demo, not an error about the first —
+                # and an existing `demo` is never built over, since it
+                # may be one that has been worked in.
+                name = _free_database_name(
+                    demo.DEFAULT_DATABASE, server.list_databases()
+                )
+                return demo.create(
+                    kind, server=server, connect=connect_to, database=name
+                )
+            finally:
+                server.close()
+
+        def done(created: str) -> None:
+            self._database.set_text(created)
+            # Same reason connect_to() cleared it: the demo is in the
+            # default schema of a database that is not the one any
+            # typed schema belonged to.
+            self._schema.set_text("")
+            if not self._name.get_text().strip():
+                self._name.set_text(created)
+            self._toasts.add_toast(
+                Adw.Toast(title=f"Demo database {created} created")
+            )
+
+        self._run_demo(work, done)
+
+    def _run_demo(self, work, done) -> None:
+        """Shared plumbing: the button stays disabled for the round
+        trip, so a second click cannot start a second build."""
+        self._demo_button.set_sensitive(False)
+
+        def finished(result) -> None:
+            self._demo_button.set_sensitive(True)
+            done(result)
+
+        def failed(exc: Exception) -> None:
+            self._demo_button.set_sensitive(True)
+            self._toasts.add_toast(Adw.Toast(title=str(exc)))
+
+        run_async(work, finished, failed)
 
     def _browse_into(
         self, row: Adw.EntryRow, title: str = "Select file"
@@ -351,6 +538,11 @@ class ConnectionDialog(Adw.Dialog):
             user=(self._jdbc_user if jdbc else self._user).get_text().strip(),
             password=(self._jdbc_password if jdbc else self._password).get_text(),
             database=self._database.get_text().strip(),
+            # Only PostgreSQL shows the row; anything typed there before
+            # switching kind is not this connection's setting.
+            schema=(
+                self._schema.get_text().strip() if kind == "postgres" else ""
+            ),
             jdbc_url=self._jdbc_url.get_text().strip(),
             driver_class=self._driver_class.get_text().strip(),
             jar_path=self._jar_path.get_text().strip(),

@@ -1,9 +1,12 @@
 """Adw.Application subclass and app entry point.
 
-Owns the WorkspaceStore. Startup presents the small workspace
-launcher; picking a workspace opens (or focuses) that workspace's main
-window. The launcher can be reopened from any main window's sidebar
-to switch or create workspaces.
+Owns the WorkspaceStore. Startup opens a workspace's main window
+straight away — the one last used, or the first on file — because a
+picker with a single row on it is a door with nothing behind it. A
+first run, with nothing to open, gets the home page (welcome.py)
+instead. The workspace launcher is in-app UI from then on: the
+sidebar's Workspaces button opens it to switch or create workspaces,
+and picking one there opens (or focuses) that workspace's window.
 
 Also owns the presentation side of the settings store: it applies the
 theme and editor font at startup and on every change, and provides the
@@ -28,6 +31,7 @@ from sqlide.frontend.help import help_dialog
 from sqlide.frontend.launcher import WorkspaceLauncher
 from sqlide.frontend.preferences import PreferencesDialog, about_dialog
 from sqlide.frontend.shortcuts import shortcuts_dialog
+from sqlide.frontend.welcome import WelcomeWindow
 from sqlide.frontend.window import MainWindow
 
 _COLOR_SCHEMES = {
@@ -122,10 +126,38 @@ class SqlideApplication(Adw.Application):
         window = self.get_active_window()
         if window is not None:
             window.present()
-        else:
-            self.show_launcher()
+            return
+        workspace = self._startup_workspace()
+        if workspace is None:
+            self.show_welcome()
+            return
+        window = self.open_workspace(workspace)
+        if (error := self.take_store_error()) is not None:
+            window.show_error(error)
+
+    def _startup_workspace(self) -> Workspace | None:
+        """The workspace to land in: the one last used, else the first
+        on file. None on a first run — nothing to open yet, so the home
+        page takes the screen instead."""
+        workspaces = self.workspace_store.workspaces
+        last = app_settings.store.settings.last_workspace
+        for workspace in workspaces:
+            if workspace.id == last:
+                return workspace
+        return workspaces[0] if workspaces else None
+
+    def take_store_error(self) -> str | None:
+        """The load error, once: whichever window opens first reports
+        it, and it is not repeated on every later launcher visit."""
+        error, self.store_error = self.store_error, None
+        return error
 
     # Window management
+
+    def show_welcome(self) -> None:
+        """The first-run home page. Not cached like the launcher: it is
+        shown once, and closes itself the moment a workspace exists."""
+        WelcomeWindow(application=self).present()
 
     def show_launcher(self) -> None:
         if self._launcher is None:
@@ -138,7 +170,16 @@ class SqlideApplication(Adw.Application):
         return False
 
     def open_workspace(self, workspace: Workspace) -> MainWindow:
-        """Open (or re-focus) a workspace's window and return it."""
+        """Open (or re-focus) a workspace's window and return it.
+
+        Also remembers it as the one to reopen next launch; a failure
+        to persist that costs the next startup its memory and nothing
+        else, so it must not take the window down with it."""
+        if app_settings.store.settings.last_workspace != workspace.id:
+            try:
+                app_settings.store.update(last_workspace=workspace.id)
+            except Exception:
+                pass
         window = self._workspace_windows.get(workspace.id)
         if window is None:
             window = MainWindow(application=self, workspace=workspace)

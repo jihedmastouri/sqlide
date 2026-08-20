@@ -23,6 +23,10 @@ Settings:
   (bind_host, row_limit, allow_query, auth_mode — "none" or "token").
   The token itself is never persisted: regenerated per instance, or
   re-typed, like every other credential in this app.
+- last_workspace: id of the workspace the app reopens on startup, so a
+  launch lands in the workspace you were last in rather than on a
+  picker. Empty (or naming a workspace that no longer exists) falls
+  back to the first workspace on file.
 """
 
 from __future__ import annotations
@@ -53,6 +57,7 @@ class Settings:
     lsp_enabled: bool = True
     lsp_defaults: dict[str, str] = field(default_factory=dict)
     mcp_defaults: dict[str, str] = field(default_factory=dict)
+    last_workspace: str = ""
 
     @classmethod
     def from_dict(cls, data: dict) -> Settings:
@@ -77,6 +82,7 @@ class Settings:
                 str(k): str(v)
                 for k, v in (data.get("mcp_defaults") or {}).items()
             },
+            last_workspace=str(data.get("last_workspace") or ""),
         )
 
 

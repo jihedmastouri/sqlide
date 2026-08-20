@@ -31,6 +31,11 @@ class ConnectionProfile:
     user: str = ""
     password: str = ""
     database: str = ""
+    # postgres only: the schema to work in, pinned as the connection's
+    # search_path. Empty keeps the server's own search_path (usually
+    # "$user", public). MySQL needs no equivalent — there a schema and
+    # a database are one object, so `database` above is already it.
+    schema: str = ""
     jdbc_url: str = ""  # jdbc only, e.g. jdbc:h2:/path/to/db
     driver_class: str = ""  # jdbc only, e.g. org.h2.Driver
     jar_path: str = ""  # jdbc only, path to the driver jar
@@ -91,7 +96,7 @@ class ConnectionProfile:
                 "user": self.user,
                 "password": self.password,
             }
-        return {
+        params = {
             "host": self.host,
             "port": self.port or {"mysql": 3306, "postgres": 5432}[self.kind],
             "user": self.user,
@@ -100,6 +105,9 @@ class ConnectionProfile:
             "ssl": self.ssl_params(),
             "ssh": self.ssh_params(),
         }
+        if self.kind == "postgres":
+            params["schema"] = self.schema
+        return params
 
     def to_dict(self) -> dict:
         return asdict(self)

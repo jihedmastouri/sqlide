@@ -1,6 +1,6 @@
 -- The sqlide demo database, MySQL dialect. Same schema, same rows and
--- same purpose as scripts/init/postgres.sql — see the comment there
--- for how this file is used and why the demo lives in its own
+-- same purpose as postgres.sql in this directory — see the comment
+-- there for how this file is used and why the demo lives in its own
 -- database.
 
 CREATE DATABASE IF NOT EXISTS demo;

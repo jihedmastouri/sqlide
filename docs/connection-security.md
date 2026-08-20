@@ -9,7 +9,8 @@ order: 8
 Right-click a connection in the sidebar for **Edit…** (the same form as
 adding one, pre-filled — renaming it there is safe, open tabs keep
 working) and **Remove…** (confirmed). Workspaces can be renamed too,
-from a pencil button on their row in the launcher.
+from a pencil button on their row in the workspace list (the grid icon
+in the sidebar header).
 
 ## Where passwords live
 

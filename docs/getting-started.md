@@ -16,10 +16,20 @@ python3 -m sqlide
 
 ## 2. Create a workspace
 
-The launcher opens first. Click **+** (or **Create Workspace**) and give
-the workspace a name. A workspace groups its own connections and
-remembers your open tabs — it's the unit you open and close, and other
-workspaces stay out of the way until you reopen the launcher.
+A first run opens the home page — the app's one introduction, and the
+form that gets you past it. Name your first workspace, optionally give
+it an identity colour, and click **Create Workspace**. (Moving from
+another machine? **Import…** in the header reads an exported XML
+workspace instead.)
+
+A workspace groups its own connections and remembers your open tabs —
+it's the unit you open and close. Every launch after this one skips
+the home page and reopens the workspace you were last in.
+
+The grid icon in the sidebar header opens the workspace list: rename
+or recolour the one you're in (the pencil on its row), or click **+**
+to make another. Other workspaces stay out of the way until you go
+looking for them there.
 
 ## 3. Add a connection
 
@@ -57,11 +67,11 @@ copies and moves the column.
 
 ## 7. Restart and pick up where you left off
 
-Close and relaunch — the launcher lists the workspace, and opening it
-restores both the connections and the tabs you left open, including
-query console text. State lives in
-`~/.config/sqlide/workspaces/<id>.json`. The grid icon in the sidebar
-header reopens the launcher to switch workspaces.
+Close and relaunch — you land back in the workspace you were last in,
+with both the connections and the tabs you left open restored,
+including query console text. State lives in
+`~/.config/sqlide/workspaces/<id>.json`. To land somewhere else next
+time, switch workspaces from the grid icon in the sidebar header.
 
 ## Next steps
 

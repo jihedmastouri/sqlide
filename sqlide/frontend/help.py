@@ -25,7 +25,8 @@ _SECTIONS = (
         (
             "A workspace groups connections and remembers its open tabs "
             "and query history. Switch or create workspaces from the "
-            "grid button in the sidebar header.",
+            "grid button in the sidebar header; the app reopens the "
+            "one you were last in.",
             "Add a connection with the + button in the sidebar header. "
             "Expanding a connection loads its Tables, Views and "
             "Functions.",

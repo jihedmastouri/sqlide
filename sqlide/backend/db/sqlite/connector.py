@@ -20,6 +20,7 @@ from sqlide.backend.db.base import (
     SortSpec,
     TableInfo,
     TriggerInfo,
+    TypeSpec,
     build_filter_clauses,
 )
 
@@ -55,6 +56,34 @@ _TEMPLATES = {
         "END;\n"
     ),
 }
+
+
+def create_database_file(path: str) -> None:
+    """Create an empty SQLite database at `path`.
+
+    connect() refuses a missing file on purpose (a typo should not
+    silently open an empty database), so the connection dialog's
+    "New Database…" needs a way to say *yes, make this one*. Opening an
+    existing file never truncates it, so this is safe to call on a path
+    the user picked over an existing database — it just adopts it.
+    """
+    if not path.strip():
+        raise ConnectorError("No file path given")
+    directory = os.path.dirname(os.path.abspath(path))
+    if not os.path.isdir(directory):
+        raise ConnectorError(f"No such directory: {directory}")
+    try:
+        connection = sqlite3.connect(path)
+        try:
+            # sqlite3.connect() leaves a zero-length file until
+            # something is written; this gives it a real header, so
+            # other tools recognise it as a database straight away.
+            connection.execute("PRAGMA user_version = 0")
+            connection.commit()
+        finally:
+            connection.close()
+    except sqlite3.Error as exc:
+        raise ConnectorError(str(exc)) from exc
 
 
 class SqliteConnector(Connector):
@@ -206,6 +235,25 @@ class SqliteConnector(Connector):
         )
         return (rows[0][0] or "") if rows else ""
 
+    def schema_ddl(self) -> list[str]:
+        """SQLite keeps the exact CREATE text of every object it was
+        given, so the whole schema is one query — and it round-trips
+        byte for byte instead of being reconstructed.
+
+        Ordered tables, then indexes, then views and triggers, so the
+        script replays without forward references. Autoindexes
+        (sqlite_autoindex_*, behind PRIMARY KEY/UNIQUE) have a NULL
+        sql and drop out on their own.
+        """
+        _, rows, _ = self._run(
+            "SELECT sql FROM sqlite_master "
+            "WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' "
+            "ORDER BY CASE type "
+            "WHEN 'table' THEN 1 WHEN 'index' THEN 2 "
+            "WHEN 'view' THEN 3 ELSE 4 END, name"
+        )
+        return [sql.strip() for (sql,) in rows if sql and sql.strip()]
+
     def list_functions(self) -> list[FunctionInfo]:
         # SQLite has no stored functions or procedures; triggers are
         # its programmable objects, so they populate Functions.
@@ -238,9 +286,27 @@ class SqliteConnector(Connector):
     def create_template(self, kind: str) -> str:
         return _TEMPLATES.get(kind, "")
 
-    def column_types(self) -> list[str]:
-        # SQLite's storage classes; anything else is affinity-mapped.
-        return ["INTEGER", "TEXT", "REAL", "BLOB", "NUMERIC"]
+    def column_type_specs(self) -> list[TypeSpec]:
+        # The five storage classes first, because they are what SQLite
+        # actually has; the aliases below them are accepted and mapped
+        # onto those affinities, and people coming from other engines
+        # look for them.
+        return [
+            TypeSpec("INTEGER", note="storage class"),
+            TypeSpec("TEXT", note="storage class"),
+            TypeSpec("REAL", note="storage class"),
+            TypeSpec("BLOB", note="storage class"),
+            TypeSpec("NUMERIC", note="storage class"),
+            TypeSpec("VARCHAR", ("length",), ("255",), "TEXT affinity"),
+            TypeSpec("CHAR", ("length",), ("1",), "TEXT affinity"),
+            TypeSpec(
+                "DECIMAL", ("precision", "scale"), ("10", "2"),
+                "NUMERIC affinity",
+            ),
+            TypeSpec("BOOLEAN", note="NUMERIC affinity (0/1)"),
+            TypeSpec("DATE", note="NUMERIC affinity (no date type)"),
+            TypeSpec("DATETIME", note="NUMERIC affinity (no date type)"),
+        ]
 
     def explain_prefix(self) -> str:
         # Plain EXPLAIN dumps VDBE opcodes; the query plan is the

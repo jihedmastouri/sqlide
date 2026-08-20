@@ -72,6 +72,36 @@ def main_menu_button(with_history: bool = False) -> Gtk.MenuButton:
     return button
 
 
+def open_workspace_from(source: Gtk.Window, workspace) -> None:
+    """Open `workspace` and hand it the foreground, closing `source`
+    (the home page, or the workspace launcher).
+
+    The order matters. Closing `source` first gives focus back to
+    whatever was behind it, and the workspace window — mapped a moment
+    later, without a user event of its own to point at — stays where
+    the compositor first put it, which is behind everything. So: open
+    it, wait until it is on screen, then close `source` and present it
+    once more, this time as the only window of the app that wants
+    attention."""
+    window = source.get_application().open_workspace(workspace)
+
+    def foreground() -> bool:
+        source.close()
+        window.present()
+        return GLib.SOURCE_REMOVE
+
+    if window.get_mapped():
+        GLib.idle_add(foreground)
+        return
+    handler = 0
+
+    def mapped(*_args) -> None:
+        window.disconnect(handler)
+        GLib.idle_add(foreground)
+
+    handler = window.connect("map", mapped)
+
+
 def run_async(
     work: Callable[[], Any],
     on_success: Callable[[Any], None],

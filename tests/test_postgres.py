@@ -113,8 +113,19 @@ def test_get_ddl_table_and_view(postgres):
     _, db = postgres
     ddl = db.get_ddl("users")
     assert ddl.startswith('CREATE TABLE "users"')
-    assert 'PRIMARY KEY ("id")' in ddl
+    # Constraints come from pg_get_constraintdef, so they are spelled
+    # the way the server spells them — which quotes an identifier only
+    # where it has to.
+    assert "PRIMARY KEY (id)" in ddl
     assert db.get_ddl("big_orders").startswith('CREATE VIEW "big_orders"')
+
+
+def test_get_ddl_keeps_foreign_keys(postgres):
+    """A table's shape includes what it references: DDL that dropped
+    the foreign key would rebuild a different table."""
+    _, db = postgres
+    ddl = db.get_ddl("orders")
+    assert "FOREIGN KEY (user_id) REFERENCES users(id)" in ddl
 
 
 def test_plpgsql_function_listed_with_ddl(postgres):
@@ -208,3 +219,216 @@ def test_drop_cascade(postgres):
     db.execute(db.drop_sql("table", "base_t", cascade=True))
     names = {t.name for t in db.list_tables()}
     assert "base_t" not in names and "base_v" not in names
+
+
+# Schemas. A database holds many, and two of them may hold a table of
+# the same name — the case that used to collapse into one bad answer.
+
+
+@pytest.fixture
+def two_schemas(postgres):
+    """`shipping` and `billing`, each with an `invoices` table of its
+    own shape, both on the search_path ahead of public."""
+    _, db = postgres
+    for schema in ("shipping", "billing"):
+        db.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        db.execute(f"CREATE SCHEMA {schema}")
+    db.execute("CREATE TABLE shipping.invoices (id integer PRIMARY KEY, carrier text)")
+    db.execute("CREATE TABLE billing.invoices (id integer PRIMARY KEY, total integer)")
+    db.execute("SET search_path TO shipping, billing, public")
+    yield db
+    db.execute("SET search_path TO public")
+    for schema in ("shipping", "billing"):
+        db.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+
+
+def test_list_schemas(postgres):
+    _, db = postgres
+    schemas = db.list_schemas()
+    assert "public" in schemas
+    # System and per-session catalogs are not places to work in.
+    assert not [s for s in schemas if s.startswith(("pg_toast", "pg_temp"))]
+    assert "information_schema" not in schemas and "pg_catalog" not in schemas
+
+
+def test_same_name_in_two_schemas_lists_once(two_schemas):
+    """The tree shows the table a bare name resolves to, not one row
+    per schema that happens to hold the name."""
+    names = [t.name for t in two_schemas.list_tables()]
+    assert names.count("invoices") == 1
+
+
+def test_same_name_in_two_schemas_keeps_columns_apart(two_schemas):
+    """The bug this guards: matching on relname alone merged every
+    same-named table's columns into one table that does not exist."""
+    columns = {c.name for c in two_schemas.list_columns("invoices")}
+    # shipping is first on the search_path, so `invoices` is its one.
+    assert columns == {"id", "carrier"}
+    assert "total" not in columns
+
+
+def test_same_name_in_two_schemas_keeps_ddl_apart(two_schemas):
+    ddl = two_schemas.get_ddl("invoices")
+    assert "carrier" in ddl and "total" not in ddl
+
+
+def test_schema_parameter_pins_the_search_path(postgres):
+    """A profile's schema decides what the whole connection sees."""
+    from sqlide.backend.db.postgres.connector import PostgresConnector
+
+    _, db = postgres
+    db.execute("DROP SCHEMA IF EXISTS reporting CASCADE")
+    db.execute("CREATE SCHEMA reporting")
+    db.execute("CREATE TABLE reporting.summary (id integer PRIMARY KEY)")
+    scoped = PostgresConnector(
+        host=db.host, port=db.port, user=db.user,
+        password=db.password, database=db.database, schema="reporting",
+    )
+    scoped.connect()
+    try:
+        assert scoped.current_schema() == "reporting"
+        # Only this schema's objects, and `users` from public is gone.
+        assert [t.name for t in scoped.list_tables()] == ["summary"]
+        # An unqualified CREATE lands here too.
+        scoped.execute("CREATE TABLE landed_here (id integer)")
+        assert "landed_here" in [t.name for t in scoped.list_tables()]
+    finally:
+        scoped.close()
+        db.execute("DROP SCHEMA IF EXISTS reporting CASCADE")
+
+
+def test_unknown_schema_is_reported_on_connect(postgres):
+    """SET search_path accepts a name that does not exist, so an empty
+    sidebar would be the only clue. Say it instead."""
+    from sqlide.backend.db.postgres.connector import PostgresConnector
+
+    _, db = postgres
+    connector = PostgresConnector(
+        host=db.host, port=db.port, user=db.user,
+        password=db.password, database=db.database, schema="no_such_schema",
+    )
+    with pytest.raises(ConnectorError, match="No schema named"):
+        connector.connect()
+
+
+def test_build_demo_database(postgres):
+    """The whole two-phase build, against a real server."""
+    from sqlide.backend import demo
+    from sqlide.backend.db.postgres.connector import PostgresConnector
+
+    _, db = postgres
+    name = "demo_test_pg"
+
+    def connect_to(database: str):
+        connector = PostgresConnector(
+            host=db.host, port=db.port, user=db.user,
+            password=db.password, database=database,
+        )
+        connector.connect()
+        return connector
+
+    if name in db.list_databases():
+        db.execute(f"DROP DATABASE {db.quote_ident(name)}")
+    try:
+        assert demo.create(
+            "postgres", server=db, connect=connect_to, database=name
+        ) == name
+        built = connect_to(name)
+        try:
+            kinds = {t.name: t.kind for t in built.list_tables()}
+            assert kinds["customers"] == "table"
+            assert kinds["order_totals"] == "view"
+            assert not any(c.is_pk for c in built.list_columns("log"))
+            assert built.execute("SELECT count(*) FROM orders").rows == [(5,)]
+            assert "customer_total" in [f.name for f in built.list_functions()]
+            assert any(
+                r.table == "orders" and r.ref_table == "customers"
+                for r in built.list_relations()
+            )
+        finally:
+            built.close()
+    finally:
+        db.execute(f"DROP DATABASE IF EXISTS {db.quote_ident(name)}")
+
+
+def test_schema_ddl_replays_into_an_empty_database(postgres):
+    """The saved-schema round trip: capture this database's structure,
+    run the script into a fresh one, and get the same shape back."""
+    from sqlide.backend import schemas
+    from sqlide.backend.db.postgres.connector import PostgresConnector
+    from sqlide.backend.sql_split import split_statements
+
+    _, db = postgres
+    target = "schema_replay_test"
+
+    def connect_to(database: str):
+        connector = PostgresConnector(
+            host=db.host, port=db.port, user=db.user,
+            password=db.password, database=database,
+        )
+        connector.connect()
+        return connector
+
+    script = schemas.capture(db, kind="postgres", source="sqlide")
+    db.execute(f"DROP DATABASE IF EXISTS {db.quote_ident(target)}")
+    db.execute(f"CREATE DATABASE {db.quote_ident(target)}")
+    try:
+        replica = connect_to(target)
+        try:
+            for statement in split_statements(script):
+                if sql := _sql_only(statement.text):
+                    replica.execute(sql)
+            assert {t.name for t in replica.list_tables()} >= {
+                "users", "orders", "big_orders"
+            }
+            assert [c.name for c in replica.list_columns("users")] == [
+                c.name for c in db.list_columns("users")
+            ]
+            assert any(
+                r.table == "orders" and r.ref_table == "users"
+                for r in replica.list_relations()
+            )
+            assert "add_amounts" in [f.name for f in replica.list_functions()]
+        finally:
+            replica.close()
+    finally:
+        db.execute(f"DROP DATABASE IF EXISTS {db.quote_ident(target)}")
+
+
+def test_schema_ddl_survives_circular_foreign_keys(postgres):
+    """Two tables that reference each other cannot both come second,
+    so the foreign keys are added after every table exists."""
+    _, db = postgres
+    db.execute("DROP TABLE IF EXISTS ring_b CASCADE")
+    db.execute("DROP TABLE IF EXISTS ring_a CASCADE")
+    db.execute("CREATE TABLE ring_a (id integer PRIMARY KEY, b_id integer)")
+    db.execute(
+        "CREATE TABLE ring_b (id integer PRIMARY KEY, "
+        "a_id integer REFERENCES ring_a(id))"
+    )
+    db.execute(
+        "ALTER TABLE ring_a ADD CONSTRAINT ring_a_b_fk "
+        "FOREIGN KEY (b_id) REFERENCES ring_b(id)"
+    )
+    try:
+        statements = db.schema_ddl()
+        creates = [s for s in statements if s.startswith("CREATE TABLE")]
+        alters = [s for s in statements if s.startswith("ALTER TABLE")]
+        # No CREATE TABLE carries a REFERENCES clause…
+        assert not any("REFERENCES" in s for s in creates)
+        # …and every table is created before the first ALTER runs.
+        assert statements.index(creates[-1]) < statements.index(alters[0])
+        assert any("ring_a_b_fk" in s for s in alters)
+    finally:
+        db.execute("DROP TABLE IF EXISTS ring_b CASCADE")
+        db.execute("DROP TABLE IF EXISTS ring_a CASCADE")
+
+
+def _sql_only(text: str) -> str:
+    """A statement without its comment lines — the capture's header
+    comment attaches to the statement that follows it."""
+    return "\n".join(
+        line
+        for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("--")
+    ).strip()

@@ -7,11 +7,15 @@ its own selection). Run resolves the selected name to a profile at
 execution time and reports every run — success or failure — through
 the on_ran callback so the window can record history.
 
-One more session-scoped dropdown (not persisted in TabState):
+Two more session-scoped dropdowns (not persisted in TabState):
 - Database: for server connections (mysql/postgres) whose one server
   hosts many databases; hidden for sqlite, where one file is one
   database. Queries and completions run against the chosen database
   via a profile copy with `database` overridden.
+- Schema: for the adapters that put schemas *below* the database —
+  PostgreSQL. Hidden for sqlite (no schemas) and for MySQL, where a
+  schema and a database are the same object and the dropdown to its
+  left already switches it. Overrides `schema` on the same copy.
 
 Console-local settings live behind the gear MenuButton at the right
 end of the toolbar; currently that's the LSP choice, which pins the
@@ -155,6 +159,9 @@ class QueryConsole(Gtk.Box):
         self._db_dropdown = Gtk.DropDown(visible=False)
         self._db_dropdown.set_tooltip_text("Database on the server")
         self._db_seq = 0  # discards stale list_databases results
+        self._schema_dropdown = Gtk.DropDown(visible=False)
+        self._schema_dropdown.set_tooltip_text("Schema within the database")
+        self._schema_seq = 0  # discards stale list_schemas results
         self._lsp_choices = [
             lsp_servers.AUTO,
             lsp_servers.NONE,
@@ -211,6 +218,7 @@ class QueryConsole(Gtk.Box):
         toolbar.append(self._explain_button)
         toolbar.append(self._dropdown)
         toolbar.append(self._db_dropdown)
+        toolbar.append(self._schema_dropdown)
         toolbar.append(hint)
         toolbar.append(Gtk.Box(hexpand=True))
         toolbar.append(open_button)
@@ -232,10 +240,14 @@ class QueryConsole(Gtk.Box):
         self._db_dropdown.connect(
             "notify::selected-item", self._database_selected
         )
+        self._schema_dropdown.connect(
+            "notify::selected-item", self._schema_selected
+        )
         self._lsp_dropdown.connect(
             "notify::selected-item", self._lsp_selected
         )
         self._refresh_databases()
+        self._refresh_schemas()
         self._lsp_provider.set_profile(self._active_profile())
         self.refresh_transaction_badge()
         keys = Gtk.EventControllerKey()
@@ -343,30 +355,46 @@ class QueryConsole(Gtk.Box):
         item = self._db_dropdown.get_selected_item()
         return item.get_string() if item is not None else ""
 
+    def selected_schema(self) -> str:
+        """The schema this console runs against, for the adapters that
+        have schemas below the database (PostgreSQL). Empty elsewhere."""
+        item = self._schema_dropdown.get_selected_item()
+        if item is None or not self._schema_dropdown.get_visible():
+            return ""
+        return item.get_string()
+
     def status_context(self) -> str:
         """The console's line in the window's status bar: the last
         run's outcome."""
         return self._status.get_text()
 
     def _active_profile(self) -> ConnectionProfile | None:
-        """The selected connection, with the database dropdown's choice
-        applied (as a profile copy — the workspace's profile and the
-        window's connector for it are untouched)."""
+        """The selected connection, with the database and schema
+        dropdowns' choices applied (as a profile copy — the workspace's
+        profile and the window's connector for it are untouched)."""
         profile = self._find_connection(self.selected_connection())
         if profile is None:
             return None
         database = self.selected_database()
+        schema = self.selected_schema()
+        parts = []
         if database and database != profile.database:
+            parts.append(database)
+        if schema and schema != profile.schema:
+            parts.append(schema)
+        if parts:
             profile = replace(
                 profile,
-                name=f"{profile.name} · {database}",
-                database=database,
+                name=f"{profile.name} · {' · '.join(parts)}",
+                database=database or profile.database,
+                schema=schema or profile.schema,
             )
         return profile
 
     def _connection_selected(self, *_args) -> None:
         name = self.selected_connection()
         self._refresh_databases()
+        self._refresh_schemas()
         self._lsp_provider.set_profile(self._active_profile())
         self.refresh_transaction_badge()
         self._reset_hover_cache()
@@ -374,6 +402,14 @@ class QueryConsole(Gtk.Box):
             self.on_connection_changed(name)
 
     def _database_selected(self, *_args) -> None:
+        # A different database has different schemas in it, so the
+        # schema list is rebuilt before anything reads the profile.
+        self._refresh_schemas()
+        self._lsp_provider.set_profile(self._active_profile())
+        self.refresh_transaction_badge()
+        self._reset_hover_cache()
+
+    def _schema_selected(self, *_args) -> None:
         self._lsp_provider.set_profile(self._active_profile())
         self.refresh_transaction_badge()
         self._reset_hover_cache()
@@ -550,6 +586,47 @@ class QueryConsole(Gtk.Box):
         if select in names:
             self._db_dropdown.set_selected(names.index(select))
         self._db_dropdown.set_visible(bool(names))
+
+    def _refresh_schemas(self) -> None:
+        """Rebuild the schema dropdown for the selected connection and
+        database.
+
+        Only adapters with schemas below the database fill it —
+        PostgreSQL. SQLite has none, and MySQL's schemas *are* its
+        databases, so the dropdown to its left is already the schema
+        switcher and this one stays hidden rather than repeating it.
+        """
+        self._schema_seq += 1
+        seq = self._schema_seq
+        profile = self._active_profile()
+        # Which kinds *have* schemas is the adapter's answer
+        # (list_schemas returns nothing for the rest); the kind check
+        # is only here so a local file is never opened to be told so.
+        if profile is None or profile.kind not in _MULTI_DB_KINDS:
+            self._set_schemas([], select="")
+            return
+
+        def work():
+            connector = self._ensure(profile)
+            return connector.list_schemas(), connector.current_schema()
+
+        def done(loaded):
+            schemas, current = loaded
+            if seq != self._schema_seq:
+                return
+            self._set_schemas(
+                schemas, select=self.selected_schema() or current
+            )
+
+        # A connection that cannot be opened is the Run button's error
+        # to report, not this dropdown's: it just stays hidden.
+        run_async(work, done, lambda _exc: None)
+
+    def _set_schemas(self, names: list[str], select: str) -> None:
+        self._schema_dropdown.set_model(Gtk.StringList.new(names))
+        if select in names:
+            self._schema_dropdown.set_selected(names.index(select))
+        self._schema_dropdown.set_visible(bool(names))
 
     def _on_key_pressed(self, _controller, keyval, _keycode, state) -> bool:
         control = bool(state & Gdk.ModifierType.CONTROL_MASK)

@@ -4,10 +4,11 @@ An Adw.ViewStack behind an Adw.ViewSwitcher in the header bar. Which
 pages are offered depends on the active tab (the window reports it
 through set_context):
 
-- query console ("console"): Info, Snippets, Queries, History, Aggregate
-- table data tab ("table"):  Info, History, Aggregate, Filters
-- other result grids ("grid"): Info, History, Aggregate
-- everything else ("other"): Info, History
+- query console ("console"): Info, Snippets, Queries, Schemas, History,
+  Aggregate
+- table data tab ("table"):  Info, Schemas, History, Aggregate, Filters
+- other result grids ("grid"): Info, Schemas, History, Aggregate
+- everything else ("other"): Info, Schemas, History
 
 Pages:
 - Info: details of the active tab — the DDL of the active table or
@@ -20,6 +21,10 @@ Pages:
   Activating a snippet inserts it into the console at the cursor;
   activating a saved query opens it in a new console. The + button
   saves the console's selection (or whole editor) under a name.
+- Schemas: the global saved-schema store (backend/schemas.py) — whole
+  database structures, captured from the sidebar's "Save Schema…".
+  Activating one opens its CREATE script in a new console to read and
+  run. No + button: these come from a connection, not the editor.
 - Aggregate: the count/sum/avg/min/max summary of the cells selected
   in the active grid. set_aggregate() keeps it current as the
   selection changes — so opening the panel is enough to read it — and
@@ -41,16 +46,23 @@ from gi.repository import Adw, Gtk, Pango
 from sqlide.backend.saved import SavedItem, SavedStore
 from sqlide.backend.saved import queries as queries_store
 from sqlide.backend.saved import snippets as snippets_store
+from sqlide.backend.schemas import SavedSchema
+from sqlide.backend.schemas import store as schema_store
 from sqlide.backend.workspaces import HistoryEntry
 from sqlide.frontend.history_panel import HistoryPanel
 from sqlide.frontend.sql_editor import SqlEditor
 from sqlide.frontend.util import describe
 
+# Schemas is on every context: unlike Snippets and Queries, which act
+# on the console under them, opening a saved schema starts a console of
+# its own, so it does not depend on what the active tab is.
 _CONTEXT_PAGES = {
-    "console": ("info", "snippets", "queries", "history", "aggregate"),
-    "table": ("info", "history", "aggregate", "filters"),
-    "grid": ("info", "history", "aggregate"),
-    "other": ("info", "history"),
+    "console": (
+        "info", "snippets", "queries", "schemas", "history", "aggregate",
+    ),
+    "table": ("info", "schemas", "history", "aggregate", "filters"),
+    "grid": ("info", "schemas", "history", "aggregate"),
+    "other": ("info", "schemas", "history"),
 }
 
 
@@ -171,6 +183,78 @@ class _SavedSqlList(Gtk.Box):
         )
 
 
+class _SchemasList(Gtk.Box):
+    """The Schemas page: saved database structures (backend/schemas.py).
+
+    Read-mostly, unlike the saved-SQL pages next to it — a schema is
+    captured from a connection (the sidebar's "Save Schema…"), not
+    from the editor, so this page has no + button. Activating a row
+    opens its script in a console to read and run.
+
+    A row captured from another engine is still offered: it is shown
+    with the engine it came from, and `on_use` warns before opening it
+    against a connection that speaks a different dialect.
+    """
+
+    def __init__(
+        self,
+        on_use: Callable[[SavedSchema], None],
+        empty_text: str,
+    ) -> None:
+        super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        self._on_use = on_use
+        self._items: list[SavedSchema] = []
+
+        self._list = Gtk.ListBox()
+        self._list.set_selection_mode(Gtk.SelectionMode.NONE)
+        self._list.add_css_class("navigation-sidebar")
+        self._list.connect("row-activated", self._row_activated)
+        placeholder = Gtk.Label(label=empty_text, margin_top=24, wrap=True)
+        placeholder.add_css_class("dim-label")
+        self._list.set_placeholder(placeholder)
+        scroller = Gtk.ScrolledWindow(vexpand=True, hexpand=True)
+        scroller.set_child(self._list)
+        self.append(scroller)
+
+        self._rebuild(schema_store.load())
+        schema_store.subscribe(self._rebuild)
+        self.connect(
+            "destroy", lambda *_: schema_store.unsubscribe(self._rebuild)
+        )
+
+    def _rebuild(self, items: list[SavedSchema]) -> None:
+        self._items = list(items)
+        while (row := self._list.get_row_at_index(0)) is not None:
+            self._list.remove(row)
+        for item in self._items:
+            row = Adw.ActionRow(activatable=True)
+            row.set_use_markup(False)
+            row.set_title(item.name)
+            row.set_title_lines(1)
+            row.set_subtitle(item.summary())
+            row.set_subtitle_lines(1)
+            row.set_tooltip_text(_clamp(item.sql, 20))
+            delete = Gtk.Button(icon_name="user-trash-symbolic")
+            delete.add_css_class("flat")
+            describe(delete, "Delete")
+            delete.connect(
+                "clicked", lambda _b, it=item: schema_store.remove(it)
+            )
+            row.add_suffix(delete)
+            self._list.append(row)
+
+    def _row_activated(self, _list, row) -> None:
+        self._on_use(self._items[row.get_index()])
+
+
+def _clamp(text: str, max_lines: int) -> str:
+    """A tooltip's worth of a script that can be hundreds of lines."""
+    lines = text.splitlines()
+    if len(lines) > max_lines:
+        lines = lines[:max_lines] + ["…"]
+    return "\n".join(lines)
+
+
 class _FiltersPage(Gtk.Box):
     """The Filters page: saved filter sets of the active table tab.
     The window supplies the entries (set_target) and owns the
@@ -265,6 +349,7 @@ class SidePanel(Gtk.Box):
         on_clear: Callable[[], None],
         on_insert_snippet: Callable[[str], None],
         on_open_query: Callable[[str], None],
+        on_open_schema: Callable[[SavedSchema], None],
         get_console_sql: Callable[[], str],
         on_error: Callable[[str], None],
         on_apply_filter: Callable[[dict], None],
@@ -326,6 +411,12 @@ class SidePanel(Gtk.Box):
             get_sql=get_console_sql,
             on_error=on_error,
         )
+        self._schemas = _SchemasList(
+            on_use=on_open_schema,
+            empty_text="No saved schemas yet — right-click a connection "
+            "in the sidebar and choose Save Schema… to keep its "
+            "structure for later",
+        )
         self._filters = _FiltersPage(
             on_apply=on_apply_filter,
             on_save=on_save_filter,
@@ -364,6 +455,12 @@ class SidePanel(Gtk.Box):
                 "Queries",
                 "emblem-documents-symbolic",
                 self._queries,
+            ),
+            (
+                "schemas",
+                "Schemas",
+                "view-list-symbolic",
+                self._schemas,
             ),
             (
                 "history",
@@ -467,3 +564,8 @@ class SidePanel(Gtk.Box):
 
     def show_history(self) -> None:
         self._stack.set_visible_child_name("history")
+
+    def show_schemas(self) -> None:
+        """Bring the Schemas page forward — what a just-saved schema
+        wants, so the thing that was saved is visible where it landed."""
+        self._stack.set_visible_child_name("schemas")

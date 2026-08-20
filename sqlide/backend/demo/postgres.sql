@@ -1,12 +1,19 @@
 -- The sqlide demo database, PostgreSQL dialect.
 --
--- Two ways in, both reading this one file:
+-- Three ways in, all reading this one file (backend/demo/__init__.py
+-- is what parses it):
+--   * the app itself — "Create demo database" in the connection
+--     dialog builds it on whatever server you are pointed at;
 --   * docker-compose.yml mounts it into the container's
 --     /docker-entrypoint-initdb.d, so a fresh server has it at first
 --     start;
 --   * scripts/init_databases.py replays it against servers that are
---     already running (it understands CREATE DATABASE and \connect,
---     and runs everything else as SQL).
+--     already running.
+--
+-- Two of the statements below are directives rather than plain SQL:
+-- CREATE DATABASE names the database to build, and \connect (USE, in
+-- the MySQL file) switches into it. Every reader handles those two
+-- itself and runs the rest as ordinary SQL.
 --
 -- It lives in its own database, `demo`, so it never collides with
 -- `sqlide`, the database the tests reseed.

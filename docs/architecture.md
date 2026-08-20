@@ -76,7 +76,8 @@ sqlide/
 │       └── jdbc/
 └── frontend/               # all GTK/libadwaita UI
     ├── application.py      # Adw.Application entry point
-    ├── launcher.py         # workspace picker at startup
+    ├── welcome.py          # first-run home page
+    ├── launcher.py         # in-app workspace switcher
     ├── window.py           # one workspace: split view, tabs, connector cache
     ├── sidebar.py           # lazy schema tree (TreeListModel)
     ├── data_grid.py         # ResultGrid + TableTab

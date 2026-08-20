@@ -1370,11 +1370,13 @@ class UpdatePreviewDialog(Adw.Dialog):
         statements: list[str],
         on_execute: Callable[[], None],
         caption: str = "Values are bound as parameters when executed.",
+        width: int = 560,
+        height: int = 400,
     ) -> None:
         super().__init__(
             title=f"Review Changes ({len(statements)})",
-            content_width=560,
-            content_height=400,
+            content_width=width,
+            content_height=height,
         )
         header = Adw.HeaderBar()
         header.set_show_start_title_buttons(False)

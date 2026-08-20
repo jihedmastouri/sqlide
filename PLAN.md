@@ -150,11 +150,15 @@ stored plainly for v1 — known limitation).
 └───────────────┴───────────────────────────────┴────────────────┘
 ```
 
-- **`application.py`**: owns the `WorkspaceStore`; startup shows the
-  workspace launcher, one main window per open workspace.
-- **`launcher.py`**: small startup window listing workspaces; create a new
-  one by name. Reopened from a main window's Workspaces button — this is
-  the only place other workspaces are visible.
+- **`application.py`**: owns the `WorkspaceStore`; startup opens the
+  last-used workspace directly (or the first one on file), one main
+  window per open workspace.
+- **`welcome.py`**: the home page, shown only when no workspace exists
+  yet — what the app is, what it does, and the name/colour form that
+  creates the first one (or imports it).
+- **`launcher.py`**: small window listing workspaces; create a new one by
+  name. Opened from a main window's Workspaces button — this is the only
+  place other workspaces are visible.
 - **`window.py`**: `Adw.ApplicationWindow` for one workspace; a right
   `Adw.OverlaySplitView` (query history, hidden by default) wraps the left
   one (schema sidebar). Restores the workspace's saved tabs on open and
@@ -242,7 +246,8 @@ sqlide/
     └── frontend/              # all GTK/libadwaita code
         ├── __init__.py
         ├── application.py     # Adw.Application, entry point
-        ├── launcher.py        # workspace picker at startup
+        ├── welcome.py         # first-run home page
+        ├── launcher.py        # in-app workspace switcher
         ├── window.py          # one workspace: split view, tabs, connector cache
         ├── util.py            # run_async worker-thread helper
         ├── identity.py        # palette provider + the coloured surfaces
@@ -337,10 +342,24 @@ manual test path.
     ctrl+shift+w; "New ▸" on a left click in the sidebar; EXPLAIN drawn as a
     plan graph (`frontend/plan_graph.py`, sharing `frontend/canvas.py` with
     the relation graph); a `demo` database seeded onto every compose server
-    from `scripts/init/`; a Makefile over the project's routines; portable
-    XML import/export of workspaces and connections
+    from `sqlide/backend/demo/`; a Makefile over the project's routines;
+    portable XML import/export of workspaces and connections
     (`backend/exchange.py`); the launcher handing the foreground to the
     workspace it opens. — **done**
+
+10c. **Schemas, demo and saved structures (2026-08)** — PostgreSQL
+    schema support: a profile's `schema` pins the connection's
+    `search_path`, a console dropdown switches it, and name→relation
+    resolution goes through `to_regclass()` so two schemas holding the
+    same table name no longer merge into one phantom table with both
+    sets of columns. The demo database moved into the package
+    (`backend/demo/`, one `.sql` per dialect) as the single source for
+    the app's own "Create demo database" button, the compose mounts and
+    the seeding script. Saved schemas (`backend/schemas.py`): capture a
+    database's structure under a name, reopen it in a console later;
+    `Connector.schema_ddl()` per adapter, with PostgreSQL emitting
+    foreign keys after the tables and MySQL bracketing its script with
+    `SET FOREIGN_KEY_CHECKS` so cyclic references replay. — **done**
 
 ## Milestones — planned
 

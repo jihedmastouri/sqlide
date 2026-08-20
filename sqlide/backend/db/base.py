@@ -39,6 +39,36 @@ class TriggerInfo:
 
 
 @dataclass(frozen=True)
+class TypeSpec:
+    """One entry of the table designer's type list.
+
+    `params` names the arguments the type takes — ("length",) for
+    VARCHAR, ("precision", "scale") for DECIMAL, ("values",) for the
+    list types (MySQL ENUM/SET) — and `defaults` gives the value the
+    designer prefills for each, so picking a type is never a blank
+    form. A type with no params renders as its bare name.
+    """
+
+    name: str
+    params: tuple[str, ...] = ()
+    defaults: tuple[str, ...] = ()
+    note: str = ""  # one-line hint shown next to the type in the UI
+
+    def render(self, values: tuple[str, ...] | list[str] = ()) -> str:
+        """The type as it goes into DDL: name plus the arguments that
+        were filled in. Empty arguments drop the whole parenthesis, so
+        an unfilled VARCHAR stays a valid (if unsized) type rather than
+        becoming ``VARCHAR()``."""
+        if not self.params:
+            return self.name
+        filled = [str(v).strip() for v in values[: len(self.params)]]
+        filled = [v for v in filled if v]
+        if not filled:
+            return self.name
+        return f"{self.name}({', '.join(filled)})"
+
+
+@dataclass(frozen=True)
 class RelationInfo:
     """One foreign-key column: table.column references ref_table.ref_column."""
 
@@ -184,6 +214,23 @@ class Connector(ABC):
         """
         return []
 
+    def list_schemas(self) -> list[str]:
+        """Schemas inside the connected database, sorted by name, for
+        the console's schema switcher.
+
+        Concrete default (not abstract), empty for every adapter where
+        a schema is not a level of its own: SQLite has none, and in
+        MySQL a schema *is* a database, so its list_databases() is
+        already the schema list and a second dropdown would only
+        repeat it.
+        """
+        return []
+
+    def current_schema(self) -> str:
+        """The schema unqualified object names resolve to. Empty when
+        the adapter has no schemas (see list_schemas)."""
+        return ""
+
     def list_functions(self) -> list[FunctionInfo]:
         """Stored functions in the connected database, sorted by name.
 
@@ -249,6 +296,47 @@ class Connector(ABC):
         """
         return ""
 
+    def schema_ddl(self) -> list[str]:
+        """Every CREATE statement needed to rebuild this database's
+        structure, in an order that can be replayed top to bottom.
+
+        Structure only — no INSERTs. This is what "save this schema
+        for later" captures (backend/schemas.py) and what the sidebar
+        offers as a whole-database script.
+
+        The generic implementation walks the catalog through get_ddl(),
+        which covers tables, views and programmable objects. Adapters
+        that can do better override it: some carry indexes inside their
+        table DDL, and some can dump the lot in one query.
+        """
+        objects = self.list_tables()
+        return self.ddl_for(
+            [t.name for t in objects if t.kind != "view"]
+            + [t.name for t in objects if t.kind == "view"]
+            + [f.name for f in self.list_functions()]
+        )
+
+    def ddl_for(self, names: list[str]) -> list[str]:
+        """get_ddl() over `names`, keeping the order given.
+
+        An object whose DDL comes back empty becomes a comment saying
+        so rather than nothing at all. A server can refuse to show a
+        routine's body (MySQL returns NULL for one whose definer you
+        are not, without erroring), and a schema script that quietly
+        dropped an object would be rebuilt wrong by whoever ran it.
+        """
+        statements = []
+        for name in names:
+            if ddl := self.get_ddl(name).strip():
+                statements.append(ddl)
+            else:
+                statements.append(
+                    f"-- {name}: no CREATE statement available "
+                    "(the server did not return one — insufficient "
+                    "privileges on its definition?)"
+                )
+        return statements
+
     def explain_prefix(self) -> str:
         """Prefix that turns a statement into its plan query, for the
         console's Explain button (dialects override: SQLite uses
@@ -299,10 +387,34 @@ class Connector(ABC):
         no template for `kind`."""
         return _GENERIC_TEMPLATES.get(kind, "")
 
+    def column_type_specs(self) -> list[TypeSpec]:
+        """Every column type the table designer offers for this
+        dialect, with the arguments each one takes (see TypeSpec).
+        Free text stays allowed in the designer; this is a menu, not a
+        whitelist. The generic list is SQL-92, for adapters with no
+        dialect knowledge of their own (JDBC)."""
+        return [
+            TypeSpec("INTEGER"),
+            TypeSpec("SMALLINT"),
+            TypeSpec("BIGINT"),
+            TypeSpec("DECIMAL", ("precision", "scale"), ("10", "2")),
+            TypeSpec("REAL"),
+            TypeSpec("DOUBLE PRECISION"),
+            TypeSpec("CHAR", ("length",), ("1",)),
+            TypeSpec("VARCHAR", ("length",), ("255",)),
+            TypeSpec("TEXT"),
+            TypeSpec("BOOLEAN"),
+            TypeSpec("DATE"),
+            TypeSpec("TIME"),
+            TypeSpec("TIMESTAMP"),
+            TypeSpec("BLOB"),
+        ]
+
     def column_types(self) -> list[str]:
-        """Suggested column types for the table designer's dropdown
-        (free text stays allowed; this is not a whitelist)."""
-        return ["INTEGER", "VARCHAR(255)", "TEXT", "DATE", "TIMESTAMP"]
+        """The type list as plain rendered strings (each type with its
+        default arguments) — the shape callers wanted before types
+        carried their arguments."""
+        return [spec.render(spec.defaults) for spec in self.column_type_specs()]
 
     def create_table_sql(
         self,

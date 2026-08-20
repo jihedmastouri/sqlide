@@ -30,6 +30,7 @@ include = ["sqlide*"]
 
 [tool.setuptools.package-data]
 "sqlide.frontend" = ["style.css"]
+"sqlide.backend.demo" = ["*.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

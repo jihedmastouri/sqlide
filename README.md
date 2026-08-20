@@ -32,18 +32,34 @@ make run     # launches the app
 `make` on its own lists every development entry point: `install`
 (venv + drivers + pytest), `test`, `check`, `lint`, `servers` (the
 throwaway MySQL/PostgreSQL containers), `init-db`, `flatpak`, `web`.
-Without make, the same two steps are:
+`make run-fresh` launches against a throwaway config directory, which
+is how you get a real first run back once you have workspaces on file
+(all state lives in `$XDG_CONFIG_HOME/sqlide`, `~/.config/sqlide` by
+default). Without make, the same two steps are:
 
 ```sh
 python3 scripts/make_demo_db.py          # writes ./demo.db
 python3 -m sqlide
 ```
 
+Or skip the command line entirely: the connection dialog has a
+**Create demo database** button that builds the same sample database
+for whichever engine is selected, and fills the dialog in with what it
+made — no path or name to invent first. SQLite gets a new file under
+`~/.local/share/sqlide`; MySQL and PostgreSQL get a new database called
+`demo` on the server the fields describe. Pressing it again builds
+another one (`demo-2.db`, `demo_2`) rather than touching the first,
+which may by then have something in it.
+
 Then, in the app:
 
-1. The launcher opens first: click **+** (or **Create Workspace**), give
-   the workspace a name. A workspace groups its own connections and
-   remembers your open tabs.
+1. A first run opens the home page: name your first workspace, pick a
+   colour, **Create Workspace** (or **Import…** in the header, if you
+   are moving from another machine). A workspace groups its own
+   connections and remembers your open tabs. Every later launch skips
+   the home page and reopens the workspace you were last in; the grid
+   icon in the sidebar header lists them all, for renaming,
+   recolouring or adding another.
 2. In the workspace window, click **+** in the sidebar header → type stays
    **SQLite** → browse to `demo.db` → **Test connection** → **Save**.
 3. Expand the connection in the sidebar; click a table (e.g. `customers`)
@@ -53,11 +69,11 @@ Then, in the app:
    as read-only. `order_totals` is a view (also read-only).
 5. Click the terminal icon on the connection row for a query console;
    type SQL and press **Ctrl+Enter** (or Run).
-6. Close and restart — the launcher lists the workspace; opening it
-   restores the connections *and* the tabs you left open, including query
-   console text (`~/.config/sqlide/workspaces/<id>.json`). Other
-   workspaces are only visible in the launcher (the grid icon in the
-   sidebar header reopens it).
+6. Close and restart — you land back in the workspace you were last in,
+   with the connections *and* the tabs you left open restored, query
+   console text included (`~/.config/sqlide/workspaces/<id>.json`).
+   Other workspaces stay out of the way behind the grid icon in the
+   sidebar header, which opens the workspace list.
 
 ## MySQL and PostgreSQL to try it against
 
@@ -84,7 +100,8 @@ Workspaces live in `~/.config/sqlide/workspaces/` as JSON keyed by a
 local id, with passwords in the keyring — not something to copy
 around. **Export Workspace…** and **Export Connections…** (a
 workspace window's main menu) write a small, readable XML file
-instead; the launcher's folder button imports one as a new workspace,
+instead; the folder button in the workspace list imports one as a new
+workspace,
 and **Import Connections…** merges connections into the open one.
 Passwords are left out unless the export explicitly asks for them, and
 an import never overwrites what is already there. See
@@ -107,14 +124,18 @@ server is available for the connection's database, its suggestions
   [sql-language-server](https://github.com/joe-re/sql-language-server)
   is tried as a fallback (`sql-language-server up --method stdio`).
 
-Each query console has two extra dropdowns next to the connection
-picker (both session-only, not saved with the workspace):
+Each query console has three extra dropdowns next to the connection
+picker (all session-only, not saved with the workspace):
 
 - **LSP** — pin the completion server for that console: *auto* (the
   resolution order above), *off*, or any plugin / detected binary.
 - **Database** — for MySQL/PostgreSQL connections, whose one server
   hosts many databases: queries and completions run against the chosen
   database. Hidden for SQLite, where one file is one database.
+- **Schema** — for PostgreSQL, where a database holds many schemas.
+  Hidden for SQLite (no schemas) and for MySQL, where a schema *is* a
+  database and the dropdown to its left already switches it. See
+  [Schemas](#schemas) below.
 
 ### LSP plugins
 
@@ -139,6 +160,44 @@ exec sql-language-server up --method stdio
 
 (Remember `chmod +x`.) A server that exits or misbehaves is disabled
 for the rest of the session; keyword completion keeps working.
+
+## Schemas
+
+In PostgreSQL a database holds many schemas, and two of them can hold
+a table of the same name. sqlide works in one schema at a time:
+
+- the connection dialog has a **Schema** field (PostgreSQL only). Left
+  blank, the server's own `search_path` applies — usually `"$user",
+  public` — and objects outside it are not listed. Set, it becomes the
+  connection's `search_path`, so the sidebar, the grid, completion and
+  your own unqualified SQL all agree on which schema is meant;
+- a query console's **Schema** dropdown switches it for that console
+  alone, the same way its Database dropdown does;
+- where several schemas *are* on the search_path, an unqualified name
+  resolves the way PostgreSQL resolves it — first match wins — and the
+  sidebar lists it once, not once per schema holding the name.
+
+MySQL needs none of this: there a schema and a database are the same
+object, so the Database dropdown is already the schema switcher.
+SQLite has no schemas at all.
+
+## Saving a schema to use later
+
+Right-click a connection → **Save Schema…** captures that database's
+whole structure (tables with their constraints, indexes, views,
+triggers, stored routines — no rows) as a named CREATE script. Saved
+schemas are global, not per-workspace, and appear on the side panel's
+**Schemas** page; activating one opens it in a query console to read
+and run, so nothing is ever executed behind your back. A schema
+captured from another engine still opens, after a warning that the
+dialect will not match.
+
+The scripts are written to replay cleanly: PostgreSQL adds foreign
+keys after every table exists, MySQL brackets its script with
+`SET FOREIGN_KEY_CHECKS`, so tables that reference each other in a
+cycle are not an ordering problem. An object whose definition the
+server refuses to hand over becomes a comment saying so rather than
+disappearing from the script.
 
 ## Create/drop DDL
 
@@ -216,7 +275,8 @@ included).
 Right-click a connection in the sidebar for **Edit…** (the same form
 as adding one, pre-filled — renaming it there is safe, open tabs keep
 working) and **Remove…** (confirmed). Workspaces can be renamed too,
-from a pencil button on their row in the launcher.
+from a pencil button on their row in the workspace list (the grid icon
+in the sidebar header).
 
 With the `keyring` extra installed and a backend available (GNOME
 Keyring, KWallet, macOS Keychain, …), a connection's password and SSH
@@ -240,6 +300,9 @@ the new machine.
   share their palette and primitives through `canvas.py`.
 - `sqlide/lsp/` — the LSP client and per-connection server management
   (zero GTK); `frontend/lsp_completion.py` is the editor-facing bridge.
-- `scripts/make_demo_db.py` — builds the demo SQLite database;
-  `scripts/init/*.sql` and `scripts/init_databases.py` do the same for
-  the MySQL/PostgreSQL containers.
+- `sqlide/backend/demo/` — the demo database: one `.sql` file per
+  dialect and the code that builds them. Those files are the single
+  source for all three ways in — the app's own "Create demo database"
+  button, `scripts/make_demo_db.py` (SQLite, from the command line),
+  and `scripts/init_databases.py` plus the `docker-compose.yml` mounts
+  (the MySQL/PostgreSQL containers).

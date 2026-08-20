@@ -47,10 +47,11 @@ from gi.repository import Adw, Gio, GLib, GObject, Gtk
 
 from sqlide.frontend.util import describe, main_menu_button, run_async
 
-from sqlide.backend import identity
+from sqlide.backend import identity, schemas
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import registry
 from sqlide.backend.db.base import Connector, ConnectorError, FilterCondition
+from sqlide.backend.schemas import SavedSchema
 from sqlide.backend.workspaces import HistoryEntry, Workspace
 from sqlide.frontend.cli_console import CliConsole
 from sqlide.frontend.connection_dialog import ConnectionDialog
@@ -62,7 +63,7 @@ from sqlide.frontend.mcp_tab import McpServerTab
 from sqlide.frontend.query_builder import QueryBuilderTab
 from sqlide.frontend.query_console import QueryConsole
 from sqlide.frontend.relation_graph import RelationGraphTab
-from sqlide.frontend.side_panel import SidePanel
+from sqlide.frontend.side_panel import SidePanel, ask_name
 from sqlide.frontend.sidebar import Sidebar
 from sqlide.frontend.status_bar import StatusBar
 from sqlide.frontend.table_designer import TableDesignerTab
@@ -160,6 +161,10 @@ class MainWindow(Adw.ApplicationWindow):
         describe(add_button, "Add connection")
         add_button.connect("clicked", self._add_connection)
         sidebar_header.pack_start(add_button)
+        refresh_button = Gtk.Button(icon_name="view-refresh-symbolic")
+        describe(refresh_button, "Refresh every connection's schema")
+        refresh_button.connect("clicked", lambda *_: self._sidebar.reload_all())
+        sidebar_header.pack_start(refresh_button)
         workspaces_button = Gtk.Button(icon_name="view-grid-symbolic")
         describe(workspaces_button, "Workspaces")
         workspaces_button.connect(
@@ -179,6 +184,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_drop_object=self._drop_object,
             on_new_object=self._new_object,
             on_mcp_server=self.open_mcp_server,
+            on_save_schema=self._save_schema,
             on_edit_connection=self._edit_connection,
             on_remove_connection=self._remove_connection,
             on_add_connection=self._add_connection,
@@ -231,30 +237,33 @@ class MainWindow(Adw.ApplicationWindow):
             | GObject.BindingFlags.BIDIRECTIONAL,
         )
         content_header.pack_start(sidebar_toggle)
-        new_query_button = Gtk.Button(icon_name="document-edit-symbolic")
-        describe(new_query_button, "New query console")
-        new_query_button.connect(
+        # One "New" menu instead of a row of icons nobody can decode: a
+        # pen, a cog and a network arrow said nothing about query
+        # consoles, CLI clients and MCP servers. Words do, and the
+        # header bar's left corner stops being a puzzle.
+        new_menu = Gio.Menu()
+        tabs = Gio.Menu()
+        tabs.append("Query Console", "win.new-query")
+        tabs.append("CLI Client", "win.new-cli")
+        tabs.append("Query Builder", "win.new-builder")
+        new_menu.append_section(None, tabs)
+        servers = Gio.Menu()
+        servers.append("MCP Server", "win.new-mcp")
+        new_menu.append_section(None, servers)
+        new_button = Adw.SplitButton(
+            label="New", menu_model=new_menu, tooltip_text="New query console"
+        )
+        new_button.connect(
             "clicked", lambda *_: self.new_query(self._default_query_profile())
         )
-        content_header.pack_start(new_query_button)
-        cli_button = Gtk.Button(icon_name="utilities-terminal-symbolic")
-        describe(cli_button, "New CLI client console")
-        cli_button.connect("clicked", self._new_cli_console)
-        content_header.pack_start(cli_button)
-        builder_button = Gtk.Button(icon_name="system-run-symbolic")
-        describe(builder_button, "New query builder")
-        builder_button.connect("clicked", self._new_query_builder)
-        content_header.pack_start(builder_button)
+        content_header.pack_start(new_button)
+
+        content_header.pack_end(main_menu_button(with_history=True))
+        # Layout, not creation: it belongs with the tab controls.
         split_button = Gtk.Button(icon_name="view-dual-symbolic")
         describe(split_button, "Split: move current tab to a new pane")
         split_button.connect("clicked", self._split_current_tab)
-        content_header.pack_start(split_button)
-        mcp_button = Gtk.Button(icon_name="network-transmit-receive-symbolic")
-        describe(mcp_button, "New MCP server")
-        mcp_button.connect("clicked", lambda *_: self.open_mcp_server())
-        content_header.pack_start(mcp_button)
-
-        content_header.pack_end(main_menu_button(with_history=True))
+        content_header.pack_end(split_button)
 
         self._tab_button = Adw.TabButton(view=self._active_pane.view)
         self._tab_button.set_tooltip_text("View open tabs")
@@ -274,6 +283,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_open_query=lambda sql: self.new_query(
                 self._default_query_profile(), sql=sql
             ),
+            on_open_schema=self._open_saved_schema,
             get_console_sql=self._current_console_sql,
             on_error=self.show_error,
             on_apply_filter=self._apply_saved_filter,
@@ -351,6 +361,13 @@ class MainWindow(Adw.ApplicationWindow):
         self._menu_tab_page: Adw.TabPage | None = None
         for name, callback in (
             ("history", lambda *_: self.open_history_tab()),
+            ("new-query", lambda *_: self.new_query(
+                self._default_query_profile()
+            )),
+            ("new-cli", self._new_cli_console),
+            ("new-builder", self._new_query_builder),
+            ("new-mcp", lambda *_: self.open_mcp_server()),
+            ("refresh-schema", lambda *_: self._sidebar.reload_all()),
             ("close-tab", self._close_menu_tab),
             ("close-other-tabs", self._close_other_tabs),
             ("close-tabs-right", self._close_tabs_right),
@@ -1555,6 +1572,81 @@ class MainWindow(Adw.ApplicationWindow):
         set_title(console.selected_connection())
         view.set_selected_page(page)
         return page
+
+    # Saved schemas (backend/schemas.py)
+
+    def _open_saved_schema(self, item: SavedSchema) -> None:
+        """Open a saved schema's script in a console, to read and run.
+
+        Never executed from here: this is DDL like any other in the
+        app, and DDL is shown before it runs. A script captured from
+        another engine still opens — it may well be the reason the
+        user saved it — but only after saying that the dialect will
+        not match.
+        """
+        profile = self._default_query_profile()
+        if (
+            profile is not None
+            and item.kind
+            and item.kind != profile.kind
+        ):
+            dialog = Adw.AlertDialog(
+                heading="Different database engine",
+                body=(
+                    f"“{item.name}” was captured from {item.kind}, and the "
+                    f"console will run it against {profile.kind}. The SQL "
+                    "is dialect-specific, so expect to edit it before it "
+                    "runs."
+                ),
+            )
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("open", "Open Anyway")
+            dialog.set_response_appearance(
+                "open", Adw.ResponseAppearance.SUGGESTED
+            )
+            dialog.set_default_response("open")
+            dialog.set_close_response("cancel")
+            dialog.connect(
+                "response",
+                lambda _d, response: (
+                    self.new_query(profile, sql=item.sql)
+                    if response == "open"
+                    else None
+                ),
+            )
+            dialog.present(self)
+            return
+        self.new_query(profile, sql=item.sql)
+
+    def _save_schema(self, profile: ConnectionProfile) -> None:
+        """Capture a connection's whole structure under a name.
+
+        The capture is a catalog walk — one round trip per object —
+        so it runs on a worker thread and the name is asked for first,
+        while there is still something to cancel.
+        """
+
+        def capture(name: str) -> None:
+            def work() -> str:
+                connector = self.ensure_connector(profile)
+                return schemas.capture(
+                    connector, kind=profile.kind, source=profile.name
+                )
+
+            def done(sql: str) -> None:
+                schemas.store.add(
+                    name, sql, kind=profile.kind, source=profile.name
+                )
+                # Opened on the page it landed on, like the Aggregate
+                # menu item: a save with no visible result reads as a
+                # save that did not happen.
+                self._side_panel.show_schemas()
+                self._history_split.set_show_sidebar(True)
+                self.show_message(f"Saved schema “{name}”")
+
+            run_async(work, done, lambda exc: self.show_error(str(exc)))
+
+        ask_name(self, "Save Schema As", profile.name, capture)
 
     def _default_query_profile(self) -> ConnectionProfile | None:
         """Connection preselected in a new console: the current tab's,

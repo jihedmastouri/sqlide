@@ -20,8 +20,8 @@ functions, procedures and events — so creating an object never
 depends on knowing that the row has a right-click menu. Activating a table/view opens a data tab;
 activating a connection or category toggles it; clicking the caret on
 a table/view expands its columns without opening a tab. Activating a
-function (or its Edit Definition context item) opens its definition
-in an editable tab. Right-clicking a table or view opens View Data /
+function or trigger (or its Edit Definition context item) opens its
+definition in an editable tab. Right-clicking a table or view opens View Data /
 Query Console / Table Definition; right-clicking a connection offers
 a new query console (new consoles otherwise come from the header-bar
 button), the connection's relation graph, an MCP Server tab
@@ -746,7 +746,14 @@ class Sidebar(Gtk.ScrolledWindow):
             if can_drop and "function" in root.ddl_kinds:
                 menu.append("Drop…", "schema.drop-object")
             return menu
-        if node.kind in ("index", "trigger", "event"):
+        if node.kind == "trigger" and node.profile is not None:
+            menu = Gio.Menu()
+            menu.append("Edit Definition", "schema.edit-function")
+            menu.append("Refresh", "schema.refresh")
+            if can_drop:
+                menu.append("Drop…", "schema.drop-object")
+            return menu
+        if node.kind in ("index", "event"):
             menu = Gio.Menu()
             menu.append("Refresh", "schema.refresh")
             if can_drop:
@@ -847,7 +854,7 @@ class Sidebar(Gtk.ScrolledWindow):
 
     def _menu_edit_function(self, *_args) -> None:
         node = self._menu_node
-        if node is not None and node.kind == "function" and node.profile:
+        if node is not None and node.kind in ("function", "trigger") and node.profile:
             self._on_open_function(node.profile, node.label)
 
     def _menu_relation_graph(self, *_args) -> None:
@@ -960,7 +967,7 @@ class Sidebar(Gtk.ScrolledWindow):
         node = row.get_item()
         if node.kind in ("table", "view"):
             self._on_open_table(node.profile, node.label)
-        elif node.kind == "function" and node.profile is not None:
+        elif node.kind in ("function", "trigger") and node.profile is not None:
             self._on_open_function(node.profile, node.label)
         elif node.kind in ("connection", "category"):
             row.set_expanded(not row.get_expanded())

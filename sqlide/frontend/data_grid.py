@@ -62,7 +62,8 @@ from sqlide.backend.db.base import (
     SortSpec,
 )
 from sqlide.backend.workspaces import TabState
-from sqlide.frontend import confirm, feedback
+from sqlide.backend.settings import store as settings_store
+from sqlide.frontend import confirm, feedback, keymap
 from sqlide.frontend.util import describe, run_async
 
 PAGE_SIZE = 500
@@ -266,14 +267,21 @@ class ResultGrid(Gtk.ScrolledWindow):
 
         shortcuts = Gtk.ShortcutController()
         shortcuts.set_scope(Gtk.ShortcutScope.LOCAL)
-        shortcuts.add_shortcut(
-            Gtk.Shortcut.new(
-                Gtk.ShortcutTrigger.parse_string("<Control>c"),
-                Gtk.CallbackAction.new(self._on_copy_shortcut),
-            )
+        # Rebindable in Preferences, so it tracks the keymap registry
+        # (frontend/keymap.py) live rather than a hardcoded trigger.
+        self._copy_shortcut = Gtk.Shortcut.new(
+            Gtk.ShortcutTrigger.parse_string(keymap.effective("grid.copy")),
+            Gtk.CallbackAction.new(self._on_copy_shortcut),
+        )
+        shortcuts.add_shortcut(self._copy_shortcut)
+        settings_store.subscribe(self._refresh_copy_shortcut)
+        self._view.connect(
+            "destroy",
+            lambda *_: settings_store.unsubscribe(self._refresh_copy_shortcut),
         )
         # Everything in the cell menu must be reachable without a
         # mouse, so the platform's menu keys open it on the selection.
+        # These are OS-standard context-menu keys, not user bindings.
         for trigger in ("Menu", "<Shift>F10"):
             shortcuts.add_shortcut(
                 Gtk.Shortcut.new(
@@ -282,6 +290,11 @@ class ResultGrid(Gtk.ScrolledWindow):
                 )
             )
         self._view.add_controller(shortcuts)
+
+    def _refresh_copy_shortcut(self, *_args) -> None:
+        self._copy_shortcut.set_trigger(
+            Gtk.ShortcutTrigger.parse_string(keymap.effective("grid.copy"))
+        )
 
     def _on_menu_shortcut(self, _widget, _args) -> bool:
         """Pop the cell menu up over the selection (the top-left cell

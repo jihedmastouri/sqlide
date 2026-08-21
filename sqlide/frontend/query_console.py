@@ -69,7 +69,7 @@ from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import Connector, ResultSet
 from sqlide.backend.sql_split import split_statements, statement_at
 from sqlide.backend.workspaces import TabState
-from sqlide.frontend import confirm, feedback
+from sqlide.frontend import confirm, feedback, keymap
 from sqlide.frontend.data_grid import (
     AggregateCallback,
     ResultGrid,
@@ -640,16 +640,20 @@ class QueryConsole(Gtk.Box):
         self._schema_dropdown.set_visible(bool(names))
 
     def _on_key_pressed(self, _controller, keyval, _keycode, state) -> bool:
-        control = bool(state & Gdk.ModifierType.CONTROL_MASK)
-        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and control:
-            self._run(run_all=bool(state & Gdk.ModifierType.SHIFT_MASK))
+        # The toolbar's Run and file buttons, from the keyboard —
+        # bindings come from the keymap registry (frontend/keymap.py),
+        # editable in Preferences, so every action in this tab has a
+        # binding that can't collide with another once assigned.
+        if keymap.matches("query.run-all", keyval, state):
+            self._run(run_all=True)
             return True
-        # The toolbar's file buttons, from the keyboard: every action
-        # in this tab has a binding (see frontend/shortcuts.py).
-        if control and keyval == Gdk.KEY_o:
+        if keymap.matches("query.run", keyval, state):
+            self._run(run_all=False)
+            return True
+        if keymap.matches("query.open-file", keyval, state):
             self._open_file()
             return True
-        if control and keyval == Gdk.KEY_s:
+        if keymap.matches("query.save-file", keyval, state):
             self._save_file()
             return True
         return False

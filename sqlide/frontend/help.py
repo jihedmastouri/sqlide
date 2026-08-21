@@ -9,15 +9,12 @@ from __future__ import annotations
 
 from gi.repository import Adw, Gtk
 
-from sqlide.frontend.shortcuts import SHORTCUTS, spell_accelerator
+from sqlide.frontend import keymap
 
-# The bindings themselves live in shortcuts.py, which also backs the
-# shortcuts window — one list, so the two can't drift apart.
-_SHORTCUTS = tuple(
-    (action, spell_accelerator(accelerator))
-    for _group, items in SHORTCUTS
-    for action, accelerator in items
-)
+# The bindings themselves live in keymap.py, which also backs the
+# shortcuts window and the Preferences editor — one registry, so none
+# of the three can drift apart. Computed fresh in _shortcuts_section()
+# (not here) so an edited shortcut shows up without a restart.
 
 _SECTIONS = (
     (
@@ -148,7 +145,13 @@ def _shortcuts_section() -> Gtk.Box:
     heading.add_css_class("heading")
     box.append(heading)
     grid = Gtk.Grid(column_spacing=24, row_spacing=4)
-    for i, (what, keys) in enumerate(_SHORTCUTS):
+    shortcuts = [
+        (action, keymap.spell(accelerator))
+        for _group, items in keymap.grouped()
+        for action, accelerator in items
+        if accelerator
+    ]
+    for i, (what, keys) in enumerate(shortcuts):
         label = Gtk.Label(label=what, xalign=0, hexpand=True)
         combo = Gtk.Label(label=keys, xalign=1)
         combo.add_css_class("dim-label")

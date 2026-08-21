@@ -10,11 +10,12 @@ already-running servers keep their session.
 
 from __future__ import annotations
 
-from gi.repository import Adw, GObject, Gtk
+from gi.repository import Adw, Gdk, GObject, Gtk
 
 from sqlide import APP_ID, __version__
 from sqlide.backend.settings import THEMES, Settings, store
 from sqlide.backend.sql_risk import CONFIRM_MODES
+from sqlide.frontend import feedback, keymap
 from sqlide.frontend.backup_dialog import BackupWindow
 from sqlide.lsp import servers as lsp_servers
 
@@ -38,6 +39,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
     def __init__(self) -> None:
         super().__init__()
         self.add(self._general_page(store.settings))
+        self.add(self._shortcuts_page())
         self.add(self._lsp_page(store.settings))
 
     # General: appearance
@@ -118,6 +120,26 @@ class PreferencesDialog(Adw.PreferencesDialog):
         page.add(backup_group)
         return page
 
+    # Keyboard shortcuts
+
+    def _shortcuts_page(self) -> Adw.PreferencesPage:
+        """One row per action in the keymap registry (frontend/
+        keymap.py), grouped the same way as the shortcuts window, each
+        with a button that captures the next keypress as its new
+        binding."""
+        page = Adw.PreferencesPage(
+            title="Shortcuts", icon_name="input-keyboard-symbolic"
+        )
+        groups: dict[str, Adw.PreferencesGroup] = {}
+        for action in keymap.ACTIONS:
+            group = groups.get(action.group)
+            if group is None:
+                group = Adw.PreferencesGroup(title=action.group)
+                groups[action.group] = group
+                page.add(group)
+            group.add(_ShortcutRow(action))
+        return page
+
     def _open_backup_window(self, *_args) -> None:
         window = BackupWindow()
         root = self.get_root()
@@ -180,6 +202,109 @@ class PreferencesDialog(Adw.PreferencesDialog):
 
         row.connect("notify::selected", changed)
         return row
+
+
+class _ShortcutRow(Adw.ActionRow):
+    """One action's binding, editable in place. Clicking "Set Shortcut"
+    puts the row in capture mode: the next keypress becomes the new
+    accelerator, unless it's the text editor's own key (RESERVED) or
+    already bound to another action, in which case it's rejected with
+    a toast and the old binding stays. Backspace clears the binding;
+    Escape cancels the capture without changing anything."""
+
+    def __init__(self, action: keymap.Action) -> None:
+        super().__init__(title=action.label)
+        self._action = action
+
+        self._keys = Gtk.Label(css_classes=["dim-label", "monospace"])
+        self.add_suffix(self._keys)
+
+        self._reset = Gtk.Button(
+            icon_name="edit-undo-symbolic", css_classes=["flat"],
+            valign=Gtk.Align.CENTER, tooltip_text="Reset to default",
+        )
+        self._reset.connect(
+            "clicked", lambda *_: self._apply(action.default)
+        )
+        self.add_suffix(self._reset)
+
+        self._capture = Gtk.ToggleButton(
+            label="Set Shortcut", css_classes=["flat"],
+            valign=Gtk.Align.CENTER,
+        )
+        self._capture.connect("toggled", self._on_toggled)
+        keys_controller = Gtk.EventControllerKey()
+        keys_controller.connect("key-pressed", self._on_key_pressed)
+        self._capture.add_controller(keys_controller)
+        self.add_suffix(self._capture)
+
+        self._refresh()
+
+    def _refresh(self) -> None:
+        accel = keymap.effective(self._action.id)
+        self._keys.set_label(keymap.spell(accel) if accel else "Unset")
+        self._reset.set_visible(accel != self._action.default)
+
+    def _on_toggled(self, button: Gtk.ToggleButton) -> None:
+        button.set_label("Press keys…" if button.get_active() else "Set Shortcut")
+        if button.get_active():
+            button.grab_focus()
+
+    def _on_key_pressed(self, _controller, keyval, _keycode, state) -> bool:
+        if not self._capture.get_active():
+            return False
+        if keyval == Gdk.KEY_Escape:
+            self._capture.set_active(False)
+            return True
+        mask = Gtk.accelerator_get_default_mod_mask()
+        if keyval == Gdk.KEY_BackSpace and not (state & mask):
+            self._apply("")
+            self._capture.set_active(False)
+            return True
+        # A bare modifier key-press (Ctrl on its own, etc.) isn't a
+        # complete accelerator yet — keep listening.
+        if keyval in _MODIFIER_KEYVALS:
+            return True
+        if not Gtk.accelerator_valid(keyval, state & mask):
+            feedback.toast(self, "That key can't be used in a shortcut")
+            return True
+        accelerator = Gtk.accelerator_name(keyval, state & mask)
+        self._capture.set_active(False)
+        if keymap.is_reserved(accelerator):
+            feedback.toast(
+                self,
+                f"{keymap.spell(accelerator)} is reserved by the text "
+                "editor and can't be reassigned",
+            )
+            return True
+        other = keymap.conflict(self._action.id, accelerator)
+        if other is not None:
+            feedback.toast(
+                self,
+                f"{keymap.spell(accelerator)} is already used by "
+                f"“{other.label}”",
+            )
+            return True
+        self._apply(accelerator)
+        return True
+
+    def _apply(self, accelerator: str) -> None:
+        keymap_overrides = dict(store.settings.keymap)
+        if accelerator == self._action.default:
+            keymap_overrides.pop(self._action.id, None)
+        else:
+            keymap_overrides[self._action.id] = accelerator
+        store.update(keymap=keymap_overrides)
+        self._refresh()
+
+
+_MODIFIER_KEYVALS = {
+    Gdk.KEY_Control_L, Gdk.KEY_Control_R,
+    Gdk.KEY_Shift_L, Gdk.KEY_Shift_R,
+    Gdk.KEY_Alt_L, Gdk.KEY_Alt_R,
+    Gdk.KEY_Super_L, Gdk.KEY_Super_R,
+    Gdk.KEY_Meta_L, Gdk.KEY_Meta_R,
+}
 
 
 def about_dialog() -> Adw.AboutDialog:

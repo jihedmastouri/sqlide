@@ -28,6 +28,7 @@ from sqlide.backend import settings as app_settings
 from sqlide.backend.workspaces import Workspace, WorkspaceStore
 from sqlide.frontend import identity
 from sqlide.frontend.help import help_dialog
+from sqlide.frontend import keymap
 from sqlide.frontend.launcher import WorkspaceLauncher
 from sqlide.frontend.preferences import PreferencesDialog, about_dialog
 from sqlide.frontend.shortcuts import shortcuts_dialog
@@ -81,26 +82,22 @@ class SqlideApplication(Adw.Application):
         self._apply_settings(app_settings.store.settings)
         app_settings.store.subscribe(self._apply_settings)
 
-        for name, callback, accels in (
-            ("preferences", self._show_preferences, ["<primary>comma"]),
-            ("shortcuts", self._show_shortcuts, ["<primary>question"]),
-            ("help", self._show_help, ["F1"]),
-            ("about", self._show_about, []),
-            ("show-launcher", lambda *_: self.show_launcher(), []),
+        for name, callback in (
+            ("preferences", self._show_preferences),
+            ("shortcuts", self._show_shortcuts),
+            ("help", self._show_help),
+            ("about", self._show_about),
+            ("show-launcher", lambda *_: self.show_launcher()),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", callback)
             self.add_action(action)
-            if accels:
-                self.set_accels_for_action(f"app.{name}", accels)
-        # GTK provides window.close itself; it just has no binding.
-        self.set_accels_for_action("window.close", ["<primary>w"])
-        # Tabs of a workspace window (no-ops in the launcher, which
-        # defines neither action).
-        self.set_accels_for_action("win.close-tab", ["<primary>F4"])
-        self.set_accels_for_action(
-            "win.close-all-tabs", ["<primary><shift>w"]
-        )
+        # Every accelerator — these actions, window.close, and every
+        # win.* action a workspace window defines — comes from the
+        # keymap registry, kept live so a shortcut edited in
+        # Preferences takes effect without a restart.
+        keymap.apply_app_accels(self)
+        app_settings.store.subscribe(lambda _s: keymap.apply_app_accels(self))
 
     def _apply_settings(self, settings: app_settings.Settings) -> None:
         Adw.StyleManager.get_default().set_color_scheme(

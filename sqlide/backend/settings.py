@@ -27,6 +27,12 @@ Settings:
   launch lands in the workspace you were last in rather than on a
   picker. Empty (or naming a workspace that no longer exists) falls
   back to the first workspace on file.
+- keymap: user-edited keyboard shortcuts, action id -> accelerator
+  string (Gtk.accelerator_parse() syntax; "" means "no binding"). Only
+  actions the user rebound appear here — everything else falls back to
+  its built-in default. See frontend/keymap.py for the registry of
+  actions and defaults, and the reserved keys that can never be
+  assigned (the text editor's own bindings).
 """
 
 from __future__ import annotations
@@ -58,6 +64,7 @@ class Settings:
     lsp_defaults: dict[str, str] = field(default_factory=dict)
     mcp_defaults: dict[str, str] = field(default_factory=dict)
     last_workspace: str = ""
+    keymap: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict) -> Settings:
@@ -83,6 +90,10 @@ class Settings:
                 for k, v in (data.get("mcp_defaults") or {}).items()
             },
             last_workspace=str(data.get("last_workspace") or ""),
+            keymap={
+                str(k): str(v)
+                for k, v in (data.get("keymap") or {}).items()
+            },
         )
 
 

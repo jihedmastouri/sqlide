@@ -52,8 +52,12 @@ def main_menu_button(with_history: bool = False) -> Gtk.MenuButton:
     menu = Gio.Menu()
     if with_history:
         tabs = Gio.Menu()
+        tabs.append("Split View", "win.split-view")
         tabs.append("Close All Tabs", "win.close-all-tabs")
         menu.append_section(None, tabs)
+        connections = Gio.Menu()
+        connections.append("Refresh Schemas", "win.refresh-schema")
+        menu.append_section(None, connections)
         transfer = Gio.Menu()
         transfer.append("Export Workspace…", "win.export-workspace")
         transfer.append("Export Connections…", "win.export-connections")
@@ -72,9 +76,51 @@ def main_menu_button(with_history: bool = False) -> Gtk.MenuButton:
     return button
 
 
+def sidebar_menu_button(with_history: bool = False) -> Gtk.MenuButton:
+    """Combined sidebar button: opening/creating workspaces plus the
+    application-level menu that used to live in the content header
+    (Preferences, Keyboard Shortcuts, Help, About, and — on a main
+    window — Query History, tab bulk actions and the XML transfer
+    items). The sidebar is the one control that is always on screen,
+    so it is the natural home for both."""
+    menu = Gio.Menu()
+    workspaces = Gio.Menu()
+    workspaces.append("Workspaces…", "app.show-launcher")
+    menu.append_section(None, workspaces)
+    if with_history:
+        tabs = Gio.Menu()
+        tabs.append("Split View", "win.split-view")
+        tabs.append("Close All Tabs", "win.close-all-tabs")
+        menu.append_section(None, tabs)
+        connections = Gio.Menu()
+        connections.append("Refresh Schemas", "win.refresh-schema")
+        menu.append_section(None, connections)
+        transfer = Gio.Menu()
+        transfer.append("Export Workspace…", "win.export-workspace")
+        transfer.append("Export Connections…", "win.export-connections")
+        transfer.append("Import Connections…", "win.import-connections")
+        menu.append_section(None, transfer)
+    menu.append("Preferences", "app.preferences")
+    if with_history:
+        menu.append("Query History", "win.history")
+    menu.append("Keyboard Shortcuts", "app.shortcuts")
+    menu.append("Help", "app.help")
+    menu.append("About sqlide", "app.about")
+    button = Gtk.MenuButton(
+        icon_name="open-menu-symbolic", menu_model=menu
+    )
+    describe(button, "Workspaces and settings")
+    return button
+
+
 def open_workspace_from(source: Gtk.Window, workspace) -> None:
     """Open `workspace` and hand it the foreground, closing `source`
     (the home page, or the workspace launcher).
+
+    A workspace with no connections yet is useless once opened, so
+    this is also the one gate that enforces "add a connection first":
+    it blocks here, before the main window ever appears, rather than
+    inside it.
 
     The order matters. Closing `source` first gives focus back to
     whatever was behind it, and the workspace window — mapped a moment
@@ -83,6 +129,10 @@ def open_workspace_from(source: Gtk.Window, workspace) -> None:
     it, wait until it is on screen, then close `source` and present it
     once more, this time as the only window of the app that wants
     attention."""
+    if not workspace.connections:
+        _require_connection(source, workspace)
+        return
+
     window = source.get_application().open_workspace(workspace)
 
     def foreground() -> bool:
@@ -100,6 +150,21 @@ def open_workspace_from(source: Gtk.Window, workspace) -> None:
         GLib.idle_add(foreground)
 
     handler = window.connect("map", mapped)
+
+
+def _require_connection(source: Gtk.Window, workspace) -> None:
+    """A workspace can't be opened empty: put up the connection dialog
+    and only proceed once one is actually saved. Cancelling leaves
+    `source` (welcome page or launcher) on screen with the workspace
+    still there, unopened, to try again."""
+    from sqlide.frontend.connection_dialog import ConnectionDialog
+
+    def on_save(profile) -> None:
+        workspace.add_connection(profile)
+        source.get_application().workspace_store.save(workspace)
+        open_workspace_from(source, workspace)
+
+    ConnectionDialog(on_save=on_save).present(source)
 
 
 def run_async(

@@ -11,6 +11,12 @@ Session-only: tab_state() returns None. The last-used form values
 (bind host, row limit, query tool, auth mode) are remembered in
 settings so repeat instances don't need re-configuring; the bearer
 token itself is never persisted.
+
+McpServerWindow hosts the tab in its own top-level window rather than
+a workspace tab: a running server is a background process the user
+wants to keep an eye on independent of whatever tab layout they're
+working in, and a separate window makes that visible (and keeps it
+alive/closable) without competing for TabView space.
 """
 
 from __future__ import annotations
@@ -416,3 +422,56 @@ class McpServerTab(Gtk.Box):
             Path(file.get_path()).write_text(text)
         except OSError as exc:
             self._show_error(f"Could not save: {exc}")
+
+
+class McpServerWindow(Adw.Window):
+    def __init__(
+        self,
+        workspace_name: str,
+        connections: list[ConnectionProfile],
+        show_error: Callable[[str], None],
+        initial_profile: ConnectionProfile | None = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.set_title("MCP Server")
+        self.set_default_size(480, 560)
+
+        self.tab = McpServerTab(
+            workspace_name, connections, show_error, initial_profile
+        )
+
+        header = Adw.HeaderBar()
+        toolbar_view = Adw.ToolbarView()
+        toolbar_view.add_top_bar(header)
+        toolbar_view.set_content(self.tab)
+        self.set_content(toolbar_view)
+
+        self.connect("close-request", self._on_close_request)
+        self._close_confirmed = False
+
+    def _on_close_request(self, *_args) -> bool:
+        if self._close_confirmed or not self.tab.running:
+            return False
+        dialog = Adw.AlertDialog(
+            heading="MCP Server Running",
+            body="This server is still running. Close the window "
+            "anyway and stop it?",
+        )
+        dialog.add_response("cancel", "Keep Open")
+        dialog.add_response("stop", "Stop and Close")
+        dialog.set_response_appearance(
+            "stop", Adw.ResponseAppearance.DESTRUCTIVE
+        )
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def respond(_dialog, response: str) -> None:
+            if response == "stop":
+                self.tab.stop_instance()
+                self._close_confirmed = True
+                self.close()
+
+        dialog.connect("response", respond)
+        dialog.present(self)
+        return True

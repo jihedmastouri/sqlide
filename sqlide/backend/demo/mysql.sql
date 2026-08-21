@@ -64,3 +64,19 @@ INSERT INTO orders (customer_id, item, amount) VALUES
     (2, 'Enigma replica', 300.00),
     (3, 'COBOL manual', 25.00),
     (3, 'Compiler license', 199.99);
+
+-- 502 rows on purpose: one more than a single page (PAGE_SIZE in
+-- frontend/data_grid.py), so opening this table exercises paging and
+-- scroll-to-load-more without any setup beyond the demo button.
+CREATE TABLE events (
+    id INT PRIMARY KEY,
+    label VARCHAR(255) NOT NULL
+);
+
+INSERT INTO events (id, label)
+WITH RECURSIVE seq (n) AS (
+    SELECT 1
+    UNION ALL
+    SELECT n + 1 FROM seq WHERE n < 502
+)
+SELECT n, CONCAT('event ', n) FROM seq;

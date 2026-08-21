@@ -59,29 +59,26 @@ def _free_database_name(base: str, existing: list[str]) -> str:
     return f"{base}_{n}"
 
 
-class ConnectionDialog(Adw.Dialog):
+class ConnectionForm:
+    """The connection fields (kind, identity, credentials, test/demo
+    buttons) as a standalone `Adw.PreferencesPage` builder, shared
+    between `ConnectionDialog` and step 2 of the welcome page. Neither
+    host gets a Save/Cancel bar of its own here — that stays with
+    whoever presents the page, since a dialog and a wizard step want
+    different chrome around the same fields.
+    """
+
     def __init__(
         self,
-        on_save: Callable[[ConnectionProfile], None],
+        toast: Callable[[str], None],
         profile: ConnectionProfile | None = None,
+        primary_action: tuple[str, Callable[[], None]] | None = None,
     ) -> None:
-        super().__init__(
-            title="Edit Connection" if profile is not None else "New Connection",
-            content_width=460,
-            content_height=600,
-        )
-        self._on_save = on_save
-
-        header = Adw.HeaderBar()
-        header.set_show_start_title_buttons(False)
-        header.set_show_end_title_buttons(False)
-        cancel = Gtk.Button(label="Cancel")
-        cancel.connect("clicked", lambda *_: self.close())
-        save = Gtk.Button(label="Save")
-        save.add_css_class("suggested-action")
-        save.connect("clicked", self._save)
-        header.pack_start(cancel)
-        header.pack_end(save)
+        """`primary_action`, if given, is (label, callback) for a
+        button that sits next to Test connection — the welcome page's
+        "Connect" has nowhere else to live, since step 2 has no dialog
+        header of its own to put a Save button in."""
+        self._toast = toast
 
         self._name = Adw.EntryRow(title="Name")
         self._kind = Adw.ComboRow(
@@ -113,7 +110,7 @@ class ConnectionDialog(Adw.Dialog):
             icon_name="window-close-symbolic", valign=Gtk.Align.CENTER
         )
         dismiss.add_css_class("flat")
-        dismiss.set_tooltip_text("Dismiss this suggestion")
+        describe(dismiss, "Dismiss this suggestion")
         dismiss.connect("clicked", self._dismiss_suggestion)
         self._suggestion.add_suffix(accept)
         self._suggestion.add_suffix(dismiss)
@@ -224,36 +221,45 @@ class ConnectionDialog(Adw.Dialog):
         ):
             self._jdbc_group.add(row)
 
-        self._test_button = Gtk.Button(
-            label="Test connection", halign=Gtk.Align.CENTER
-        )
+        self._test_button = Gtk.Button(label="Test connection")
         self._test_button.add_css_class("pill")
         self._test_button.connect("clicked", self._test)
+        test_row = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=12,
+            halign=Gtk.Align.CENTER,
+        )
+        test_row.append(self._test_button)
+        if primary_action is not None:
+            label, callback = primary_action
+            connect_button = Gtk.Button(label=label)
+            connect_button.add_css_class("pill")
+            connect_button.add_css_class("suggested-action")
+            connect_button.connect("clicked", lambda *_: callback())
+            test_row.append(connect_button)
         test_group = Adw.PreferencesGroup()
-        test_group.add(self._test_button)
+        test_group.add(test_row)
 
         # Nothing to connect to yet is the commonest reason this dialog
         # is open and gets closed again. The demo builds a small
         # database of the same shape on any engine that has a dialect
         # file for it, and points the fields at what it built.
         self._demo_button = Gtk.Button(
-            label="Create demo database", halign=Gtk.Align.CENTER
+            label="Create demo database", valign=Gtk.Align.CENTER
         )
-        self._demo_button.add_css_class("pill")
+        self._demo_button.add_css_class("flat")
         self._demo_button.connect("clicked", self._create_demo)
         self._demo_group = Adw.PreferencesGroup(
             title="Nothing to connect to?",
-            description=(
-                "Builds a small sample database — customers, orders, a "
-                "view, an index, a trigger and a foreign key — and fills "
-                "this dialog in with it. SQLite gets a new file under "
-                "~/.local/share/sqlide; the servers get a new database "
-                "called demo."
-            ),
+            description="Fills this form in with a small sample database.",
         )
-        self._demo_group.add(self._demo_button)
+        self._demo_group.set_header_suffix(self._demo_button)
+        # A plain separator, so the demo offer reads as a footnote below
+        # the form rather than another section of it.
+        self._demo_separator = Adw.PreferencesGroup()
+        self._demo_separator.add(Gtk.Separator())
 
-        page = Adw.PreferencesPage()
+        self.page = Adw.PreferencesPage()
         for group in (
             general,
             identity_group,
@@ -263,19 +269,18 @@ class ConnectionDialog(Adw.Dialog):
             self._ssh_group,
             self._jdbc_group,
             test_group,
+            self._demo_separator,
             self._demo_group,
         ):
-            page.add(group)
+            self.page.add(group)
 
-        view = Adw.ToolbarView()
-        view.add_top_bar(header)
-        view.set_content(page)
-        self._toasts = Adw.ToastOverlay(child=view)
-        self.set_child(self._toasts)
         if profile is not None:
             self._prefill(profile)
         self._on_kind_changed()
         self._refresh_suggestion()
+
+    def grab_focus(self) -> None:
+        self._name.grab_focus()
 
     def _prefill(self, profile: ConnectionProfile) -> None:
         self._name.set_text(profile.name)
@@ -354,6 +359,7 @@ class ConnectionDialog(Adw.Dialog):
         # JDBC has no demo: without knowing the driver's dialect there
         # is no DDL that can be trusted to work.
         self._demo_group.set_visible(kind in demo.KINDS)
+        self._demo_separator.set_visible(kind in demo.KINDS)
 
     def _file_entry_row(self, title: str) -> Adw.EntryRow:
         """An EntryRow holding a file path, with a browse button."""
@@ -375,7 +381,7 @@ class ConnectionDialog(Adw.Dialog):
         dialog = Gtk.FileDialog(
             title="New SQLite database", initial_name="database.db"
         )
-        root = self.get_root()
+        root = self.page.get_root()
         parent = root if isinstance(root, Gtk.Window) else None
         dialog.save(parent, None, self._create_finished)
 
@@ -392,14 +398,12 @@ class ConnectionDialog(Adw.Dialog):
             self._file.set_text(path)
             if not self._name.get_text().strip():
                 self._name.set_text(os.path.basename(path))
-            self._toasts.add_toast(
-                Adw.Toast(title=f"Created {os.path.basename(path)}")
-            )
+            self._toast(f"Created {os.path.basename(path)}")
 
         run_async(
             lambda: sqlite.create_database_file(path),
             done,
-            lambda exc: self._toasts.add_toast(Adw.Toast(title=str(exc))),
+            lambda exc: self._toast(str(exc)),
         )
 
     # Demo database
@@ -424,7 +428,7 @@ class ConnectionDialog(Adw.Dialog):
             self._file.set_text(created)
             if not self._name.get_text().strip():
                 self._name.set_text(os.path.basename(created))
-            self._toasts.add_toast(Adw.Toast(title=f"Created {created}"))
+            self._toast(f"Created {created}")
 
         self._run_demo(lambda: demo.create("sqlite"), done)
 
@@ -432,7 +436,7 @@ class ConnectionDialog(Adw.Dialog):
         """CREATE DATABASE demo on the server in the fields, then fill
         its schema in through a second connection to it (neither
         engine can switch database mid-session)."""
-        profile = self._build_profile()
+        profile = self.build_profile()
 
         def connect_to(database: str):
             # schema="" on purpose: the demo builds into the default
@@ -471,9 +475,7 @@ class ConnectionDialog(Adw.Dialog):
             self._schema.set_text("")
             if not self._name.get_text().strip():
                 self._name.set_text(created)
-            self._toasts.add_toast(
-                Adw.Toast(title=f"Demo database {created} created")
-            )
+            self._toast(f"Demo database {created} created")
 
         self._run_demo(work, done)
 
@@ -488,7 +490,7 @@ class ConnectionDialog(Adw.Dialog):
 
         def failed(exc: Exception) -> None:
             self._demo_button.set_sensitive(True)
-            self._toasts.add_toast(Adw.Toast(title=str(exc)))
+            self._toast(str(exc))
 
         run_async(work, finished, failed)
 
@@ -496,7 +498,7 @@ class ConnectionDialog(Adw.Dialog):
         self, row: Adw.EntryRow, title: str = "Select file"
     ) -> None:
         dialog = Gtk.FileDialog(title=title)
-        root = self.get_root()
+        root = self.page.get_root()
         parent = root if isinstance(root, Gtk.Window) else None
         dialog.open(parent, None, self._browse_finished, row)
 
@@ -508,7 +510,7 @@ class ConnectionDialog(Adw.Dialog):
         if file is not None:
             row.set_text(file.get_path() or "")
 
-    def _build_profile(self) -> ConnectionProfile:
+    def build_profile(self) -> ConnectionProfile:
         kind = self._kind_id()
         try:
             port = int(self._port.get_text().strip())
@@ -559,7 +561,7 @@ class ConnectionDialog(Adw.Dialog):
         )
 
     def _test(self, *_args) -> None:
-        profile = self._build_profile()
+        profile = self.build_profile()
         self._test_button.set_sensitive(False)
 
         def work():
@@ -575,14 +577,51 @@ class ConnectionDialog(Adw.Dialog):
 
         def done(_result):
             self._test_button.set_sensitive(True)
-            self._toasts.add_toast(Adw.Toast(title="Connection OK"))
+            self._toast("Connection OK")
 
         def failed(exc):
             self._test_button.set_sensitive(True)
-            self._toasts.add_toast(Adw.Toast(title=str(exc)))
+            self._toast(str(exc))
 
         run_async(work, done, failed)
 
+
+class ConnectionDialog(Adw.Dialog):
+    def __init__(
+        self,
+        on_save: Callable[[ConnectionProfile], None],
+        profile: ConnectionProfile | None = None,
+    ) -> None:
+        super().__init__(
+            title="Edit Connection" if profile is not None else "New Connection",
+            content_width=460,
+            content_height=600,
+        )
+        self._on_save = on_save
+
+        header = Adw.HeaderBar()
+        header.set_show_start_title_buttons(False)
+        header.set_show_end_title_buttons(False)
+        cancel = Gtk.Button(label="Cancel")
+        cancel.connect("clicked", lambda *_: self.close())
+        save = Gtk.Button(label="Save")
+        save.add_css_class("suggested-action")
+        save.connect("clicked", self._save)
+        header.pack_start(cancel)
+        header.pack_end(save)
+
+        self._toasts = Adw.ToastOverlay()
+        self._form = ConnectionForm(
+            toast=lambda message: self._toasts.add_toast(Adw.Toast(title=message)),
+            profile=profile,
+        )
+
+        view = Adw.ToolbarView()
+        view.add_top_bar(header)
+        view.set_content(self._form.page)
+        self._toasts.set_child(view)
+        self.set_child(self._toasts)
+
     def _save(self, *_args) -> None:
-        self._on_save(self._build_profile())
+        self._on_save(self._form.build_profile())
         self.close()

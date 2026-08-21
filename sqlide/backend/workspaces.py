@@ -172,6 +172,18 @@ class WorkspaceStore:
         path = self.directory / f"{workspace.id}.json"
         path.write_text(json.dumps(workspace.to_dict(), indent=2) + "\n")
 
+    def default_name(self) -> str:
+        """Default Workspace for the very first one; after that
+        Workspace 2, Workspace 3, etc., skipping names already taken
+        so it never collides with an import or a rename."""
+        if not self.workspaces:
+            return "Default Workspace"
+        taken = {w.name for w in self.workspaces}
+        n = 2
+        while f"Workspace {n}" in taken:
+            n += 1
+        return f"Workspace {n}"
+
     def create(self, name: str, color: str = identity.NONE) -> Workspace:
         workspace = Workspace(name=name, color=identity.normalize_color(color))
         self.workspaces.append(workspace)

@@ -1,8 +1,8 @@
-"""Main window of one workspace: collapsible sidebar + tabbed content.
+"""Main window of one workspace: fixed sidebar + tabbed content.
 
 Opened by the application for a chosen workspace. The sidebar lists
 only this workspace's connections; other workspaces are reached
-through the launcher (Workspaces button). This window owns its cache
+through its menu button (Workspaces…). This window owns its cache
 of open connectors. ensure_connector() is the blocking accessor handed
 to child widgets; they must only call it from run_async worker threads.
 
@@ -11,14 +11,16 @@ saved back to the workspace file whenever they change and when the
 window closes (which also captures query-console SQL and the selected
 tab). When no tabs are open the content area shows a status message.
 
-Layout: a full-width header bar spans the whole window, with the
-workspace's identity stripe under it; below that the left
-OverlaySplitView (connections sidebar) wraps the content area, and
-inside that a right OverlaySplitView (the side panel, hidden by
-default) wraps the tab area. A persistent status bar closes the window
-at the bottom: the active tab's connection, its state, running jobs and
-transient messages, refreshed on every tab switch, run and connection
-change so it can never show a connection that is no longer open.
+Layout: the connections sidebar is the outermost OverlaySplitView and
+runs the full window height with its own header bar (add connection,
+Workspaces/settings menu); it is not collapsible or closable. To its
+right, the content area has its own header bar and the workspace's
+identity stripe under it, then a right OverlaySplitView (the side
+panel, hidden by default) wraps the tab area. A persistent status bar
+closes the content area at the bottom: the active tab's connection,
+its state, running jobs and transient messages, refreshed on every tab
+switch, run and connection change so it can never show a connection
+that is no longer open.
 The tab area holds one or more panes (each an Adw.TabBar over an
 Adw.TabView) side by side in nested Gtk.Paned splitters: the Split
 button moves the current tab into a new pane (two panes at most,
@@ -45,7 +47,7 @@ from typing import Callable
 
 from gi.repository import Adw, Gio, GLib, GObject, Gtk
 
-from sqlide.frontend.util import describe, main_menu_button, run_async
+from sqlide.frontend.util import describe, sidebar_menu_button, run_async
 
 from sqlide.backend import identity, schemas
 from sqlide.backend.connections import ConnectionProfile
@@ -59,7 +61,7 @@ from sqlide.frontend.data_grid import ResultGrid, TableTab
 from sqlide.frontend.definition_tab import DefinitionTab, FunctionTab
 from sqlide.frontend import identity as identity_ui
 from sqlide.frontend.drop_dialog import present_drop_dialog
-from sqlide.frontend.mcp_tab import McpServerTab
+from sqlide.frontend.mcp_tab import McpServerWindow
 from sqlide.frontend.query_builder import QueryBuilderTab
 from sqlide.frontend.query_console import QueryConsole
 from sqlide.frontend.relation_graph import RelationGraphTab
@@ -148,29 +150,22 @@ class MainWindow(Adw.ApplicationWindow):
             [p.name for p in workspace.connections]
         )
 
-        self._split = Adw.OverlaySplitView()
+        self._split = Adw.OverlaySplitView(show_sidebar=True)
         self._split.set_min_sidebar_width(220)
+        self._split.set_enable_hide_gesture(False)
+        self._split.set_enable_show_gesture(False)
 
-        # Sidebar. Its header sits below the full-width top banner, so
-        # it must not repeat the window controls.
+        # Sidebar. It is not collapsible and spans the full window
+        # height, with its own header at the very top — the window's
+        # window-controls live here, not on a banner above it.
         sidebar_header = Adw.HeaderBar()
-        sidebar_header.set_show_start_title_buttons(False)
         sidebar_header.set_show_end_title_buttons(False)
         sidebar_header.set_title_widget(Gtk.Label(label="Connections"))
         add_button = Gtk.Button(icon_name="list-add-symbolic")
         describe(add_button, "Add connection")
         add_button.connect("clicked", self._add_connection)
         sidebar_header.pack_start(add_button)
-        refresh_button = Gtk.Button(icon_name="view-refresh-symbolic")
-        describe(refresh_button, "Refresh every connection's schema")
-        refresh_button.connect("clicked", lambda *_: self._sidebar.reload_all())
-        sidebar_header.pack_start(refresh_button)
-        workspaces_button = Gtk.Button(icon_name="view-grid-symbolic")
-        describe(workspaces_button, "Workspaces")
-        workspaces_button.connect(
-            "clicked", lambda *_: self.get_application().show_launcher()
-        )
-        sidebar_header.pack_end(workspaces_button)
+        sidebar_header.pack_end(sidebar_menu_button(with_history=True))
 
         self._sidebar = Sidebar(
             ensure_connector=self.ensure_connector,
@@ -212,6 +207,7 @@ class MainWindow(Adw.ApplicationWindow):
         # Content: one or more tab panes (each with its own tab bar) in
         # nested Paned splitters, or a placeholder when nothing is open.
         self._panes: list[_TabPane] = []
+        self._mcp_windows: list[McpServerWindow] = []
         self._panes_root = Gtk.Box(hexpand=True, vexpand=True)
         self._active_pane = self._add_pane()
 
@@ -227,16 +223,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._stack.add_named(self._panes_root, "tabs")
 
         content_header = Adw.HeaderBar()
-        sidebar_toggle = Gtk.ToggleButton(icon_name="sidebar-show-symbolic")
-        describe(sidebar_toggle, "Toggle sidebar")
-        self._split.bind_property(
-            "show-sidebar",
-            sidebar_toggle,
-            "active",
-            GObject.BindingFlags.SYNC_CREATE
-            | GObject.BindingFlags.BIDIRECTIONAL,
-        )
-        content_header.pack_start(sidebar_toggle)
+        content_header.set_show_start_title_buttons(False)
         # One "New" menu instead of a row of icons nobody can decode: a
         # pen, a cog and a network arrow said nothing about query
         # consoles, CLI clients and MCP servers. Words do, and the
@@ -257,13 +244,6 @@ class MainWindow(Adw.ApplicationWindow):
             "clicked", lambda *_: self.new_query(self._default_query_profile())
         )
         content_header.pack_start(new_button)
-
-        content_header.pack_end(main_menu_button(with_history=True))
-        # Layout, not creation: it belongs with the tab controls.
-        split_button = Gtk.Button(icon_name="view-dual-symbolic")
-        describe(split_button, "Split: move current tab to a new pane")
-        split_button.connect("clicked", self._split_current_tab)
-        content_header.pack_end(split_button)
 
         self._tab_button = Adw.TabButton(view=self._active_pane.view)
         self._tab_button.set_tooltip_text("View open tabs")
@@ -295,10 +275,9 @@ class MainWindow(Adw.ApplicationWindow):
             sidebar_position=Gtk.PackType.END, show_sidebar=False
         )
         self._history_split.set_min_sidebar_width(260)
+        self._history_split.set_max_sidebar_width(600)
         self._history_split.set_sidebar(self._side_panel)
         self._history_split.set_content(self._stack)
-
-        self._split.set_content(self._history_split)
 
         history_toggle = Gtk.ToggleButton(
             icon_name="sidebar-show-right-symbolic"
@@ -313,24 +292,25 @@ class MainWindow(Adw.ApplicationWindow):
         )
         content_header.pack_end(history_toggle)
 
-        # Collapse the sidebars into overlays on narrow windows.
+        # Collapse the history side panel into an overlay on narrow
+        # windows; the connections sidebar stays put at any width.
         breakpoint = Adw.Breakpoint.new(
             Adw.BreakpointCondition.parse("max-width: 860sp")
         )
-        breakpoint.add_setter(self._split, "collapsed", True)
         breakpoint.add_setter(self._history_split, "collapsed", True)
         self.add_breakpoint(breakpoint)
 
-        # The header bar spans the full window width, above both the
-        # sidebar and the content area; the workspace's identity stripe
-        # sits directly under it, full width. The window title carries
-        # the workspace name, so the stripe is never the only cue.
+        # The content header and the workspace's identity stripe span
+        # only the content area, to the right of the sidebar — the
+        # sidebar keeps its own header and runs the full window height.
+        # The window title carries the workspace name, so the stripe is
+        # never the only cue.
         top_view = Adw.ToolbarView()
         top_view.add_top_bar(content_header)
         self._stripe = identity_ui.stripe(workspace.color)
         top_view.add_top_bar(self._stripe)
         self._refresh_workspace_identity()
-        top_view.set_content(self._split)
+        top_view.set_content(self._history_split)
 
         # Persistent status bar: where the active tab's connection,
         # state and messages live, instead of a widget per tab.
@@ -341,13 +321,15 @@ class MainWindow(Adw.ApplicationWindow):
         self._transaction_since: dict[str, float] = {}
         GLib.timeout_add_seconds(20, self._status_tick)
 
+        self._split.set_content(top_view)
+
         # Tab overview: zoomed-out grid of tab thumbnails. It must wrap
         # the widget tree that contains the TabView so open tabs stay
         # visible (scaled down) while the overview is shown.
         self._overview = Adw.TabOverview(
             view=self._active_pane.view,
             enable_new_tab=True,
-            child=top_view,
+            child=self._split,
         )
         self._overview.connect("create-tab", self._create_tab)
 
@@ -368,6 +350,7 @@ class MainWindow(Adw.ApplicationWindow):
             ("new-builder", self._new_query_builder),
             ("new-mcp", lambda *_: self.open_mcp_server()),
             ("refresh-schema", lambda *_: self._sidebar.reload_all()),
+            ("split-view", self._split_current_tab),
             ("close-tab", self._close_menu_tab),
             ("close-other-tabs", self._close_other_tabs),
             ("close-tabs-right", self._close_tabs_right),
@@ -796,10 +779,9 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_close_page(self, view, page: Adw.TabPage) -> bool:
         """A tab is being closed. A query console whose connection has
-        an open transaction, or a running MCP server tab, is held back
-        behind a confirmation dialog; forcing the close rolls the
-        transaction back / stops the server. Either way the closed
-        tab's entries leave the side panel's history scopes
+        an open transaction is held back behind a confirmation dialog;
+        forcing the close rolls the transaction back. Either way the
+        closed tab's entries leave the side panel's history scopes
         (panel_closed) but stay in the workspace-wide History tab."""
         child = page.get_child()
         if isinstance(child, QueryConsole):
@@ -807,37 +789,8 @@ class MainWindow(Adw.ApplicationWindow):
             if name:
                 self._confirm_console_close(view, page, name)
                 return True  # close_page_finish decides later
-        if isinstance(child, McpServerTab) and child.running:
-            self._confirm_mcp_close(view, page, child)
-            return True  # close_page_finish decides later
         self._mark_panel_closed(page)
         return False  # let the default handler close the page
-
-    def _confirm_mcp_close(
-        self, view: Adw.TabView, page: Adw.TabPage, tab: McpServerTab
-    ) -> None:
-        dialog = Adw.AlertDialog(
-            heading="MCP Server Running",
-            body="This server is still running. Close the tab anyway "
-            "and stop it?",
-        )
-        dialog.add_response("cancel", "Keep Open")
-        dialog.add_response("stop", "Stop and Close")
-        dialog.set_response_appearance(
-            "stop", Adw.ResponseAppearance.DESTRUCTIVE
-        )
-        dialog.set_default_response("cancel")
-        dialog.set_close_response("cancel")
-
-        def respond(_dialog, response: str) -> None:
-            force = response == "stop"
-            if force:
-                tab.stop_instance()
-                self._mark_panel_closed(page)
-            view.close_page_finish(page, force)
-
-        dialog.connect("response", respond)
-        dialog.present(self)
 
     def _confirm_console_close(
         self, view: Adw.TabView, page: Adw.TabPage, name: str
@@ -1094,15 +1047,6 @@ class MainWindow(Adw.ApplicationWindow):
         if not self._restoring:
             self._save_state()
 
-    def _running_mcp_tabs(self) -> list[McpServerTab]:
-        tabs = []
-        for pane in self._panes:
-            for i in range(pane.view.get_n_pages()):
-                child = pane.view.get_nth_page(i).get_child()
-                if isinstance(child, McpServerTab) and child.running:
-                    tabs.append(child)
-        return tabs
-
     def _on_close_request(self, *_args) -> bool:
         self._save_state()
         if self._close_confirmed:
@@ -1140,11 +1084,12 @@ class MainWindow(Adw.ApplicationWindow):
             return
 
         def finish() -> None:
-            # MCP instances die with their window: no separate
-            # confirmation (unlike per-tab close), just stop them now
-            # that the close is actually going through.
-            for tab in self._running_mcp_tabs():
-                tab.stop_instance()
+            # MCP server windows are transient children: stop any
+            # still running now that the close is actually going
+            # through, no separate per-window confirmation.
+            for window in list(self._mcp_windows):
+                window.tab.stop_instance()
+                window.destroy()
             self._close_confirmed = True
             self.close()
 
@@ -1467,19 +1412,24 @@ class MainWindow(Adw.ApplicationWindow):
         self, profile: ConnectionProfile | None = None
     ) -> None:
         # Not deduplicated: several instances (different ports, maybe
-        # different connection sets) can run side by side.
-        tab = McpServerTab(
+        # different connection sets) can run side by side. A separate
+        # window, not a tab: a running server is a background process
+        # worth keeping visible independent of the tab layout.
+        window = McpServerWindow(
             self.workspace.name,
             self.workspace.connections,
             self.show_error,
             initial_profile=profile,
+            transient_for=self,
+            application=self.get_application(),
         )
-        self._append_tab(
-            tab,
-            ("mcp", id(tab)),
-            "MCP server",
-            "Read-only MCP server instance",
+        self._mcp_windows.append(window)
+        window.connect(
+            "destroy",
+            lambda w: self._mcp_windows.remove(w)
+            if w in self._mcp_windows else None,
         )
+        window.present()
 
     def open_relation_graph(self, profile: ConnectionProfile) -> None:
         key = ("relations", profile.name)

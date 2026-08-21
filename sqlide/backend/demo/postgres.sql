@@ -92,3 +92,14 @@ INSERT INTO orders (customer_id, item, amount) VALUES
 -- does not collide.
 SELECT setval(pg_get_serial_sequence('customers', 'id'), 4);
 SELECT setval(pg_get_serial_sequence('orders', 'id'), 5);
+
+-- 502 rows on purpose: one more than a single page (PAGE_SIZE in
+-- frontend/data_grid.py), so opening this table exercises paging and
+-- scroll-to-load-more without any setup beyond the demo button.
+CREATE TABLE events (
+    id integer PRIMARY KEY,
+    label text NOT NULL
+);
+
+INSERT INTO events (id, label)
+SELECT n, 'event ' || n FROM generate_series(1, 502) AS n;

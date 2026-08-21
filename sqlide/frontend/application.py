@@ -86,6 +86,7 @@ class SqlideApplication(Adw.Application):
             ("shortcuts", self._show_shortcuts, ["<primary>question"]),
             ("help", self._show_help, ["F1"]),
             ("about", self._show_about, []),
+            ("show-launcher", lambda *_: self.show_launcher(), []),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", callback)

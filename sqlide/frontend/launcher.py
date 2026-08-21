@@ -48,6 +48,7 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
         self.set_default_size(400, 480)
 
         header = Adw.HeaderBar()
+        header.add_css_class("flat")
         header.set_title_widget(Gtk.Label(label="Workspaces"))
         new_button = Gtk.Button(icon_name="list-add-symbolic")
         describe(new_button, "New workspace")
@@ -81,8 +82,6 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
         empty = Adw.StatusPage(
             icon_name="folder-symbolic",
             title="No workspaces yet",
-            description="A workspace groups your connections and remembers "
-            "the tabs you had open.",
             child=create_button,
         )
 
@@ -133,10 +132,7 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
         return row
 
     def _edit_workspace(self, workspace: Workspace) -> None:
-        dialog = Adw.AlertDialog(
-            heading="Edit Workspace",
-            body="Connections and open tabs stay the same.",
-        )
+        dialog = Adw.AlertDialog(heading="Edit Workspace")
         name, color = self._identity_fields(workspace.name, workspace.color)
         dialog.set_extra_child(self._identity_group(name, color))
         dialog.add_response("cancel", "Cancel")
@@ -167,10 +163,7 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
         self._refresh()
 
     def _new_workspace(self) -> None:
-        dialog = Adw.AlertDialog(
-            heading="New Workspace",
-            body="Connections and open tabs are kept per workspace.",
-        )
+        dialog = Adw.AlertDialog(heading="New Workspace")
         name, color = self._identity_fields("", identity.NONE)
         dialog.set_extra_child(self._identity_group(name, color))
         dialog.add_response("cancel", "Cancel")
@@ -192,8 +185,9 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
     ) -> None:
         if response != "create":
             return
-        workspace = self.get_application().workspace_store.create(
-            name.get_text().strip() or "Workspace", color.get_color()
+        store = self.get_application().workspace_store
+        workspace = store.create(
+            name.get_text().strip() or store.default_name(), color.get_color()
         )
         self._open(workspace)
 
@@ -202,9 +196,7 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
         name: str, color: str
     ) -> tuple[Adw.EntryRow, identity_ui.ColorRow]:
         name_row = Adw.EntryRow(title="Name", text=name)
-        color_row = identity_ui.ColorRow(
-            subtitle="Tints this workspace's window and launcher row"
-        )
+        color_row = identity_ui.ColorRow(subtitle="Window colour")
         color_row.set_color(color)
         return name_row, color_row
 

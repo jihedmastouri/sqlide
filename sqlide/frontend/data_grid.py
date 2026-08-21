@@ -101,9 +101,12 @@ class ResultGrid(Gtk.ScrolledWindow):
         table_name: str | None = None,
         on_aggregate: AggregateCallback | None = None,
         on_header_sort: Callable[[list[tuple[str, bool]]], None] | None = None,
+        on_edge_reached: Callable[[Gtk.PositionType], None] | None = None,
     ) -> None:
         super().__init__(vexpand=True, hexpand=True)
         self.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        if on_edge_reached is not None:
+            self.connect("edge-reached", lambda _self, pos: on_edge_reached(pos))
         self._on_edit = on_edit
         self._aggregate_cb = on_aggregate
         # When set, the column-header menu grows a sort section: the
@@ -398,6 +401,12 @@ class ResultGrid(Gtk.ScrolledWindow):
         # An empty grid is a blank rectangle that teaches nothing; show
         # the state's own message and its fix instead.
         self.set_child(self._view if rows else self._empty_page())
+
+    def append_rows(self, rows: list[tuple]) -> None:
+        """Add more rows below the ones already shown (scrolled-to-bottom
+        paging), without disturbing selection, columns or edits."""
+        for row in rows:
+            self._store.append(RowItem(row))
 
     def set_sort_state(self, order: list[tuple[str, bool]]) -> None:
         """Show sort arrows matching (column name, descending) pairs,
@@ -1492,8 +1501,17 @@ class TableTab(Gtk.Box):
             table_name=table,
             on_aggregate=on_aggregate,
             on_header_sort=self._on_header_sort,
+            on_edge_reached=self._on_grid_edge_reached,
         )
         self.append(self._grid)
+        # Scrolling to the bottom of the current page fetches the next
+        # PAGE_SIZE rows and appends them, so browsing a big table reads
+        # as one continuous scroll instead of manual paging. _base_offset
+        # is where the loaded window starts (set by reload()); _loaded_rows
+        # is how many rows are shown past it (grown by _load_more()).
+        self._base_offset = 0
+        self._loaded_rows = 0
+        self._loading_more = False
 
         bar = Gtk.ActionBar()
         self._prev = Gtk.Button(icon_name="go-previous-symbolic")
@@ -1516,7 +1534,7 @@ class TableTab(Gtk.Box):
         self._sort_toggle = Gtk.ToggleButton(
             icon_name="view-sort-descending-symbolic"
         )
-        self._sort_toggle.set_tooltip_text("Sort rows")
+        describe(self._sort_toggle, "Sort rows")
         self._sort_toggle.connect("toggled", self._on_sort_toggled)
         self._edit_toggle = Gtk.ToggleButton(icon_name="document-edit-symbolic")
         describe(self._edit_toggle, "Unlock editing")
@@ -1603,6 +1621,9 @@ class TableTab(Gtk.Box):
 
     def reload(self) -> None:
         offset = self._offset
+        self._base_offset = offset
+        self._loaded_rows = 0
+        self._loading_more = False
         filters = self._filters
         order_by = self._order_by
         history_sql = self._describe_query(offset)
@@ -1657,6 +1678,7 @@ class TableTab(Gtk.Box):
                 self._edit_toggle.set_active(False)
             self._grid.set_unlocked(editable and self._edit_toggle.get_active())
             count = len(result)
+            self._loaded_rows = count
             page = f"{offset + 1}–{offset + count}" if count else "no rows"
             if filters:
                 page += " (filtered)"
@@ -1929,6 +1951,45 @@ class TableTab(Gtk.Box):
     def _on_next(self, *_args) -> None:
         self._offset += PAGE_SIZE
         self.reload()
+
+    def _on_grid_edge_reached(self, position: Gtk.PositionType) -> None:
+        if position == Gtk.PositionType.BOTTOM:
+            self._load_more()
+
+    def _load_more(self) -> None:
+        if self._loading_more or not self._next.get_sensitive():
+            return
+        self._loading_more = True
+        offset = self._base_offset + self._loaded_rows
+        filters = self._filters
+        order_by = self._order_by
+
+        def work():
+            connector = self._ensure(self.profile)
+            return connector.fetch_rows(
+                self.table, offset, PAGE_SIZE, filters=filters, order_by=order_by
+            )
+
+        def done(result):
+            self._loading_more = False
+            self._grid.append_rows(result.rows)
+            count = len(result)
+            self._loaded_rows += count
+            self._offset = offset
+            self._next.set_sensitive(count == PAGE_SIZE)
+            page = f"{self._base_offset + 1}–{self._base_offset + self._loaded_rows}"
+            if filters:
+                page += " (filtered)"
+            if order_by:
+                page += " (sorted)"
+            self._page_label.set_text(page)
+            self._row_range = page
+
+        def failed(exc):
+            self._loading_more = False
+            self._show_error(str(exc))
+
+        run_async(work, done, failed)
 
     # Editing
 

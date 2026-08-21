@@ -216,13 +216,7 @@ entry.cli-entry {
   padding: 2px 0;
 }
 
-/* First-run home page (frontend/welcome.py). The cards carry
-   libadwaita's .card for their background and corners; these rules
-   only give them room to breathe and settle the hero above them. */
-box.welcome-card {
-  padding: 16px;
-}
-
+/* First-run home page (frontend/welcome.py). */
 .welcome-icon {
   /* The app icon is a rounded square of its own, so it needs no frame
      — just the shadow that lifts it off the window's ground. */

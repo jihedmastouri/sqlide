@@ -55,12 +55,14 @@ database choice).
 
 from __future__ import annotations
 
+import os
+import tempfile
 import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
-from gi.repository import Adw, Gdk, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 from sqlide.backend import placeholders as sql_placeholders
 from sqlide.backend.connections import ConnectionProfile
@@ -212,6 +214,14 @@ class QueryConsole(Gtk.Box):
             "Save the editor to a file (the first save asks where)"
         )
         save_button.connect("clicked", self._save_file)
+        external_button = Gtk.Button(icon_name="text-editor-symbolic")
+        external_button.add_css_class("flat")
+        describe(
+            external_button,
+            "Open the editor's contents in the system text editor "
+            "(saves first)",
+        )
+        external_button.connect("clicked", self._open_in_text_editor)
 
         toolbar.append(self._run_button)
         toolbar.append(self._run_all_button)
@@ -223,6 +233,7 @@ class QueryConsole(Gtk.Box):
         toolbar.append(Gtk.Box(hexpand=True))
         toolbar.append(open_button)
         toolbar.append(save_button)
+        toolbar.append(external_button)
         toolbar.append(self._settings_button())
         self.append(self._tx_banner)
         self.append(toolbar)
@@ -815,6 +826,23 @@ class QueryConsole(Gtk.Box):
             return
         self._file_path = path
         self._set_status(f"Saved to {path}", error=False)
+
+    def _open_in_text_editor(self, *_args) -> None:
+        """Write the buffer to its file (or a scratch .sql file if it
+        has none yet) and hand that path to the desktop's default
+        text editor."""
+        path = self._file_path
+        if path is None:
+            fd, name = tempfile.mkstemp(suffix=".sql", prefix="sqlide-")
+            os.close(fd)
+            path = Path(name)
+        self._write_file(path)
+        try:
+            Gio.AppInfo.launch_default_for_uri(path.as_uri(), None)
+        except GLib.Error as exc:
+            self._set_status(
+                f"Could not open external editor: {exc}", error=True
+            )
 
     # Result panel
 

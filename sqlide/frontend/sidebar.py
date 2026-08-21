@@ -29,7 +29,10 @@ preselecting that connection, a "New ▸" submenu of the adapter's
 creatable kinds, Refresh (drops and reloads the subtree), Edit… (the
 connection dialog pre-filled, applied in place so open tabs keep
 working) and Remove… (confirmed, drops the profile from the
-workspace). Every droppable object row gets "Drop…". Context menus
+workspace). Every droppable object row gets "Drop…". The Indexes
+category also gets "View All…", opening every index on the connection
+— name, table and CREATE INDEX text — in one read-only tab, since an
+individual index row is browse-to-drop only. Context menus
 are built per popup
 because their items depend on the connection's capabilities. Hovering
 a table/view shows its DDL in a tooltip (fetched lazily, cached on the
@@ -153,6 +156,7 @@ class Sidebar(Gtk.ScrolledWindow):
         on_open_definition: Callable[[ConnectionProfile, str], None],
         on_open_function: Callable[[ConnectionProfile, str], None],
         on_relation_graph: Callable[[ConnectionProfile], None],
+        on_view_indexes: Callable[[ConnectionProfile], None],
         on_query_builder: Callable[..., None],  # (profile, table="")
         on_drop_object: Callable[
             [ConnectionProfile, str, str, str], None
@@ -173,6 +177,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_open_definition = on_open_definition
         self._on_open_function = on_open_function
         self._on_relation_graph = on_relation_graph
+        self._on_view_indexes = on_view_indexes
         self._on_query_builder = on_query_builder
         self._on_drop_object = on_drop_object
         self._on_new_object = on_new_object
@@ -233,6 +238,7 @@ class Sidebar(Gtk.ScrolledWindow):
             ("definition", self._menu_definition),
             ("edit-function", self._menu_edit_function),
             ("relation-graph", self._menu_relation_graph),
+            ("view-indexes", self._menu_view_indexes),
             ("query-builder", self._menu_query_builder),
             ("drop-object", self._menu_drop),
             ("refresh", self._menu_refresh),
@@ -721,6 +727,8 @@ class Sidebar(Gtk.ScrolledWindow):
                 menu.append_submenu(
                     "New", _new_items(root.ddl_kinds or _DEFAULT_NEW_KINDS)
                 )
+            if node.category == "indexes" and node.profile is not None:
+                menu.append("View All…", "schema.view-indexes")
             return menu
         if node.kind == "connection":
             menu = Gio.Menu()
@@ -861,6 +869,11 @@ class Sidebar(Gtk.ScrolledWindow):
         node = self._menu_node
         if node is not None and node.profile is not None:
             self._on_relation_graph(node.profile)
+
+    def _menu_view_indexes(self, *_args) -> None:
+        node = self._menu_node
+        if node is not None and node.profile is not None:
+            self._on_view_indexes(node.profile)
 
     def _menu_query_builder(self, *_args) -> None:
         node = self._menu_node

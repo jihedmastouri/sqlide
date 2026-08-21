@@ -267,11 +267,14 @@ class SqliteConnector(Connector):
         # Autoindexes (sqlite_autoindex_*) back PRIMARY KEY/UNIQUE
         # constraints and cannot be dropped.
         _, rows, _ = self._run(
-            "SELECT name, tbl_name FROM sqlite_master "
+            "SELECT name, tbl_name, sql FROM sqlite_master "
             "WHERE type = 'index' AND name NOT LIKE 'sqlite_%' "
             "ORDER BY name"
         )
-        return [IndexInfo(name=name, table=table) for name, table in rows]
+        return [
+            IndexInfo(name=name, table=table, ddl=sql or "")
+            for name, table, sql in rows
+        ]
 
     def list_triggers(self) -> list[TriggerInfo]:
         _, rows, _ = self._run(

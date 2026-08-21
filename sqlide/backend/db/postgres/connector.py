@@ -644,7 +644,8 @@ class PostgresConnector(Connector):
         # Indexes backing PRIMARY KEY/UNIQUE constraints cannot be
         # dropped with DROP INDEX, so they stay out.
         _, rows, _ = self._run(
-            "SELECT c.relname, t.relname FROM pg_index i "
+            "SELECT c.relname, t.relname, pg_get_indexdef(i.indexrelid) "
+            "FROM pg_index i "
             "JOIN pg_class c ON c.oid = i.indexrelid "
             "JOIN pg_class t ON t.oid = i.indrelid "
             "JOIN pg_namespace n ON n.oid = c.relnamespace "
@@ -653,7 +654,10 @@ class PostgresConnector(Connector):
             "WHERE con.conindid = i.indexrelid) "
             "ORDER BY c.relname"
         )
-        return [IndexInfo(name=name, table=table) for name, table in rows]
+        return [
+            IndexInfo(name=name, table=table, ddl=ddl or "")
+            for name, table, ddl in rows
+        ]
 
     def list_triggers(self) -> list[TriggerInfo]:
         _, rows, _ = self._run(

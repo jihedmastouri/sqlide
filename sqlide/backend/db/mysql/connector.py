@@ -326,16 +326,30 @@ class MysqlConnector(Connector):
         ]
 
     def list_indexes(self) -> list[IndexInfo]:
-        # One row per (index, column) in statistics; DISTINCT folds
-        # multi-column indexes. PRIMARY is dropped through ALTER TABLE,
-        # not DROP INDEX, so it stays out.
+        # MySQL has no SHOW CREATE INDEX, so the DDL is synthesized from
+        # statistics: one row per index once GROUP_CONCAT folds its
+        # columns back together in definition order. PRIMARY is dropped
+        # through ALTER TABLE, not DROP INDEX, so it stays out.
         _, rows, _ = self._run(
-            "SELECT DISTINCT index_name, table_name "
+            "SELECT index_name, table_name, MIN(non_unique), "
+            "GROUP_CONCAT(column_name ORDER BY seq_in_index) "
             "FROM information_schema.statistics "
             "WHERE table_schema = DATABASE() AND index_name <> 'PRIMARY' "
+            "GROUP BY index_name, table_name "
             "ORDER BY index_name"
         )
-        return [IndexInfo(name=name, table=table) for name, table in rows]
+        return [
+            IndexInfo(
+                name=name,
+                table=table,
+                ddl=(
+                    f"CREATE {'' if non_unique else 'UNIQUE '}INDEX "
+                    f"{self.quote_ident(name)} ON {self.quote_ident(table)} "
+                    f"({columns})"
+                ),
+            )
+            for name, table, non_unique, columns in rows
+        ]
 
     def list_triggers(self) -> list[TriggerInfo]:
         _, rows, _ = self._run(

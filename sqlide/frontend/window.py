@@ -59,6 +59,7 @@ from sqlide.frontend.cli_console import CliConsole
 from sqlide.frontend.connection_dialog import ConnectionDialog
 from sqlide.frontend.data_grid import ResultGrid, TableTab
 from sqlide.frontend.definition_tab import DefinitionTab, FunctionTab
+from sqlide.frontend.indexes_tab import IndexesTab
 from sqlide.frontend import identity as identity_ui
 from sqlide.frontend.drop_dialog import present_drop_dialog
 from sqlide.frontend.mcp_tab import McpServerWindow
@@ -175,6 +176,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_open_definition=self.open_definition,
             on_open_function=self.open_function,
             on_relation_graph=self.open_relation_graph,
+            on_view_indexes=self.open_indexes,
             on_query_builder=self.open_query_builder,
             on_drop_object=self._drop_object,
             on_new_object=self._new_object,
@@ -1000,6 +1002,9 @@ class MainWindow(Adw.ApplicationWindow):
                 elif tab.kind == "relations":
                     if profile is not None:
                         self.open_relation_graph(profile)
+                elif tab.kind == "indexes":
+                    if profile is not None:
+                        self.open_indexes(profile)
                 elif tab.kind == "querybuilder":
                     if profile is not None:
                         self.open_query_builder(profile, tab.table)
@@ -1441,6 +1446,18 @@ class MainWindow(Adw.ApplicationWindow):
             key,
             f"{profile.name} ▸ relations",
             f"Table relations of {profile.name}",
+        )
+
+    def open_indexes(self, profile: ConnectionProfile) -> None:
+        key = ("indexes", profile.name)
+        if self._focus_tab(key):
+            return
+        tab = IndexesTab(profile, self.ensure_connector, self.show_error)
+        self._append_tab(
+            tab,
+            key,
+            f"{profile.name} ▸ indexes",
+            f"Indexes on {profile.name}",
         )
 
     def open_history_tab(self) -> None:

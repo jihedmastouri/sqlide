@@ -30,6 +30,7 @@ class FunctionInfo:
 class IndexInfo:
     name: str
     table: str = ""  # owning table (MySQL's DROP INDEX … ON table)
+    ddl: str = ""  # CREATE INDEX text, where the dialect can give one
 
 
 @dataclass(frozen=True)

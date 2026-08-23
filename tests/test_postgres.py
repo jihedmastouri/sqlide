@@ -432,3 +432,54 @@ def _sql_only(text: str) -> str:
         for line in text.splitlines()
         if line.strip() and not line.strip().startswith("--")
     ).strip()
+
+
+# Rebuild safety (milestone 12): this engine edits tables in place
+
+
+def test_postgres_does_not_rebuild_tables(postgres):
+    """A rebuild renames the table out of the way, and in Postgres the inbound foreign keys follow the
+    backup rather than the name.
+    Editing a referenced table's definition must not go near it."""
+    _, db = postgres
+    assert not db.supports_table_rebuild
+    assert any(r.ref_table == "users" for r in db.list_relations())
+
+
+def test_postgres_alter_path_applies_a_definition_edit(postgres):
+    """The ALTER statements the definition tab generates for a text
+    edit must really run on the server."""
+    from sqlide.frontend.definition_tab import _alter_statements
+
+    _, db = postgres
+    db.execute("DROP TABLE IF EXISTS rebuild_probe")
+    db.execute("CREATE TABLE rebuild_probe (id integer PRIMARY KEY, gone text)")
+    db.execute("INSERT INTO rebuild_probe VALUES (1, 'keep me')")
+    try:
+        old_names = [c.name for c in db.list_columns("rebuild_probe")]
+        statements, caption = _alter_statements(
+            db,
+            "rebuild_probe",
+            old_names,
+            "CREATE TABLE rebuild_probe (id integer, extra text)",
+        )
+        for sql in statements:
+            db.execute(sql)
+
+        assert [c.name for c in db.list_columns("rebuild_probe")] == ["id", "extra"]
+        # The rows stay put: nothing was copied through a backup table.
+        assert db.execute("SELECT COUNT(*) FROM rebuild_probe").rows[0][0] == 1
+        assert "Table mode" in caption
+    finally:
+        db.execute("DROP TABLE IF EXISTS rebuild_probe")
+
+
+def test_postgres_alter_path_refuses_what_it_cannot_express(postgres):
+    from sqlide.frontend.definition_tab import _alter_statements
+
+    _, db = postgres
+    with pytest.raises(ConnectorError):
+        _alter_statements(
+            db, "users", ["id", "name", "email"],
+            "CREATE TABLE users (id integer, name text, email text)",
+        )

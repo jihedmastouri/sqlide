@@ -661,13 +661,17 @@ class PostgresConnector(Connector):
 
     def list_triggers(self) -> list[TriggerInfo]:
         _, rows, _ = self._run(
-            "SELECT t.tgname, c.relname FROM pg_trigger t "
+            "SELECT t.tgname, c.relname, pg_get_triggerdef(t.oid) "
+            "FROM pg_trigger t "
             "JOIN pg_class c ON c.oid = t.tgrelid "
             "JOIN pg_namespace n ON n.oid = c.relnamespace "
             f"WHERE NOT t.tgisinternal AND n.nspname IN ({_USER_SCHEMAS}) "
             "ORDER BY t.tgname"
         )
-        return [TriggerInfo(name=name, table=table) for name, table in rows]
+        return [
+            TriggerInfo(name=name, table=table, ddl=ddl or "")
+            for name, table, ddl in rows
+        ]
 
     supports_drop_cascade = True
 
@@ -786,6 +790,13 @@ class PostgresConnector(Connector):
                 f"ON {self.quote_ident(table)}"
             )
         return ""
+
+    # A rename carries the table's identity, so other tables' foreign
+    # keys follow the backup rather than staying with the name: the
+    # DROP then fails, and would leave the rebuilt table unreferenced
+    # if it didn't. ALTER TABLE covers every edit this path was for.
+    supports_table_rebuild = False
+    identifier_max_length = 63
 
     def modify_column_sql(self, table: str, column: ColumnInfo) -> str:
         # Postgres splits type and nullability into separate ALTER

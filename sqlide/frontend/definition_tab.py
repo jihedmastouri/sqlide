@@ -9,7 +9,11 @@ shown to the user in an UpdatePreviewDialog before anything runs:
   highlighting). Editing it and pressing Save generates the
   rename-old / create-new / copy-columns / drop-old rebuild sequence
   (views: DROP VIEW + the edited CREATE). Columns are matched by name
-  between the old catalog and the edited statement.
+  between the old catalog and the edited statement. That rebuild is a
+  SQLite workaround: the engines with a real ALTER TABLE
+  (supports_table_rebuild = False) get ADD/DROP COLUMN for the columns
+  the edit added or removed instead, and are told that changes to a
+  surviving column belong in the Table mode.
 - Table shows the column catalog (name, type, nullable, primary key)
   in an editable ResultGrid. Edited names become RENAME COLUMN
   statements; type/nullability edits become the dialect's in-place
@@ -33,7 +37,7 @@ from typing import Callable
 from gi.repository import Gtk
 
 from sqlide.backend.connections import ConnectionProfile
-from sqlide.backend.db.base import ColumnInfo, Connector
+from sqlide.backend.db.base import ColumnInfo, Connector, ConnectorError
 from sqlide.backend.sql_split import split_statements
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend.data_grid import ResultGrid, RowItem, UpdatePreviewDialog
@@ -44,6 +48,12 @@ _REBUILD_CAPTION = (
     "Review carefully: a table rebuild carries only columns and the "
     "primary key — defaults, foreign keys and other constraints must "
     "be part of the CREATE statement to survive."
+)
+
+_ALTER_CAPTION = (
+    "This engine edits tables in place, so only the columns you added "
+    "or removed are applied. Changes to an existing column's type, "
+    "nullability or position must go through the Table mode."
 )
 
 # Grid column positions in the Table mode.
@@ -213,23 +223,21 @@ class DefinitionTab(Gtk.Box):
                 return [
                     f"DROP VIEW {connector.quote_ident(self.table)}",
                     new_ddl,
-                ]
-            old_names = {c.name for c in connector.list_columns(self.table)}
+                ], ""
+            old_names = [c.name for c in connector.list_columns(self.table)]
+            if not connector.supports_table_rebuild:
+                return _alter_statements(connector, self.table, old_names, new_ddl)
             pairs = [
                 (name, name)
                 for name in _columns_from_ddl(new_ddl)
                 if name in old_names
             ]
-            return [
-                "BEGIN",
-                *connector.rebuild_table_statements(
-                    self.table, new_ddl, pairs
-                ),
-                "COMMIT",
-            ]
+            return connector.wrap_rebuild(
+                connector.rebuild_table_statements(self.table, new_ddl, pairs)
+            ), _REBUILD_CAPTION
 
-        def done(statements: list[str]) -> None:
-            self._preview(statements)
+        def done(previewable) -> None:
+            self._preview(*previewable)
 
         run_async(work, done, lambda exc: self._show_error(str(exc)))
 
@@ -258,7 +266,7 @@ class DefinitionTab(Gtk.Box):
                     else:
                         rebuild = True
             if not rebuild:
-                return statements
+                return statements, ""
             # No in-place column change in this dialect (SQLite): one
             # rebuild covers every edit, renames included.
             changed = {original.name: edited for original, edited in edits}
@@ -269,26 +277,21 @@ class DefinitionTab(Gtk.Box):
                 for c in current
             ]
             new_ddl = _synthesize_ddl(connector.quote_ident, self.table, target)
-            return [
-                "BEGIN",
-                *connector.rebuild_table_statements(
-                    self.table, new_ddl, pairs
-                ),
-                "COMMIT",
-            ]
+            return connector.wrap_rebuild(
+                connector.rebuild_table_statements(self.table, new_ddl, pairs)
+            ), _REBUILD_CAPTION
 
-        def done(statements: list[str]) -> None:
-            self._preview(statements)
+        def done(previewable) -> None:
+            self._preview(*previewable)
 
         run_async(work, done, lambda exc: self._show_error(str(exc)))
 
-    def _preview(self, statements: list[str]) -> None:
+    def _preview(self, statements: list[str], caption: str = "") -> None:
         statements = [s.rstrip().rstrip(";") + ";" for s in statements]
-        rebuild = any(s.startswith("BEGIN") for s in statements)
         dialog = UpdatePreviewDialog(
             statements,
             lambda: self._execute(statements),
-            caption=_REBUILD_CAPTION if rebuild else (
+            caption=caption or (
                 "Statements run in order; the definition is reloaded "
                 "afterwards."
             ),
@@ -300,7 +303,13 @@ class DefinitionTab(Gtk.Box):
             connector = self._ensure(self.profile)
             try:
                 for sql in statements:
-                    connector.execute(sql)
+                    result = connector.execute(sql)
+                    # Some checks report rather than raise (SQLite's
+                    # foreign_key_check): silence from execute() is not
+                    # the same as a clean rebuild.
+                    problem = connector.rebuild_check_failure(sql, result)
+                    if problem:
+                        raise ConnectorError(problem)
             except Exception:
                 # A failed rebuild must not leave the table renamed.
                 try:
@@ -339,10 +348,57 @@ def _synthesize_ddl(
     return f"CREATE TABLE {quote(table)} (\n" + ",\n".join(defs) + "\n)"
 
 
+def _alter_statements(
+    connector: Connector, table: str, old_names: list[str], new_ddl: str
+) -> tuple[list[str], str]:
+    """The edited CREATE expressed as ALTERs, for the engines that edit
+    tables in place instead of rebuilding them.
+
+    Only the column *set* is diffed. A surviving column's definition
+    cannot be compared honestly — the catalog spells types its own way
+    (`varchar(40)` against Postgres' `character varying(40)`), so
+    guessing at a difference would either miss real edits or invent
+    ones. Those edits belong to the Table mode, which reads the same
+    catalog it writes back; the caption says so rather than leaving the
+    user to notice.
+    """
+    entries = _column_defs_from_ddl(new_ddl)
+    new_names = [name for name, _definition in entries]
+    statements = [
+        connector.add_column_sql(table, definition)
+        for name, definition in entries
+        if name not in old_names
+    ]
+    statements += [
+        connector.drop_column_sql(table, name)
+        for name in old_names
+        if name not in new_names
+    ]
+    if not statements:
+        raise ConnectorError(
+            "No column was added or removed. This engine applies "
+            "definition changes in place — edit the column in the "
+            "Table mode, which can change its type and nullability."
+        )
+    return statements, _ALTER_CAPTION
+
+
 def _columns_from_ddl(ddl: str) -> list[str]:
-    """Column names declared in a CREATE TABLE statement: the first
-    identifier of every top-level comma-separated entry in the
-    parenthesized body, skipping table-constraint entries."""
+    """Column names declared in a CREATE TABLE statement."""
+    return [name for name, _definition in _column_defs_from_ddl(ddl)]
+
+
+def _column_defs_from_ddl(ddl: str) -> list[tuple[str, str]]:
+    """Every column declared in a CREATE TABLE statement as (name, the
+    entry as written): the first identifier of each top-level
+    comma-separated entry of the parenthesized body, skipping the
+    table-constraint entries.
+
+    The entry is kept verbatim because ADD COLUMN wants the column
+    spelled exactly as the user wrote it — type, DEFAULT, collation and
+    all — and re-rendering it from the parts we recognize would drop
+    whatever we don't.
+    """
     start = ddl.find("(")
     end = ddl.rfind(")")
     if start == -1 or end <= start:
@@ -351,12 +407,13 @@ def _columns_from_ddl(ddl: str) -> list[str]:
     constraint_starters = {
         "PRIMARY", "FOREIGN", "UNIQUE", "CHECK", "CONSTRAINT",
     }
-    names = []
+    columns = []
     for entry in entries:
-        name = _first_identifier(entry.strip())
+        entry = entry.strip()
+        name = _first_identifier(entry)
         if name and name.upper() not in constraint_starters:
-            names.append(name)
-    return names
+            columns.append((name, entry))
+    return columns
 
 
 def _split_top_level(body: str) -> list[str]:

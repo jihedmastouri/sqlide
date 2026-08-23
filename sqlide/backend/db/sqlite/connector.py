@@ -278,10 +278,13 @@ class SqliteConnector(Connector):
 
     def list_triggers(self) -> list[TriggerInfo]:
         _, rows, _ = self._run(
-            "SELECT name, tbl_name FROM sqlite_master "
+            "SELECT name, tbl_name, sql FROM sqlite_master "
             "WHERE type = 'trigger' ORDER BY name"
         )
-        return [TriggerInfo(name=name, table=table) for name, table in rows]
+        return [
+            TriggerInfo(name=name, table=table, ddl=sql or "")
+            for name, table, sql in rows
+        ]
 
     def ddl_kinds(self) -> tuple[str, ...]:
         return ("table", "view", "index", "trigger")
@@ -334,7 +337,41 @@ class SqliteConnector(Connector):
             statements[0],  # the RENAME
             "PRAGMA legacy_alter_table = OFF",
             *statements[1:],
+            # Last, so it sees the finished table: the copy can leave a
+            # row pointing at a parent the new definition no longer
+            # accepts. It reports violations as rows rather than
+            # raising, so the caller has to read them back — see
+            # rebuild_check_failure().
+            "PRAGMA foreign_key_check",
         ]
+
+    def wrap_rebuild(self, statements: list[str]) -> list[str]:
+        # SQLite's DDL is transactional, so the rebuild really is all
+        # or nothing. Enforcement goes off around it (the pragma is a
+        # no-op inside a transaction, hence outside the BEGIN): while
+        # the backup exists the two tables cannot both satisfy the
+        # foreign keys, and foreign_key_check above is what replaces
+        # the enforcement we switched off.
+        return [
+            "PRAGMA foreign_keys = OFF",
+            "BEGIN",
+            *statements,
+            "COMMIT",
+            "PRAGMA foreign_keys = ON",
+        ]
+
+    def rebuild_check_failure(self, sql: str, result: Any) -> str:
+        if "foreign_key_check" not in sql.lower():
+            return ""
+        rows = getattr(result, "rows", None) or []
+        if not rows:
+            return ""
+        # (table, rowid, parent, fkid) per violating row.
+        detail = ", ".join(
+            f"{row[0]}(rowid {row[1]}) -> {row[2]}" for row in rows[:5]
+        )
+        more = f" and {len(rows) - 5} more" if len(rows) > 5 else ""
+        return f"Foreign-key violations after the rebuild: {detail}{more}"
 
     def fetch_rows(
         self,

@@ -3,11 +3,11 @@ dollar-quote contexts that keep trigger/function bodies intact."""
 
 from __future__ import annotations
 
-from sqlide.backend.sql_split import split_statements, statement_at
+from sqlide.backend.sql_split import split_statements, statement_at, tokens
 
 
-def texts(sql: str) -> list[str]:
-    return [s.text for s in split_statements(sql)]
+def texts(sql: str, dialect: str = "") -> list[str]:
+    return [s.text for s in split_statements(sql, dialect)]
 
 
 def test_plain_statements_and_comments():
@@ -99,3 +99,98 @@ def test_statement_at_maps_offsets():
     assert statement_at(statements, 12).text == "SELECT 2"
     assert statement_at(statements, 99).text == "SELECT 2"
     assert statement_at([], 0) is None
+
+
+def test_mysql_backslash_escaped_quote_does_not_end_the_string():
+    sql = r"INSERT INTO t VALUES ('it\'s'); SELECT 1;"
+    assert texts(sql, "mysql") == [
+        r"INSERT INTO t VALUES ('it\'s')",
+        "SELECT 1",
+    ]
+
+
+def test_doubled_quotes_still_work_with_backslash_escapes_on():
+    sql = "INSERT INTO t VALUES ('it''s'); SELECT 1;"
+    assert texts(sql, "mysql") == [
+        "INSERT INTO t VALUES ('it''s')",
+        "SELECT 1",
+    ]
+
+
+def test_trailing_backslash_ends_a_sqlite_string():
+    # SQLite has no backslash escape: the quote closes the string.
+    sql = r"INSERT INTO t VALUES ('a\'); SELECT 1;"
+    assert texts(sql, "sqlite") == [
+        r"INSERT INTO t VALUES ('a\')",
+        "SELECT 1",
+    ]
+
+
+def test_postgres_escapes_only_inside_e_strings():
+    escaped = r"SELECT E'it\'s'; SELECT 1;"
+    assert texts(escaped, "postgres") == [r"SELECT E'it\'s'", "SELECT 1"]
+    plain = r"SELECT 'a\', ';'; SELECT 1;"
+    assert texts(plain, "postgres") == [r"SELECT 'a\', ';'", "SELECT 1"]
+
+
+def test_e_must_not_be_the_tail_of_a_word():
+    # `value'…'` is not an escape string, so the backslash is literal.
+    sql = r"SELECT value'a\', ';'; SELECT 1;"
+    assert texts(sql, "postgres") == [r"SELECT value'a\', ';'", "SELECT 1"]
+
+
+def test_unknown_dialect_honours_e_strings_but_not_plain_ones():
+    assert texts(r"SELECT E'it\'s'; SELECT 1;") == [
+        r"SELECT E'it\'s'",
+        "SELECT 1",
+    ]
+    assert texts(r"SELECT 'a\'; SELECT 1;") == [r"SELECT 'a\'", "SELECT 1"]
+
+
+def test_backslash_escapes_apply_to_tokens_too():
+    # Without the escape the string closes early and `DROP` inside it
+    # reads as a keyword — exactly what the read-only guard must not do.
+    sql = r"SELECT 'it\' DROP \'' AS x FROM t"
+    assert [t.word for t in tokens(sql, "mysql")] == [
+        "SELECT",
+        "AS",
+        "X",
+        "FROM",
+        "T",
+    ]
+    assert "DROP" in [t.word for t in tokens(sql, "sqlite")]
+
+
+def test_mysql_delimiter_lines_are_skipped_and_honoured():
+    sql = (
+        "DELIMITER $$\n"
+        "CREATE TRIGGER touch AFTER INSERT ON t FOR EACH ROW\n"
+        "BEGIN\n"
+        "  UPDATE t SET x = 1;\n"
+        "END$$\n"
+        "DELIMITER ;\n"
+        "SELECT 1;\n"
+    )
+    statements = texts(sql, "mysql")
+    assert len(statements) == 2
+    assert statements[0].startswith("CREATE TRIGGER touch")
+    assert statements[0].endswith("END")
+    assert statements[1] == "SELECT 1"
+
+
+def test_custom_delimiter_ends_plain_statements():
+    sql = "DELIMITER //\nSELECT 1//\nSELECT ';'//\nDELIMITER ;\nSELECT 3;"
+    assert texts(sql) == ["SELECT 1", "SELECT ';'", "SELECT 3"]
+
+
+def test_semicolons_are_not_terminators_under_a_custom_delimiter():
+    sql = "DELIMITER $$\nSELECT 1; SELECT 2$$\n"
+    assert texts(sql) == ["SELECT 1; SELECT 2"]
+
+
+def test_dollar_quoting_still_works():
+    sql = "CREATE FUNCTION f() RETURNS int AS $$ SELECT 1; $$ LANGUAGE sql;\nSELECT 2;"
+    assert texts(sql, "postgres") == [
+        "CREATE FUNCTION f() RETURNS int AS $$ SELECT 1; $$ LANGUAGE sql",
+        "SELECT 2",
+    ]

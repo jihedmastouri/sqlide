@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from secrets import token_hex
 from typing import Any
 
 
@@ -37,6 +38,7 @@ class IndexInfo:
 class TriggerInfo:
     name: str
     table: str = ""  # owning table (Postgres' DROP TRIGGER … ON table)
+    ddl: str = ""  # CREATE TRIGGER text, where the dialect can give one
 
 
 @dataclass(frozen=True)
@@ -466,16 +468,60 @@ class Connector(ABC):
         the caller falls back to a table rebuild."""
         return ""
 
+    def add_column_sql(self, table: str, definition: str) -> str:
+        """ALTER adding one column, `definition` being the column's
+        entry exactly as it was written in the edited CREATE."""
+        return (
+            f"ALTER TABLE {self.quote_ident(table)} "
+            f"ADD COLUMN {definition}"
+        )
+
+    def drop_column_sql(self, table: str, column: str) -> str:
+        return (
+            f"ALTER TABLE {self.quote_ident(table)} "
+            f"DROP COLUMN {self.quote_ident(column)}"
+        )
+
+    #: Whether the rename-old / create-new / copy / drop-old rebuild is
+    #: a safe way to apply an edited CREATE in this dialect. It is a
+    #: workaround for SQLite's limited ALTER TABLE and nothing else:
+    #: MySQL commits DDL implicitly, so no transaction can undo a
+    #: rebuild that fails half way, and a Postgres RENAME carries the
+    #: inbound foreign keys onto the backup, leaving the rebuilt table
+    #: unreferenced even when every statement succeeds. Both have real
+    #: ALTER TABLE and take that path instead.
+    supports_table_rebuild = True
+
+    #: Longest identifier the dialect accepts, used to keep generated
+    #: backup names legal. 0 means no practical limit.
+    identifier_max_length = 0
+
+    #: Whether a table's CREATE statement spells out its secondary
+    #: indexes inline (MySQL's SHOW CREATE TABLE does; the dialects that
+    #: keep indexes as objects of their own do not). Decides whether a
+    #: rebuild has to carry indexes across itself or would only be
+    #: recreating what the new CREATE already declares.
+    ddl_declares_indexes = False
+
     def rebuild_table_statements(
         self, table: str, new_ddl: str, copy_columns: list[tuple[str, str]]
     ) -> list[str]:
         """The rename-old / create-new / copy / drop-old sequence that
         applies an edited CREATE statement to an existing table.
         `copy_columns` maps each surviving column as (new name, old
-        name) — identical when the column wasn't renamed."""
-        backup = f"{table}__old"
+        name) — identical when the column wasn't renamed.
+
+        Indexes and triggers belong to the table rather than to its
+        name: the rename carries them onto the backup, and dropping the
+        backup takes them with it. Their DDL is captured here, while
+        they still describe `table`, and replayed after the drop —
+        after, because until then the old objects still hold the names.
+        Reads the catalog to do it, so call this from a worker thread.
+        """
+        backup = self._backup_table_name(table)
         new_cols = ", ".join(self.quote_ident(n) for n, _o in copy_columns)
         old_cols = ", ".join(self.quote_ident(o) for _n, o in copy_columns)
+        carried = self._carried_object_ddl(table)
         statements = [
             f"ALTER TABLE {self.quote_ident(table)} "
             f"RENAME TO {self.quote_ident(backup)}",
@@ -487,7 +533,59 @@ class Connector(ABC):
                 f"SELECT {old_cols} FROM {self.quote_ident(backup)}"
             )
         statements.append(f"DROP TABLE {self.quote_ident(backup)}")
-        return statements
+        return statements + carried
+
+    def wrap_rebuild(self, statements: list[str]) -> list[str]:
+        """`statements` plus whatever makes the rebuild atomic in this
+        dialect. The base class adds nothing: a wrapper is only worth
+        having where the dialect can actually honor it, and claiming a
+        transaction it would silently commit through is worse than
+        claiming none.
+        """
+        return list(statements)
+
+    def rebuild_check_failure(self, sql: str, result: Any) -> str:
+        """Message describing a rebuild check that reported a problem
+        instead of raising one, given the statement and what execute()
+        returned for it. Empty string when the statement is not such a
+        check, or when it passed."""
+        return ""
+
+    def _backup_table_name(self, table: str) -> str:
+        """A free name for the rebuild's backup copy.
+
+        The suffix is random rather than fixed: a `__old` left behind by
+        an earlier failed rebuild would otherwise block every later one,
+        and a real table of that name would collide with it. The catalog
+        decides what is free, so call this from a worker thread.
+        """
+        taken = {t.name for t in self.list_tables()}
+        limit = self.identifier_max_length
+        while True:
+            suffix = f"__old_{token_hex(4)}"
+            stem = table
+            if limit and len(stem) + len(suffix) > limit:
+                stem = stem[: limit - len(suffix)]
+            candidate = f"{stem}{suffix}"
+            if candidate not in taken:
+                return candidate
+
+    def _carried_object_ddl(self, table: str) -> list[str]:
+        """CREATE statements for the indexes and triggers attached to
+        `table`, for a rebuild to replay once the new table is in place.
+
+        An object whose adapter cannot produce a CREATE statement is
+        skipped: there is nothing to replay, and a rebuild that carried
+        a half-written one would fail rather than lose it quietly.
+        """
+        objects: list[IndexInfo | TriggerInfo] = list(self.list_triggers())
+        if not self.ddl_declares_indexes:
+            objects = list(self.list_indexes()) + objects
+        return [
+            obj.ddl.rstrip().rstrip(";")
+            for obj in objects
+            if obj.table == table and obj.ddl.strip()
+        ]
 
     @abstractmethod
     def fetch_rows(

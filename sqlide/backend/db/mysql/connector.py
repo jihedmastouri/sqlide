@@ -103,6 +103,11 @@ class MysqlConnector(Connector):
     an explicit BEGIN — matching SQLite's isolation_level=None setup.
     """
 
+    # SHOW CREATE TABLE — which is what get_ddl() hands the definition
+    # tab — writes every KEY inline, so a rebuild's new CREATE already
+    # declares the indexes and must not also replay them.
+    ddl_declares_indexes = True
+
     def __init__(
         self,
         host: str,
@@ -352,12 +357,29 @@ class MysqlConnector(Connector):
         ]
 
     def list_triggers(self) -> list[TriggerInfo]:
+        # The CREATE is assembled from the catalog rather than taken
+        # from SHOW CREATE TRIGGER: that form carries a DEFINER clause,
+        # which only a user holding SET_USER_ID (or SUPER) can replay.
+        # MySQL has row triggers and no others, so FOR EACH ROW is not
+        # a guess.
         _, rows, _ = self._run(
-            "SELECT trigger_name, event_object_table "
+            "SELECT trigger_name, event_object_table, action_timing, "
+            "event_manipulation, action_statement "
             "FROM information_schema.triggers "
             "WHERE trigger_schema = DATABASE() ORDER BY trigger_name"
         )
-        return [TriggerInfo(name=name, table=table) for name, table in rows]
+        return [
+            TriggerInfo(
+                name=name,
+                table=table,
+                ddl=(
+                    f"CREATE TRIGGER {self.quote_ident(name)} "
+                    f"{timing} {event} ON {self.quote_ident(table)} "
+                    f"FOR EACH ROW {body}"
+                ),
+            )
+            for name, table, timing, event, body in rows
+        ]
 
     def list_events(self) -> list[str]:
         _, rows, _ = self._run(
@@ -471,6 +493,13 @@ class MysqlConnector(Connector):
             *statements,
             "SET FOREIGN_KEY_CHECKS = 1",
         ]
+
+    # DDL commits implicitly here, so a rebuild that fails half way
+    # cannot be rolled back: it would leave the table renamed to its
+    # backup with the rows half copied. MODIFY/ADD/DROP COLUMN do the
+    # job in place instead.
+    supports_table_rebuild = False
+    identifier_max_length = 64
 
     def modify_column_sql(self, table: str, column: ColumnInfo) -> str:
         null = "NULL" if column.nullable else "NOT NULL"

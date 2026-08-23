@@ -8,6 +8,20 @@ $tag$…$tag$, PostgreSQL), line comments and block comments. Escaped
 quotes ('' or "") fall out naturally: the first quote closes the
 context and the second reopens it.
 
+Backslash escapes inside a string ('it\\'s') are a dialect matter, so
+the scanners take a `dialect` — a ConnectionProfile.kind, "" when the
+caller has none. MySQL escapes with backslash by default (only
+NO_BACKSLASH_ESCAPES turns it off), PostgreSQL only inside an E'…'
+string, and SQLite not at all; an unknown dialect gets the E'…' rule
+alone, which is safe everywhere because no other dialect spells a
+string that way.
+
+MySQL's `DELIMITER $$` is a client command rather than SQL, but
+scripts pasted from other MySQL tools carry it. sqlide counts
+BEGIN/END itself and so never needs a custom terminator, but it has
+to recognise one: DELIMITER lines are skipped and the terminator they
+name ends statements until the next DELIMITER line restores ";".
+
 Routine bodies are the one case where a semicolon sits bare inside a
 statement: SQLite trigger and MySQL trigger/function/procedure bodies
 (PostgreSQL wraps its bodies in dollar quotes). Inside a statement
@@ -36,7 +50,7 @@ class Statement:
     end: int  # offset just past the statement (past its semicolon)
 
 
-def split_statements(sql: str) -> list[Statement]:
+def split_statements(sql: str, dialect: str = "") -> list[Statement]:
     """Statements in `sql`, in order. Segments that hold only whitespace
     and comments are dropped; a comment preceding a statement stays part
     of it (comments are valid SQL, and a cursor inside the comment then
@@ -47,6 +61,7 @@ def split_statements(sql: str) -> list[Statement]:
     first_word = ""  # first keyword of the segment ("" until seen)
     routine = False  # CREATE segment mentioning TRIGGER/FUNCTION/PROCEDURE
     depth = 0  # BEGIN/CASE…END nesting inside a routine segment
+    terminator = ";"  # what ends a statement (MySQL's DELIMITER changes it)
     i = 0
     n = len(sql)
 
@@ -54,7 +69,7 @@ def split_statements(sql: str) -> list[Statement]:
         nonlocal seg_start, has_content, first_word, routine, depth
         if has_content:
             raw = sql[seg_start:end]
-            text = raw.strip().removesuffix(";").strip()
+            text = raw.strip().removesuffix(terminator).strip()
             offset = seg_start + (len(raw) - len(raw.lstrip()))
             statements.append(Statement(text=text, start=offset, end=end))
         seg_start = end
@@ -72,22 +87,33 @@ def split_statements(sql: str) -> list[Statement]:
         elif two == "/*":
             i = sql.find("*/", i + 2)
             i = n if i == -1 else i + 2
+        elif sql.startswith(terminator, i):
+            # Before the quote and dollar branches: a custom terminator
+            # ($$) would otherwise read as a dollar-quote opener.
+            if depth == 0:
+                close_segment(i + len(terminator))
+            i += len(terminator)
         elif ch in ("'", '"', "`"):
             has_content = True
-            i += 1
-            while i < n and sql[i] != ch:
-                i += 1
-            i += 1  # past the closing quote (or end on unterminated)
+            i = _quoted_end(sql, i, dialect) + 1
         elif ch == "$" and (delim := _dollar_delimiter(sql, i)):
             has_content = True
             end = sql.find(delim, i + len(delim))
             i = n if end == -1 else end + len(delim)
         elif ch.isalpha() or ch == "_":
-            has_content = True
             j = i
             while j < n and (sql[j].isalnum() or sql[j] == "_"):
                 j += 1
             word = sql[i:j].upper()
+            if word == "DELIMITER" and not has_content:
+                # A client command, not SQL: it names the terminator
+                # for the lines that follow, and is not a statement.
+                eol = sql.find("\n", j)
+                eol = n if eol == -1 else eol
+                terminator = sql[j:eol].strip() or ";"
+                i = seg_start = min(eol + 1, n)
+                continue
+            has_content = True
             if not first_word:
                 first_word = word
             if first_word == "CREATE":
@@ -104,10 +130,6 @@ def split_statements(sql: str) -> list[Statement]:
                             j = k
                         depth = max(depth - 1, 0)
             i = j
-        elif ch == ";":
-            if depth == 0:
-                close_segment(i + 1)
-            i += 1
         else:
             if not ch.isspace():
                 has_content = True
@@ -128,7 +150,7 @@ class Token:
     quoted: bool
 
 
-def tokens(sql: str) -> list[Token]:
+def tokens(sql: str, dialect: str = "") -> list[Token]:
     """The bare words and quoted identifiers of `sql`, in order.
 
     String literals, comments and dollar-quoted bodies are skipped, so
@@ -149,14 +171,9 @@ def tokens(sql: str) -> list[Token]:
             i = sql.find("*/", i + 2)
             i = n if i == -1 else i + 2
         elif ch == "'":  # string literal
-            i += 1
-            while i < n and sql[i] != ch:
-                i += 1
-            i += 1
+            i = _quoted_end(sql, i, dialect) + 1
         elif ch in ('"', "`"):  # quoted identifier
-            j = i + 1
-            while j < n and sql[j] != ch:
-                j += 1
+            j = _quoted_end(sql, i, dialect)
             found.append(Token(text=sql[i + 1 : j], word="", quoted=True))
             i = j + 1
         elif ch == "$" and (delim := _dollar_delimiter(sql, i)):
@@ -172,6 +189,43 @@ def tokens(sql: str) -> list[Token]:
         else:
             i += 1
     return found
+
+
+def _quoted_end(sql: str, i: int, dialect: str) -> int:
+    """Offset of the quote closing the run opened at `i`, or len(sql)
+    when it is unterminated (callers step one past either way, as an
+    unterminated run swallows the rest of the script)."""
+    quote = sql[i]
+    escaped = _backslash_escapes(sql, i, dialect)
+    n = len(sql)
+    i += 1
+    while i < n:
+        if escaped and sql[i] == "\\":
+            i += 2  # \' is a quote, not the end of the string
+            continue
+        if sql[i] == quote:
+            return i
+        i += 1
+    return n
+
+
+def _backslash_escapes(sql: str, i: int, dialect: str) -> bool:
+    """Whether a backslash escapes the next character in the string
+    opened at `i`. Identifier quotes never escape; MySQL strings always
+    do; elsewhere only PostgreSQL's E'…' form does."""
+    if sql[i] != "'":
+        return False
+    if dialect == "mysql":
+        return True
+    if dialect == "sqlite":
+        return False
+    # An E immediately before the quote, and not the tail of a longer
+    # word (`vale'…'` is a column alias, not an escape string).
+    return (
+        i > 0
+        and sql[i - 1] in "Ee"
+        and (i < 2 or not (sql[i - 2].isalnum() or sql[i - 2] == "_"))
+    )
 
 
 def _dollar_delimiter(sql: str, i: int) -> str:

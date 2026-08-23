@@ -290,3 +290,54 @@ def test_schema_ddl_includes_triggers(mysql):
         assert any("users_touch" in s for s in db.schema_ddl())
     finally:
         db.execute("DROP TRIGGER IF EXISTS users_touch")
+
+
+# Rebuild safety (milestone 12): this engine edits tables in place
+
+
+def test_mysql_does_not_rebuild_tables(mysql):
+    """A rebuild renames the table out of the way, and MySQL commits DDL implicitly, so a failure part way
+    cannot be undone.
+    Editing a referenced table's definition must not go near it."""
+    _, db = mysql
+    assert not db.supports_table_rebuild
+    assert any(r.ref_table == "users" for r in db.list_relations())
+
+
+def test_mysql_alter_path_applies_a_definition_edit(mysql):
+    """The ALTER statements the definition tab generates for a text
+    edit must really run on the server."""
+    from sqlide.frontend.definition_tab import _alter_statements
+
+    _, db = mysql
+    db.execute("DROP TABLE IF EXISTS rebuild_probe")
+    db.execute("CREATE TABLE rebuild_probe (id int PRIMARY KEY, gone varchar(40))")
+    db.execute("INSERT INTO rebuild_probe VALUES (1, 'keep me')")
+    try:
+        old_names = [c.name for c in db.list_columns("rebuild_probe")]
+        statements, caption = _alter_statements(
+            db,
+            "rebuild_probe",
+            old_names,
+            "CREATE TABLE rebuild_probe (id int, extra varchar(40))",
+        )
+        for sql in statements:
+            db.execute(sql)
+
+        assert [c.name for c in db.list_columns("rebuild_probe")] == ["id", "extra"]
+        # The rows stay put: nothing was copied through a backup table.
+        assert db.execute("SELECT COUNT(*) FROM rebuild_probe").rows[0][0] == 1
+        assert "Table mode" in caption
+    finally:
+        db.execute("DROP TABLE IF EXISTS rebuild_probe")
+
+
+def test_mysql_alter_path_refuses_what_it_cannot_express(mysql):
+    from sqlide.frontend.definition_tab import _alter_statements
+
+    _, db = mysql
+    with pytest.raises(ConnectorError):
+        _alter_statements(
+            db, "users", ["id", "name", "email"],
+            "CREATE TABLE users (id int, name varchar(40), email varchar(40))",
+        )

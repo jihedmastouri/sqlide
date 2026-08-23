@@ -37,10 +37,35 @@ outside version control — read the notes for a milestone before starting it.
 
 ## Next — milestone 12, schema editing
 
-- [ ] **Fix the SQLite rebuild data loss first**, on its own, with a regression
-      test: capture indexes and triggers from `sqlite_master` before
-      `DROP TABLE` and recreate them after, plus `PRAGMA foreign_key_check`
-      before commit. This is a live bug in `rebuild_table_statements()`.
+- [x] **Fix the rebuild data loss first**, on its own, with a regression test:
+      capture indexes and triggers before `DROP TABLE` and recreate them after.
+      Done in `Connector.rebuild_table_statements()` — on the base class, not
+      in SQLite: `_save_ddl` rebuilds on *every* engine, so MySQL and Postgres
+      lost them too. `ddl_declares_indexes` keeps MySQL from replaying keys
+      that `SHOW CREATE TABLE` already writes inline.
+- [x] Rebuild is still unsafe in three ways the fix above does not touch:
+      - `PRAGMA foreign_key_check` before commit (SQLite), inspecting the rows
+        it returns — it reports violations rather than raising. Done: the
+        pragma is the last statement inside the transaction, and
+        `Connector.rebuild_check_failure()` is what reads its rows back, so
+        `definition_tab._execute` no longer treats silence as success.
+        `wrap_rebuild()` also puts enforcement off around the whole thing.
+      - MySQL commits DDL implicitly, so the `BEGIN`/`COMMIT` that
+        `definition_tab._save_ddl` wraps the rebuild in is a promise it cannot
+        keep. Done: `supports_table_rebuild = False` on MySQL and Postgres, and
+        the literal `BEGIN`/`COMMIT` is gone — the wrapper now comes from
+        `Connector.wrap_rebuild()`, which only SQLite (real transactional DDL)
+        overrides.
+      - Postgres refuses `DROP TABLE <name>__old` while another table's foreign
+        key references it — and a rename carries those keys onto the backup, so
+        the rebuild is wrong there even when it succeeds. Same conclusion:
+        both servers take an `ALTER` path (`_alter_statements`), which applies
+        the columns the edit added or removed and says in the preview caption
+        that a surviving column's type/nullability belongs in the Table mode.
+- [x] `<name>__old` is a fixed backup name: a leftover from a failed rebuild
+      blocks every later one, and a real table by that name collides. Done:
+      `Connector._backup_table_name()` picks `<name>__old_<random>` against the
+      catalog, truncated to `identifier_max_length`.
 - [ ] `TableAlterSpec` / `IndexAlterSpec` / `RelationAlterSpec` and their
       `*_sql()` generators per dialect. MySQL `MODIFY COLUMN` must re-emit every
       unchanged attribute — dedicated test.

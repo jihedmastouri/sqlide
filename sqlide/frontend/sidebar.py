@@ -260,6 +260,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self._popover = Gtk.PopoverMenu.new_from_model(Gio.Menu())
         self._popover.set_parent(self._view)
         self._popover.set_has_arrow(False)
+        self._popover.add_css_class("schema-popover")
         self._view.connect("destroy", lambda *_: self._popover.unparent())
 
     def add_profile(self, profile: ConnectionProfile) -> None:

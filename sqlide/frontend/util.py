@@ -8,6 +8,8 @@ from typing import Any
 
 from gi.repository import Gio, GLib, Gtk
 
+from sqlide.backend.settings import DEFAULT_FONT_SIZE, store
+
 
 def describe(widget: Gtk.Widget, label: str) -> Gtk.Widget:
     """Give an icon-only control both a tooltip and an accessible
@@ -42,74 +44,101 @@ def icon_button(
     return button
 
 
-def main_menu_button(with_history: bool = False) -> Gtk.MenuButton:
-    """Hamburger button for a header bar: Preferences, Keyboard
-    Shortcuts, Help and About (application-level actions, see
-    application.py). Main windows also get Query History, the
-    close-every-tab item and the XML transfer items, backed by
-    window-level actions (the launcher has no workspace and no tabs,
-    hence the flag)."""
-    menu = Gio.Menu()
-    if with_history:
-        tabs = Gio.Menu()
-        tabs.append("Split View", "win.split-view")
-        tabs.append("Close All Tabs", "win.close-all-tabs")
-        menu.append_section(None, tabs)
-        connections = Gio.Menu()
-        connections.append("Refresh Schemas", "win.refresh-schema")
-        menu.append_section(None, connections)
-        transfer = Gio.Menu()
-        transfer.append("Export Workspace…", "win.export-workspace")
-        transfer.append("Export Connections…", "win.export-connections")
-        transfer.append("Import Connections…", "win.import-connections")
-        menu.append_section(None, transfer)
+# The SQL editor's font size is a stepper rather than a trip through
+# Preferences, because it is the one appearance setting people reach
+# for mid-query. It lives in the console's own gear popover (see
+# query_console._settings_button), not in the global menu: the theme
+# stays in Preferences, where a setting you change twice a year
+# belongs.
+
+_FONT_RANGE = (6, 32)
+
+
+def font_size_stepper() -> Gtk.Box:
+    """Editor font size as a -/+ stepper, clamped to the same range the
+    Preferences spin row uses. Writes straight to the settings store,
+    which restyles every open editor live."""
+    low, high = _FONT_RANGE
+    box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+    label = Gtk.Label(hexpand=True)
+    label.add_css_class("font-stepper-value")
+
+    minus = icon_button("list-remove-symbolic", "Smaller Editor Font", flat=True)
+    plus = icon_button("list-add-symbolic", "Larger Editor Font", flat=True)
+    minus.add_css_class("circular")
+    plus.add_css_class("circular")
+
+    def show(size: int) -> None:
+        label.set_text(f"{size} pt")
+        minus.set_sensitive(size > low)
+        plus.set_sensitive(size < high)
+
+    def step(delta: int) -> None:
+        size = min(high, max(low, store.settings.editor_font_size + delta))
+        store.update(editor_font_size=size)
+        show(size)
+
+    minus.connect("clicked", lambda *_: step(-1))
+    plus.connect("clicked", lambda *_: step(1))
+    show(store.settings.editor_font_size or DEFAULT_FONT_SIZE)
+
+    box.append(minus)
+    box.append(label)
+    box.append(plus)
+    return box
+
+
+def _app_menu_items(menu: Gio.Menu) -> None:
+    """The four items every window's menu ends with (application-level
+    actions, see application.py)."""
     menu.append("Preferences", "app.preferences")
-    if with_history:
-        menu.append("Query History", "win.history")
     menu.append("Keyboard Shortcuts", "app.shortcuts")
     menu.append("Help", "app.help")
     menu.append("About sqlide", "app.about")
-    button = Gtk.MenuButton(
-        icon_name="open-menu-symbolic", menu_model=menu
-    )
+
+
+def main_menu_button() -> Gtk.MenuButton:
+    """Hamburger button for the welcome page and the launcher, which
+    have no workspace and no tabs: the application-level items only."""
+    menu = Gio.Menu()
+    _app_menu_items(menu)
+    button = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
     describe(button, "Main menu")
     return button
 
 
-def sidebar_menu_button(with_history: bool = False) -> Gtk.MenuButton:
-    """Combined sidebar button: opening/creating workspaces plus the
-    application-level menu that used to live in the content header
-    (Preferences, Keyboard Shortcuts, Help, About, and — on a main
-    window — Query History, tab bulk actions and the XML transfer
-    items). The sidebar is the one control that is always on screen,
-    so it is the natural home for both."""
-    menu = Gio.Menu()
-    workspaces = Gio.Menu()
-    workspaces.append("Workspaces…", "app.show-launcher")
-    menu.append_section(None, workspaces)
-    if with_history:
-        tabs = Gio.Menu()
-        tabs.append("Split View", "win.split-view")
-        tabs.append("Close All Tabs", "win.close-all-tabs")
-        menu.append_section(None, tabs)
-        connections = Gio.Menu()
-        connections.append("Refresh Schemas", "win.refresh-schema")
-        menu.append_section(None, connections)
-        transfer = Gio.Menu()
-        transfer.append("Export Workspace…", "win.export-workspace")
-        transfer.append("Export Connections…", "win.export-connections")
-        transfer.append("Import Connections…", "win.import-connections")
-        menu.append_section(None, transfer)
-    menu.append("Preferences", "app.preferences")
-    if with_history:
-        menu.append("Query History", "win.history")
-    menu.append("Keyboard Shortcuts", "app.shortcuts")
-    menu.append("Help", "app.help")
-    menu.append("About sqlide", "app.about")
-    button = Gtk.MenuButton(
-        icon_name="open-menu-symbolic", menu_model=menu
+def workspaces_button() -> Gtk.Button:
+    """Sidebar's leading button: back out to the workspace launcher.
+    Its own icon rather than a menu item, because switching workspace
+    is the one navigation the sidebar offers and hiding it behind a
+    hamburger made it unfindable."""
+    button = Gtk.Button(icon_name="view-grid-symbolic")
+    button.add_css_class("flat")
+    button.connect(
+        "clicked", lambda b: b.activate_action("app.show-launcher", None)
     )
-    describe(button, "Workspaces and settings")
+    describe(button, "Workspaces")
+    return button
+
+
+def sidebar_menu_button() -> Gtk.MenuButton:
+    """Settings button at the top of a main window's sidebar. The
+    sidebar is the one control that is always on screen, so the
+    application menu lives here rather than in the content header.
+
+    Deliberately short: Split View is a button in the content header,
+    Refresh Schemas is one beside the search icon, the XML transfer
+    items are in Preferences, and Workspaces… is the icon next to this
+    one — a menu is not a place to keep everything that had nowhere
+    else to go."""
+    menu = Gio.Menu()
+    tabs = Gio.Menu()
+    tabs.append("Query History", "win.history")
+    tabs.append("Close All Tabs", "win.close-all-tabs")
+    menu.append_section(None, tabs)
+    _app_menu_items(menu)
+    button = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
+    describe(button, "Settings")
     return button
 
 

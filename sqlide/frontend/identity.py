@@ -64,6 +64,15 @@ def _reload() -> None:
         listener()
 
 
+# Surfaces carrying this class disappear entirely when the colour is
+# "none", rather than showing the grey placeholder. A border is a claim
+# that something was labelled; on an unlabelled workspace it is a grey
+# line that means nothing, so the stripe and the row bar simply are not
+# there. The dot keeps its placeholder — it sits in a row of names and
+# would make them jump.
+_HIDE_WHEN_NONE = "identity-hide-when-none"
+
+
 def set_color(widget: Gtk.Widget, color: str) -> None:
     """Give `widget` exactly one identity colour class."""
     wanted = identity.css_class(color)
@@ -72,6 +81,10 @@ def set_color(widget: Gtk.Widget, color: str) -> None:
         if css != wanted:
             widget.remove_css_class(css)
     widget.add_css_class(wanted)
+    if widget.has_css_class(_HIDE_WHEN_NONE):
+        widget.set_visible(
+            identity.normalize_color(color) != identity.NONE
+        )
 
 
 def stripe(color: str, surface: str = "window-stripe") -> Gtk.Widget:
@@ -79,6 +92,7 @@ def stripe(color: str, surface: str = "window-stripe") -> Gtk.Widget:
     identity.check_surface(surface)
     widget = Gtk.Box(height_request=4)
     widget.add_css_class("identity-stripe")
+    widget.add_css_class(_HIDE_WHEN_NONE)
     set_color(widget, color)
     return widget
 
@@ -88,6 +102,7 @@ def bar(color: str, surface: str = "sidebar-bar") -> Gtk.Widget:
     identity.check_surface(surface)
     widget = Gtk.Box(width_request=3)
     widget.add_css_class("identity-bar")
+    widget.add_css_class(_HIDE_WHEN_NONE)
     set_color(widget, color)
     return widget
 

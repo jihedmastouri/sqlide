@@ -41,8 +41,9 @@ _SECTIONS = (
             "Activate a function (or trigger) under Functions to edit "
             "its definition; Save shows the replacing statements for "
             "review before they run.",
-            "Type in the search box above the tree to fuzzy-find tables, "
-            "views and functions across loaded connections.",
+            "The magnifier beside Add Connection swaps that row for a "
+            "search box: type to fuzzy-find tables, views and functions "
+            "across loaded connections, Escape to put the buttons back.",
             "In a data tab, Filter and Sort in the bottom bar open "
             "separate panels; sorting supports several columns, and "
             "clicking a column header adds that column to the sort "
@@ -68,9 +69,9 @@ _SECTIONS = (
             "After a run the bottom panel shows a Status tab (each "
             "statement, its outcome and timing) followed by one result "
             "tab per statement.",
-            "The gear menu at the right of the toolbar holds settings "
-            "local to that console, like the completion language "
-            "server.",
+            "The gear menu at the right of the toolbar holds the "
+            "editor's settings: the font size, and the completion "
+            "language server for that console.",
         ),
     ),
     (
@@ -89,7 +90,8 @@ _SECTIONS = (
             "console. Closing a tab removes its entries from the "
             "panel scopes but not from the workspace-wide History "
             "tab.",
-            "Query History in the main menu opens the workspace-wide "
+            "Query History in the sidebar's settings menu opens the "
+            "workspace-wide "
             "history as a read-only table.",
             "Split in the header bar moves the current tab into a new "
             "pane so two tabs show side by side.",

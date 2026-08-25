@@ -12,7 +12,8 @@ separate, readable XML format.
 
 ## Exporting
 
-From a workspace window's main menu:
+From a workspace window, under **Preferences → General → Workspace
+Transfer**:
 
 - **Export Workspace…** — the workspace's name and colour, all its
   connections, and the filters saved against them.
@@ -35,7 +36,7 @@ exported — they describe the machine you left, not the databases.
   made unique against the ones already listed. An import can never
   overwrite a workspace you already have, so re-importing the same file
   is safe (it just makes another copy).
-- **Import Connections…** — a workspace window's main menu; the
+- **Import Connections…** — the same Preferences group; the
   connections are added to the open workspace. Names that collide are
   suffixed rather than replaced.
 

@@ -98,8 +98,8 @@ already running.
 
 Workspaces live in `~/.config/sqlide/workspaces/` as JSON keyed by a
 local id, with passwords in the keyring — not something to copy
-around. **Export Workspace…** and **Export Connections…** (a
-workspace window's main menu) write a small, readable XML file
+around. **Export Workspace…** and **Export Connections…**
+(Preferences → General → Workspace Transfer) write a small, readable XML file
 instead; the folder button in the workspace list imports one as a new
 workspace,
 and **Import Connections…** merges connections into the open one.

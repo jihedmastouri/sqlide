@@ -12,11 +12,13 @@ window closes (which also captures query-console SQL and the selected
 tab). When no tabs are open the content area shows a status message.
 
 Layout: the connections sidebar is the outermost OverlaySplitView and
-runs the full window height with its own header bar (add connection,
-Workspaces/settings menu); it is not collapsible or closable. To its
-right, the content area has its own header bar and the workspace's
-identity stripe under it, then a right OverlaySplitView (the side
-panel, hidden by default) wraps the tab area. A persistent status bar
+runs the full window height with its own header bar (Workspaces,
+settings menu) over a row that offers Add Connection, a search icon and
+Refresh — clicking the search icon puts the table filter where the
+first two were. It is not collapsible or closable. To its right, the content area has its own
+header bar and the workspace's identity stripe under it, then a
+Gtk.Paned whose draggable right-hand child is the side panel (hidden by
+default) wraps the tab area. A persistent status bar
 closes the content area at the bottom: the active tab's connection,
 its state, running jobs and transient messages, refreshed on every tab
 switch, run and connection change so it can never show a connection
@@ -28,7 +30,7 @@ sized evenly), so e.g. two tables can be shown next to each other.
 New tabs open in the last-clicked pane; a pane whose last tab is
 closed or moved away is removed. Right-clicking a tab closes it, the
 others, the ones to its right, or all of them across every pane; Close
-All Tabs is on the main menu and on ctrl+shift+w as well, and each
+All Tabs is on the sidebar menu and on ctrl+shift+w as well, and each
 close still goes through the guards below (an open transaction or a
 running MCP server asks first).
 The window owns the shared
@@ -45,9 +47,14 @@ from dataclasses import asdict, fields
 from datetime import datetime
 from typing import Callable
 
-from gi.repository import Adw, Gio, GLib, GObject, Gtk
+from gi.repository import Adw, Gio, GLib, Gtk
 
-from sqlide.frontend.util import describe, sidebar_menu_button, run_async
+from sqlide.frontend.util import (
+    describe,
+    run_async,
+    sidebar_menu_button,
+    workspaces_button,
+)
 
 from sqlide.backend import identity, schemas
 from sqlide.backend.connections import ConnectionProfile
@@ -71,6 +78,14 @@ from sqlide.frontend.sidebar import Sidebar
 from sqlide.frontend.status_bar import StatusBar
 from sqlide.frontend.table_designer import TableDesignerTab
 from sqlide.frontend import transfer
+
+
+# Default and floor width of the right side panel, in pixels. The
+# floor is what a DDL listing needs before it starts wrapping every
+# line; the default leaves the tab area the larger half on a 1100px
+# window, which is the size this window opens at.
+_SIDE_PANEL_WIDTH = 340
+_SIDE_PANEL_MIN_WIDTH = 260
 
 
 def _page_connection(child: Gtk.Widget | None) -> str:
@@ -130,7 +145,10 @@ class _TabPane(Gtk.Box):
             orientation=Gtk.Orientation.VERTICAL, hexpand=True, vexpand=True
         )
         self.view = Adw.TabView(vexpand=True)
-        self.bar = Adw.TabBar(view=self.view)
+        # expand-tabs off: tabs take the width of their titles instead
+        # of stretching to fill the bar, so the names line up from the
+        # left edge rather than floating in the middle of empty tabs.
+        self.bar = Adw.TabBar(view=self.view, expand_tabs=False)
         self.append(self.bar)
         self.append(self.view)
 
@@ -162,11 +180,10 @@ class MainWindow(Adw.ApplicationWindow):
         sidebar_header = Adw.HeaderBar()
         sidebar_header.set_show_end_title_buttons(False)
         sidebar_header.set_title_widget(Gtk.Label(label="Connections"))
-        add_button = Gtk.Button(icon_name="list-add-symbolic")
-        describe(add_button, "Add connection")
-        add_button.connect("clicked", self._add_connection)
-        sidebar_header.pack_start(add_button)
-        sidebar_header.pack_end(sidebar_menu_button(with_history=True))
+        # Two icons, two jobs: leave this workspace, or change how the
+        # app behaves. Everything else the sidebar does is a row below.
+        sidebar_header.pack_start(workspaces_button())
+        sidebar_header.pack_end(sidebar_menu_button())
 
         self._sidebar = Sidebar(
             ensure_connector=self.ensure_connector,
@@ -187,22 +204,9 @@ class MainWindow(Adw.ApplicationWindow):
             on_add_connection=self._add_connection,
             show_error=self.show_error,
         )
-        search = Gtk.SearchEntry(placeholder_text="Find tables…")
-        search.set_tooltip_text(
-            "Fuzzy-find tables, views and functions in loaded connections"
-        )
-        search.connect(
-            "search-changed",
-            lambda entry: self._sidebar.set_filter(entry.get_text()),
-        )
-        search_bar = Gtk.Box(
-            margin_top=6, margin_bottom=6, margin_start=6, margin_end=6
-        )
-        search_bar.append(search)
-        search.set_hexpand(True)
         sidebar_view = Adw.ToolbarView()
         sidebar_view.add_top_bar(sidebar_header)
-        sidebar_view.add_top_bar(search_bar)
+        sidebar_view.add_top_bar(self._sidebar_actions())
         sidebar_view.set_content(self._sidebar)
         self._split.set_sidebar(sidebar_view)
 
@@ -245,6 +249,15 @@ class MainWindow(Adw.ApplicationWindow):
         new_button.connect(
             "clicked", lambda *_: self.new_query(self._default_query_profile())
         )
+        # Split View sits at the very left of the content header, hard
+        # against the connections sidebar, because it is a layout
+        # control like the sidebar itself — not a thing you make. Its
+        # old home in the menu meant nobody found it.
+        split_button = Gtk.Button(icon_name="view-dual-symbolic")
+        split_button.add_css_class("flat")
+        describe(split_button, "Split View")
+        split_button.connect("clicked", self._split_current_tab)
+        content_header.pack_start(split_button)
         content_header.pack_start(new_button)
 
         self._tab_button = Adw.TabButton(view=self._active_pane.view)
@@ -273,34 +286,32 @@ class MainWindow(Adw.ApplicationWindow):
             on_delete_filter=self._delete_saved_filter,
         )
         self._side_panel.set_entries(workspace.history)
-        self._history_split = Adw.OverlaySplitView(
-            sidebar_position=Gtk.PackType.END, show_sidebar=False
+        # A Gtk.Paned rather than an Adw.OverlaySplitView, which has no
+        # user-resizable width: a DDL or an aggregate is often wider
+        # than any fixed default, so the divider is draggable. The panel
+        # is hidden, not removed, when off, so its width survives being
+        # toggled; the tab area is the child that absorbs the resize.
+        self._history_split = Gtk.Paned(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            resize_start_child=True,
+            shrink_start_child=False,
+            resize_end_child=False,
+            shrink_end_child=False,
         )
-        self._history_split.set_min_sidebar_width(260)
-        self._history_split.set_max_sidebar_width(600)
-        self._history_split.set_sidebar(self._side_panel)
-        self._history_split.set_content(self._stack)
+        self._side_panel.set_size_request(_SIDE_PANEL_MIN_WIDTH, -1)
+        self._side_panel.set_visible(False)
+        self._history_split.set_start_child(self._stack)
+        self._history_split.set_end_child(self._side_panel)
 
-        history_toggle = Gtk.ToggleButton(
+        self._history_toggle = Gtk.ToggleButton(
             icon_name="sidebar-show-right-symbolic"
         )
-        history_toggle.set_tooltip_text("Toggle side panel")
-        self._history_split.bind_property(
-            "show-sidebar",
-            history_toggle,
-            "active",
-            GObject.BindingFlags.SYNC_CREATE
-            | GObject.BindingFlags.BIDIRECTIONAL,
+        self._history_toggle.set_tooltip_text("Toggle side panel")
+        self._history_toggle.connect(
+            "toggled",
+            lambda button: self._set_side_panel_shown(button.get_active()),
         )
-        content_header.pack_end(history_toggle)
-
-        # Collapse the history side panel into an overlay on narrow
-        # windows; the connections sidebar stays put at any width.
-        breakpoint = Adw.Breakpoint.new(
-            Adw.BreakpointCondition.parse("max-width: 860sp")
-        )
-        breakpoint.add_setter(self._history_split, "collapsed", True)
-        self.add_breakpoint(breakpoint)
+        content_header.pack_end(self._history_toggle)
 
         # The content header and the workspace's identity stripe span
         # only the content area, to the right of the sidebar — the
@@ -382,6 +393,103 @@ class MainWindow(Adw.ApplicationWindow):
             self._sidebar.add_profile(profile)
         self._restore_tabs()
         self._update_active_panel()
+
+    # Side panel
+
+    def _set_side_panel_shown(self, shown: bool) -> None:
+        """Show or hide the right side panel, keeping the toggle button
+        in step (it is also driven from code, e.g. by the grid's
+        Aggregate item). The first time it opens, the divider is placed
+        at the panel's default width; after that whatever the user
+        dragged it to is left alone."""
+        if self._history_toggle.get_active() != shown:
+            self._history_toggle.set_active(shown)
+            return  # the toggle re-enters here with the new state
+        if shown and not self._side_panel.get_visible():
+            width = self._history_split.get_width()
+            if width:
+                self._history_split.set_position(
+                    max(0, width - _SIDE_PANEL_WIDTH)
+                )
+        self._side_panel.set_visible(shown)
+
+    # Sidebar toolbar
+
+    def _sidebar_actions(self) -> Gtk.Widget:
+        """The row under the sidebar header: "Add Connection" and a
+        search icon, then Refresh. The first two swap for the search
+        entry once the icon is clicked — a search box that is always
+        there costs a row of the sidebar to a control most sessions
+        never touch, so it is summoned instead.
+
+        Escape, or clearing the entry and leaving it, puts the buttons
+        back and drops the filter; the sidebar is never left silently
+        filtered by a box that is no longer visible."""
+        stack = Gtk.Stack(
+            transition_type=Gtk.StackTransitionType.CROSSFADE,
+        )
+
+        search = Gtk.SearchEntry(placeholder_text="Find tables…", hexpand=True)
+        search.set_tooltip_text(
+            "Fuzzy-find tables, views and functions in loaded connections"
+        )
+        search.connect(
+            "search-changed",
+            lambda entry: self._sidebar.set_filter(entry.get_text()),
+        )
+
+        def close_search(*_args) -> None:
+            search.set_text("")
+            self._sidebar.set_filter("")
+            stack.set_visible_child_name("actions")
+
+        search.connect("stop-search", close_search)
+
+        actions = Gtk.Box(spacing=6)
+        add = Gtk.Button(
+            child=Adw.ButtonContent(
+                icon_name="list-add-symbolic", label="Add Connection"
+            ),
+            hexpand=True,
+            css_classes=["flat"],
+        )
+        add.connect("clicked", self._add_connection)
+        actions.append(add)
+
+        open_search = Gtk.Button(icon_name="system-search-symbolic")
+        open_search.add_css_class("flat")
+        describe(open_search, "Search tables")
+
+        def show_search(*_args) -> None:
+            stack.set_visible_child_name("search")
+            search.grab_focus()
+
+        open_search.connect("clicked", show_search)
+        actions.append(open_search)
+
+        stack.add_named(actions, "actions")
+        stack.add_named(search, "search")
+        stack.set_visible_child_name("actions")
+        stack.set_hexpand(True)
+
+        # Refresh sits outside the stack, so it stays put when the row
+        # swaps to the search box — reloading is exactly what you do
+        # when a search comes up empty because the tree is stale.
+        refresh = Gtk.Button(icon_name="view-refresh-symbolic")
+        refresh.add_css_class("flat")
+        describe(refresh, "Refresh schemas")
+        refresh.connect("clicked", lambda *_: self._sidebar.reload_all())
+
+        row = Gtk.Box(
+            spacing=6,
+            margin_top=6,
+            margin_bottom=6,
+            margin_start=6,
+            margin_end=6,
+        )
+        row.append(stack)
+        row.append(refresh)
+        return row
 
     # Empty states
 
@@ -1128,7 +1236,7 @@ class MainWindow(Adw.ApplicationWindow):
             self._side_panel.set_aggregate(lines)
             return
         self._side_panel.show_aggregate(lines)
-        self._history_split.set_show_sidebar(True)
+        self._set_side_panel_shown(True)
 
     # Transfer (frontend/transfer.py, backend/exchange.py)
 
@@ -1608,7 +1716,7 @@ class MainWindow(Adw.ApplicationWindow):
                 # menu item: a save with no visible result reads as a
                 # save that did not happen.
                 self._side_panel.show_schemas()
-                self._history_split.set_show_sidebar(True)
+                self._set_side_panel_shown(True)
                 self.show_message(f"Saved schema “{name}”")
 
             run_async(work, done, lambda exc: self.show_error(str(exc)))

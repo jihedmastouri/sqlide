@@ -233,3 +233,8 @@ entry.cli-entry {
   box-shadow: 0 2px 8px alpha(black, 0.18);
   border-radius: 22px;
 }
+
+/* Editor font stepper, in the query console's gear popover. */
+.font-stepper-value {
+  font-weight: bold;
+}

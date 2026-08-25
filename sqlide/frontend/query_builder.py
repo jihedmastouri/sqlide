@@ -30,6 +30,7 @@ from sqlide.backend.db.base import (
     RelationInfo,
     ResultSet,
 )
+from sqlide.backend.settings import result_row_cap
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend.data_grid import (
     AggregateCallback,
@@ -585,15 +586,21 @@ class QueryBuilderTab(Gtk.Box):
         self._refresh_sql()
         self._status.set_text("Running…")
 
+        max_rows = result_row_cap()
+
         def work():
             connector = self._ensure(self.profile)
-            return connector.execute(sql)
+            return connector.execute(sql, max_rows=max_rows)
 
         def done(result) -> None:
             if isinstance(result, ResultSet):
                 self._results_panel.reveal()
                 self._grid.set_result(result.columns, result.rows)
-                self._status.set_text(f"{len(result)} row(s)")
+                self._status.set_text(
+                    f"first {len(result)} row(s) of a larger result"
+                    if result.truncated
+                    else f"{len(result)} row(s)"
+                )
             else:
                 self._status.set_text(f"{result} row(s) affected")
             if self.on_ran is not None:

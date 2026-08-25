@@ -46,6 +46,9 @@ class JdbcConnector(Connector):
         self._conn = None
         self._quote = '"'
         self._lock = threading.Lock()
+        # The cursor currently executing, for cancel(). Set and cleared
+        # by execute() only; every other caller leaves it alone.
+        self._active_cursor = None
 
     def connect(self) -> None:
         try:
@@ -146,23 +149,63 @@ class JdbcConnector(Connector):
         columns, rows = self._query(sql, params=params, skip=offset, limit=limit)
         return ResultSet(columns=columns, rows=rows)
 
-    def execute(self, sql: str) -> ResultSet | int:
+    def execute(self, sql: str, max_rows: int | None = None) -> ResultSet | int:
         if self._conn is None:
             raise ConnectorError("Not connected")
+        # One row past the cap tells truncated from a result that
+        # happens to be exactly max_rows long.
+        limit = max_rows + 1 if max_rows else None
         try:
             with self._lock:
                 cur = self._conn.cursor()
+                self._active_cursor = cur
                 try:
                     cur.execute(sql)
                     if cur.description is not None:
                         columns = [d[0] for d in cur.description]
-                        rows = [tuple(r) for r in cur.fetchall()]
-                        return ResultSet(columns=columns, rows=rows)
+                        raw = (
+                            cur.fetchmany(limit)
+                            if limit is not None
+                            else cur.fetchall()
+                        )
+                        rows = [tuple(r) for r in raw]
+                        truncated = (
+                            max_rows is not None and len(rows) > max_rows
+                        )
+                        return ResultSet(
+                            columns=columns,
+                            rows=rows[:max_rows] if truncated else rows,
+                            truncated=truncated,
+                        )
                     return max(cur.rowcount, 0)
                 finally:
+                    self._active_cursor = None
                     cur.close()
         except ConnectorError:
             raise
+        except Exception as exc:
+            raise ConnectorError(str(exc)) from exc
+
+    supports_cancel = True
+
+    def cancel(self) -> None:
+        """java.sql.Statement.cancel() on the statement in flight.
+
+        jaydebeapi keeps the JDBC statement it prepared on the cursor as
+        `_prep`; there is no public accessor, so this reaches for it and
+        says so plainly when a driver or a jaydebeapi version doesn't
+        provide one. Whether the cancel is honoured at all is up to the
+        JDBC driver — many ignore it. Not under self._lock: the thread
+        being cancelled holds it.
+        """
+        cursor = self._active_cursor
+        statement = getattr(cursor, "_prep", None) if cursor else None
+        if statement is None:
+            raise ConnectorError(
+                "This JDBC driver does not expose a cancellable statement"
+            )
+        try:
+            statement.cancel()
         except Exception as exc:
             raise ConnectorError(str(exc)) from exc
 

@@ -262,7 +262,11 @@ class PostgresConnector(Connector):
             self._tunnel = None
 
     def _run(
-        self, sql: str, params: tuple = (), expect_rowcount: int | None = None
+        self,
+        sql: str,
+        params: tuple = (),
+        expect_rowcount: int | None = None,
+        fetch_limit: int | None = None,
     ) -> tuple[list[str], list[tuple], int]:
         """Execute one statement; returns (columns, rows, rowcount).
 
@@ -282,7 +286,11 @@ class PostgresConnector(Connector):
                         cur.execute(sql, params or None)
                         if cur.description is not None:
                             columns = [d.name for d in cur.description]
-                            rows = list(cur.fetchall())
+                            rows = list(
+                                cur.fetchmany(fetch_limit)
+                                if fetch_limit is not None
+                                else cur.fetchall()
+                            )
                         else:
                             columns, rows = [], []
                         if (
@@ -831,11 +839,43 @@ class PostgresConnector(Connector):
         )
         return ResultSet(columns=columns, rows=rows)
 
-    def execute(self, sql: str) -> ResultSet | int:
-        columns, rows, rowcount = self._run(sql)
+    def execute(self, sql: str, max_rows: int | None = None) -> ResultSet | int:
+        # One row past the cap: the extra is what tells truncated from
+        # a result that happens to be exactly max_rows long.
+        limit = max_rows + 1 if max_rows else None
+        columns, rows, rowcount = self._run(sql, fetch_limit=limit)
         if columns:
-            return ResultSet(columns=columns, rows=rows)
+            truncated = max_rows is not None and len(rows) > max_rows
+            return ResultSet(
+                columns=columns,
+                rows=rows[:max_rows] if truncated else rows,
+                truncated=truncated,
+            )
         return max(rowcount, 0)
+
+    supports_cancel = True
+
+    def cancel(self) -> None:
+        """Send a cancel request over a side channel to the backend
+        running our statement.
+
+        Deliberately outside self._lock: the lock is held by the thread
+        blocked in execute(), which is exactly the thread we are trying
+        to unblock. psycopg's cancel path is documented as safe to call
+        from another thread for this reason. cancel_safe() (3.2+) does
+        it over the encrypted connection; cancel() is the legacy
+        plaintext fallback.
+        """
+        conn = self._conn
+        if conn is None:
+            return
+        try:
+            if hasattr(conn, "cancel_safe"):
+                conn.cancel_safe()
+            else:
+                conn.cancel()
+        except psycopg.Error as exc:
+            raise ConnectorError(_message(exc)) from exc
 
     def update_cell(
         self, table: str, pk_values: dict[str, Any], column: str, value: Any

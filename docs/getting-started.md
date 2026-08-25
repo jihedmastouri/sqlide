@@ -51,6 +51,18 @@ The `log` table has no primary key and shows as read-only, as does
 Click the terminal icon on the connection row to open a query console.
 Type SQL and press **Ctrl+Enter** (or the Run button).
 
+While a statement is running, **Cancel** appears next to Run and asks
+the server to stop it (a cancel request on Postgres, `KILL QUERY` on
+MySQL, `interrupt` on SQLite). A run that is cancelled — or one you
+supersede by starting another — never puts its rows in the grid, even
+if the server finishes it anyway.
+
+A statement that returns more rows than **Preferences ▸ General ▸
+Maximum Rows Fetched** (5000 by default) is fetched only up to that
+many, and the result is shown under a banner saying so, so a capped
+result is never mistaken for the whole answer. Set it to 0 to fetch
+everything.
+
 **Explain** runs the same statement as a plan instead, and shows it
 three ways: as a **Graph** (the tree a plan actually is — zoomable,
 with each step's full text on hover), as the **Table** the server

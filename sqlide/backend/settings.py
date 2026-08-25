@@ -14,6 +14,10 @@ Settings:
 - confirm_destructive: when the destructive-action ladder engages —
   "always", "non-dev" (the default: development connections run
   without a prompt) or "never". See backend/sql_risk.py.
+- max_result_rows: how many rows a console/preview statement may fetch
+  into a grid. An unbounded SELECT over a big table otherwise pulls
+  the whole result into memory and freezes the app; past the cap the
+  result is marked truncated and the UI says so. 0 means no cap.
 - lsp_enabled: master switch for completion language servers
 - lsp_defaults: connection kind -> what an "auto" console LSP choice
   resolves to ("auto" keeps the built-in resolution in
@@ -47,6 +51,7 @@ from sqlide.backend.sql_risk import CONFIRM_MODES, DEFAULT_CONFIRM_MODE
 
 THEMES = ("system", "light", "dark")
 DEFAULT_FONT_SIZE = 11
+DEFAULT_MAX_RESULT_ROWS = 5000
 
 
 def _config_dir() -> Path:
@@ -60,6 +65,7 @@ class Settings:
     editor_font_size: int = DEFAULT_FONT_SIZE
     vim_mode: bool = False
     confirm_destructive: str = DEFAULT_CONFIRM_MODE
+    max_result_rows: int = DEFAULT_MAX_RESULT_ROWS
     lsp_enabled: bool = True
     lsp_defaults: dict[str, str] = field(default_factory=dict)
     mcp_defaults: dict[str, str] = field(default_factory=dict)
@@ -80,6 +86,9 @@ class Settings:
                 if (mode := data.get("confirm_destructive")) in CONFIRM_MODES
                 else DEFAULT_CONFIRM_MODE
             ),
+            max_result_rows=max(
+                0, int(data.get("max_result_rows", DEFAULT_MAX_RESULT_ROWS))
+            ),
             lsp_enabled=bool(data.get("lsp_enabled", True)),
             lsp_defaults={
                 str(k): str(v)
@@ -95,6 +104,12 @@ class Settings:
                 for k, v in (data.get("keymap") or {}).items()
             },
         )
+
+
+def result_row_cap() -> int | None:
+    """The row cap to pass as Connector.execute(max_rows=…), or None
+    when the user turned capping off."""
+    return store.settings.max_result_rows or None
 
 
 class SettingsStore:

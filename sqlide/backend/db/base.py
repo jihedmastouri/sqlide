@@ -138,6 +138,10 @@ class SortSpec:
 class ResultSet:
     columns: list[str]
     rows: list[tuple[Any, ...]] = field(default_factory=list)
+    # True when the adapter stopped fetching at the caller's max_rows
+    # and the statement had more rows to give. The UI must say so:
+    # a silently short result reads as the whole answer.
+    truncated: bool = False
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -616,9 +620,34 @@ class Connector(ABC):
             )
 
     @abstractmethod
-    def execute(self, sql: str) -> ResultSet | int:
+    def execute(self, sql: str, max_rows: int | None = None) -> ResultSet | int:
         """Run arbitrary SQL. Returns a ResultSet for row-returning
-        statements, otherwise the affected row count."""
+        statements, otherwise the affected row count.
+
+        With max_rows set, at most that many rows are fetched and the
+        ResultSet is flagged `truncated` if the statement had more. An
+        unbounded fetch is how a SELECT over a large table takes the
+        whole app down, so every caller that renders into a grid
+        should pass a cap.
+        """
+
+    # Whether cancel() can actually reach the running statement. False
+    # keeps the UI from offering a Cancel button that would do nothing.
+    supports_cancel = False
+
+    def cancel(self) -> None:
+        """Ask the server to abort the statement running right now.
+
+        Called from a *different* thread than the one blocked in
+        execute(), so an implementation must not take the connector
+        lock — it would deadlock behind the very statement it is
+        trying to stop. Each backend has its own mechanism (a cancel
+        request on the socket, KILL QUERY over a second connection,
+        sqlite3's interrupt); the cancelled statement fails on its own
+        thread with a driver error, which is the caller's signal that
+        it stopped.
+        """
+        raise ConnectorError("This connection cannot cancel a running statement")
 
     @abstractmethod
     def update_cell(

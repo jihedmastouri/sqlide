@@ -17,10 +17,11 @@ Two more session-scoped dropdowns (not persisted in TabState):
   schema and a database are the same object and the dropdown to its
   left already switches it. Overrides `schema` on the same copy.
 
-Console-local settings live behind the gear MenuButton at the right
-end of the toolbar; currently that's the LSP choice, which pins the
-completion language server for this console — auto (plugin, then
-defaults), off, or a specific plugin/PATH server.
+Editor settings live behind the gear MenuButton at the right end of
+the toolbar: the editor font size (global, but reached from where you
+notice you want it), and the LSP choice, which pins the completion
+language server for this console alone — auto (plugin, then defaults),
+off, or a specific plugin/PATH server.
 
 The editor holds a script of any number of statements. Run (Ctrl+Enter)
 executes the selection if there is one, otherwise the statement under
@@ -67,6 +68,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 from sqlide.backend import placeholders as sql_placeholders
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import Connector, ResultSet
+from sqlide.backend.settings import result_row_cap
 from sqlide.backend.sql_split import split_statements, statement_at
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend import confirm, feedback, keymap
@@ -79,7 +81,7 @@ from sqlide.frontend.lsp_completion import LspCompletionProvider
 from sqlide.frontend.plan_graph import plan_graph
 from sqlide.frontend.results_panel import ResultsPanel
 from sqlide.frontend.sql_editor import SqlEditor
-from sqlide.frontend.util import describe, run_async
+from sqlide.frontend.util import describe, font_size_stepper, run_async
 from sqlide.lsp import servers as lsp_servers
 
 # Connection kinds where one server hosts multiple databases.
@@ -104,6 +106,15 @@ class QueryConsole(Gtk.Box):
         self._ensure = ensure_connector
         # Hover-DDL caches (reset on connection/database change, which
         # can already fire while the widgets below are being built).
+        # Run state machine: "idle" -> "running" -> ("cancelling") ->
+        # "idle". _job_id names the run in flight; every result that
+        # comes back carries the id it was started with, and one that
+        # no longer matches is dropped on the floor. Without that, a
+        # slow query cancelled or superseded still lands its rows in
+        # the grid seconds later, on top of whatever is there now.
+        self._state = "idle"
+        self._job_id = 0
+        self._job_connector: Connector | None = None
         self._hover_seq = 0  # discards stale async results
         self._hover_tables: set[str] | None = None
         self._hover_loading = False
@@ -156,6 +167,13 @@ class QueryConsole(Gtk.Box):
         self._explain_button.connect(
             "clicked", lambda *_: self._run(explain=True)
         )
+        self._cancel_button = Gtk.Button(label="Cancel")
+        self._cancel_button.add_css_class("destructive-action")
+        self._cancel_button.set_tooltip_text(
+            "Ask the server to stop the running statement"
+        )
+        self._cancel_button.set_visible(False)
+        self._cancel_button.connect("clicked", lambda *_: self._cancel())
         self._dropdown = Gtk.DropDown(model=connection_names)
         self._dropdown.set_tooltip_text("Connection to run against")
         self._db_dropdown = Gtk.DropDown(visible=False)
@@ -226,6 +244,7 @@ class QueryConsole(Gtk.Box):
         toolbar.append(self._run_button)
         toolbar.append(self._run_all_button)
         toolbar.append(self._explain_button)
+        toolbar.append(self._cancel_button)
         toolbar.append(self._dropdown)
         toolbar.append(self._db_dropdown)
         toolbar.append(self._schema_dropdown)
@@ -308,8 +327,11 @@ class QueryConsole(Gtk.Box):
         self.append(bottom)
 
     def _settings_button(self) -> Gtk.MenuButton:
-        """Gear menu at the right end of the toolbar: settings local to
-        this console only (currently the completion language server)."""
+        """Gear menu at the right end of the toolbar: the settings that
+        belong to the editor under it — its completion language server,
+        which is this console's alone, and the editor font size, which
+        is global but is reached from here because that is where you
+        are when you want it bigger."""
         box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
             spacing=6,
@@ -318,6 +340,11 @@ class QueryConsole(Gtk.Box):
             margin_start=6,
             margin_end=6,
         )
+        font_label = Gtk.Label(label="Editor font size", xalign=0)
+        font_label.add_css_class("dim-label")
+        box.append(font_label)
+        box.append(font_size_stepper())
+        box.append(Gtk.Separator(margin_top=6, margin_bottom=6))
         label = Gtk.Label(label="Completion language server", xalign=0)
         label.add_css_class("dim-label")
         box.append(label)
@@ -739,34 +766,41 @@ class QueryConsole(Gtk.Box):
         explain: bool = False,
     ) -> None:
         name = profile.name
-        self._run_button.set_sensitive(False)
-        self._run_all_button.set_sensitive(False)
-        self._explain_button.set_sensitive(False)
-        self._set_status("Running…", error=False)
-        self._set_busy(True)
+        self._job_id += 1
+        job = self._job_id
+        self._job_connector = None
+        self._enter_running()
+        max_rows = result_row_cap()
 
         def work():
             connector = self._ensure(profile)
+            # Published for _cancel(), which runs on the main loop
+            # while this thread is blocked in execute().
+            self._job_connector = connector
             prefix = connector.explain_prefix() if explain else ""
             outcomes: list[tuple[str, ResultSet | int | Exception, float]] = []
             for sql in statements:
                 sql = prefix + sql
                 started = time.perf_counter()
                 try:
-                    result: ResultSet | int | Exception = connector.execute(sql)
+                    result: ResultSet | int | Exception = connector.execute(
+                        sql, max_rows=max_rows
+                    )
                 except Exception as exc:  # shown in the statement's tab
                     result = exc
                 outcomes.append((sql, result, time.perf_counter() - started))
                 if isinstance(result, Exception):
                     break
+                # A cancel between statements stops the script here
+                # rather than running the rest of it.
+                if self._job_id != job:
+                    break
             return outcomes, connector.in_transaction()
 
         def done(work_result):
+            if not self._finish_job(job):
+                return
             outcomes, in_transaction = work_result
-            self._set_busy(False)
-            self._run_button.set_sensitive(True)
-            self._run_all_button.set_sensitive(True)
-            self._explain_button.set_sensitive(True)
             self._set_transaction_open(in_transaction)
             self._show_outcomes(
                 outcomes, planned=len(statements), explain=explain
@@ -777,16 +811,83 @@ class QueryConsole(Gtk.Box):
 
         def failed(exc):
             # Connecting failed before any statement ran.
-            self._set_busy(False)
-            self._run_button.set_sensitive(True)
-            self._run_all_button.set_sensitive(True)
-            self._explain_button.set_sensitive(True)
+            if not self._finish_job(job):
+                return
             self.refresh_transaction_badge()
             self._set_status(str(exc), error=True)
             if self.on_ran is not None:
                 self.on_ran(statements[0], name, False)
 
         run_async(work, done, failed)
+
+    # Run state
+    #
+    # Everything that starts a run goes through _enter_running, and
+    # every result that comes back goes through _finish_job, so the
+    # buttons and the "is a run in flight" answer are derived from one
+    # place instead of being re-set at four call sites.
+
+    def _enter_running(self) -> None:
+        self._state = "running"
+        for button in (
+            self._run_button, self._run_all_button, self._explain_button
+        ):
+            button.set_sensitive(False)
+        self._cancel_button.set_visible(True)
+        self._cancel_button.set_sensitive(True)
+        self._set_status("Running…", error=False)
+        self._set_busy(True)
+
+    def _finish_job(self, job: int) -> bool:
+        """Called from the main loop with the id the finished run was
+        started under. Returns False when the caller must drop its
+        result: a newer run has started, so these rows are stale.
+
+        A cancelled run is not stale — it is the current job, and its
+        (usually failed) outcome is replaced with a plain "Cancelled"
+        rather than the driver's error about an interrupted statement.
+        """
+        if job != self._job_id:
+            return False
+        cancelled = self._state == "cancelling"
+        self._state = "idle"
+        self._job_connector = None
+        self._set_busy(False)
+        self._cancel_button.set_visible(False)
+        for button in (
+            self._run_button, self._run_all_button, self._explain_button
+        ):
+            button.set_sensitive(True)
+        if cancelled:
+            self.refresh_transaction_badge()
+            self._set_status("Cancelled", error=False)
+            return False
+        return True
+
+    def _cancel(self) -> None:
+        """Ask the backend to stop the statement in flight.
+
+        The state flips first: whatever the connector's cancel does to
+        the running thread — abort it, or arrive too late and let it
+        finish — the result that comes back is reported as cancelled
+        and never rendered.
+        """
+        if self._state != "running":
+            return
+        self._state = "cancelling"
+        self._cancel_button.set_sensitive(False)
+        self._set_status("Cancelling…", error=False)
+        connector = self._job_connector
+        if connector is None:
+            # Still connecting; nothing to cancel server-side. The
+            # result is dropped when it arrives.
+            return
+        try:
+            connector.cancel()
+        except Exception as exc:
+            # The statement keeps running; say so instead of leaving a
+            # Cancel button that looks like it worked.
+            self._set_status(f"Could not cancel: {exc}", error=True)
 
     # Files
 
@@ -886,7 +987,15 @@ class QueryConsole(Gtk.Box):
                 page: Gtk.Widget = (
                     _explain_views(grid, result) if explain else grid
                 )
-                counts.append(f"{len(result)} row(s)")
+                counts.append(
+                    f"first {len(result)} row(s)"
+                    if result.truncated
+                    else f"{len(result)} row(s)"
+                )
+                if result.truncated:
+                    # A capped result that says nothing reads as the
+                    # whole answer; put the limit where the rows are.
+                    page = _truncation_notice(page, len(result))
             elif isinstance(result, Exception):
                 # Inline, verbatim, with the statement and a Copy
                 # button: a database error is never a toast.
@@ -931,6 +1040,23 @@ class QueryConsole(Gtk.Box):
             self._status.add_css_class("dim-label")
 
 
+def _truncation_notice(page: Gtk.Widget, shown: int) -> Gtk.Widget:
+    """Put the grid under a banner saying the fetch stopped early and
+    where the limit is set, so a short result is never mistaken for a
+    complete one."""
+    banner = Adw.Banner(
+        title=(
+            f"Showing the first {shown} rows. Add LIMIT to the "
+            "statement, or raise the cap in Preferences ▸ General."
+        ),
+        revealed=True,
+    )
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    box.append(banner)
+    box.append(page)
+    return box
+
+
 def _tab_title(index: int, sql: str, max_chars: int = 20) -> str:
     snippet = " ".join(sql.split())
     if len(snippet) > max_chars:
@@ -954,7 +1080,11 @@ def _status_page(
     )
     for i, (sql, result, elapsed) in enumerate(outcomes):
         if isinstance(result, ResultSet):
-            outcome, failed = f"OK · {len(result)} row(s)", False
+            outcome, failed = (
+                f"OK · first {len(result)} row(s) of a larger result"
+                if result.truncated
+                else f"OK · {len(result)} row(s)"
+            ), False
         elif isinstance(result, Exception):
             outcome, failed = f"Failed · {result}", True
         else:

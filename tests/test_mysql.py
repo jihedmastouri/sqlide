@@ -341,3 +341,41 @@ def test_mysql_alter_path_refuses_what_it_cannot_express(mysql):
             db, "users", ["id", "name", "email"],
             "CREATE TABLE users (id int, name varchar(40), email varchar(40))",
         )
+
+
+def test_mysql_row_cap_reports_truncation(mysql):
+    _, db = mysql
+    result = db.execute("SELECT * FROM users", max_rows=1)
+    assert len(result) == 1
+    assert result.truncated
+    total = db.execute("SELECT COUNT(*) FROM users").rows[0][0]
+    exact = db.execute("SELECT * FROM users", max_rows=total)
+    assert len(exact) == total and not exact.truncated
+
+
+def test_mysql_cancel_kills_the_running_query(mysql):
+    import threading
+    import time
+
+    _, db = mysql
+    error: list[Exception] = []
+    started = threading.Event()
+
+    def run() -> None:
+        started.set()
+        try:
+            db.execute("SELECT SLEEP(30)")
+        except Exception as exc:
+            error.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    started.wait(5)
+    time.sleep(0.3)  # let the statement reach the server
+    db.cancel()
+    worker.join(15)
+
+    # KILL QUERY aborts the statement; the session itself survives, so
+    # the connector keeps working without reconnecting.
+    assert not worker.is_alive(), "cancel did not unblock the statement"
+    assert db.execute("SELECT 1").rows[0][0] == 1

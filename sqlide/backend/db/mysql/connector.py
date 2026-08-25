@@ -128,6 +128,11 @@ class MysqlConnector(Connector):
         self._conn: pymysql.connections.Connection | None = None
         self._tunnel = None  # sqlide.backend.ssh.SshTunnel when active
         self._lock = threading.Lock()
+        # Set at connect(): what a second, short-lived connection needs
+        # to reach the same server, and the id of the session whose
+        # statement cancel() has to KILL.
+        self._connect_kwargs: dict = {}
+        self._thread_id: int | None = None
 
     def _ssl_kwargs(self) -> dict:
         """pymysql keyword args for the profile's SSL settings."""
@@ -173,20 +178,23 @@ class MysqlConnector(Connector):
                 self._tunnel = None
                 raise
             host = "127.0.0.1"
+        kwargs = dict(
+            host=host,
+            port=port,
+            user=self.user,
+            password=self.password,
+            database=self.database or None,
+            autocommit=True,
+            # FOUND_ROWS: UPDATE rowcounts report matched rows, not
+            # changed rows — otherwise update_cell's expect_rowcount
+            # check fails when a cell is set to its current value.
+            client_flag=CLIENT.FOUND_ROWS,
+            **self._ssl_kwargs(),
+        )
         try:
-            self._conn = pymysql.connect(
-                host=host,
-                port=port,
-                user=self.user,
-                password=self.password,
-                database=self.database or None,
-                autocommit=True,
-                # FOUND_ROWS: UPDATE rowcounts report matched rows, not
-                # changed rows — otherwise update_cell's expect_rowcount
-                # check fails when a cell is set to its current value.
-                client_flag=CLIENT.FOUND_ROWS,
-                **self._ssl_kwargs(),
-            )
+            self._conn = pymysql.connect(**kwargs)
+            self._connect_kwargs = kwargs
+            self._thread_id = self._conn.thread_id()
         except pymysql.Error as exc:
             self._stop_tunnel()
             raise ConnectorError(_message(exc)) from exc
@@ -209,7 +217,11 @@ class MysqlConnector(Connector):
             self._tunnel = None
 
     def _run(
-        self, sql: str, params: tuple = (), expect_rowcount: int | None = None
+        self,
+        sql: str,
+        params: tuple = (),
+        expect_rowcount: int | None = None,
+        fetch_limit: int | None = None,
     ) -> tuple[list[str], list[tuple], int]:
         """Execute one statement; returns (columns, rows, rowcount).
 
@@ -229,7 +241,11 @@ class MysqlConnector(Connector):
                         cur.execute(sql, params or None)
                         if cur.description is not None:
                             columns = [d[0] for d in cur.description]
-                            rows = list(cur.fetchall())
+                            rows = list(
+                                cur.fetchmany(fetch_limit)
+                                if fetch_limit is not None
+                                else cur.fetchall()
+                            )
                         else:
                             columns, rows = [], []
                         if (
@@ -529,11 +545,52 @@ class MysqlConnector(Connector):
         )
         return ResultSet(columns=columns, rows=rows)
 
-    def execute(self, sql: str) -> ResultSet | int:
-        columns, rows, rowcount = self._run(sql)
+    def execute(self, sql: str, max_rows: int | None = None) -> ResultSet | int:
+        # One row past the cap: the extra is what tells truncated from
+        # a result that happens to be exactly max_rows long.
+        limit = max_rows + 1 if max_rows else None
+        columns, rows, rowcount = self._run(sql, fetch_limit=limit)
         if columns:
-            return ResultSet(columns=columns, rows=rows)
+            truncated = max_rows is not None and len(rows) > max_rows
+            return ResultSet(
+                columns=columns,
+                rows=rows[:max_rows] if truncated else rows,
+                truncated=truncated,
+            )
         return max(rowcount, 0)
+
+    supports_cancel = True
+
+    def cancel(self) -> None:
+        """KILL QUERY our own session from a second connection.
+
+        MySQL has no out-of-band cancel: the only way to stop a running
+        statement is another session telling the server to kill it. So
+        this opens a throwaway connection (same credentials, through
+        the same SSH tunnel if one is up — _connect_kwargs already
+        points at the local end) and kills by session id. It must not
+        take self._lock, which the statement being killed is holding.
+        """
+        thread_id = self._thread_id
+        if self._conn is None or thread_id is None:
+            return
+        try:
+            killer = pymysql.connect(**self._connect_kwargs)
+        except pymysql.Error as exc:
+            raise ConnectorError(
+                f"Could not open a second connection to cancel: "
+                f"{_message(exc)}"
+            ) from exc
+        try:
+            with killer.cursor() as cur:
+                cur.execute("KILL QUERY %s", (thread_id,))
+        except pymysql.Error as exc:
+            raise ConnectorError(_message(exc)) from exc
+        finally:
+            try:
+                killer.close()
+            except pymysql.Error:
+                pass
 
     def update_cell(
         self, table: str, pk_values: dict[str, Any], column: str, value: Any

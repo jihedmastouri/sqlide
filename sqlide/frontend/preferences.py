@@ -86,6 +86,25 @@ class PreferencesDialog(Adw.PreferencesDialog):
 
         page.add(group)
 
+        results = Adw.PreferencesGroup(
+            title="Results",
+            description="A statement that returns more rows than the "
+            "cap is fetched only up to it, and the result is marked as "
+            "truncated. Without a cap, one SELECT over a large table "
+            "pulls the whole thing into memory.",
+        )
+        rows_row = Adw.SpinRow.new_with_range(0, 1_000_000, 500)
+        rows_row.set_title("Maximum Rows Fetched")
+        rows_row.set_subtitle("Per statement in a console or query "
+                              "builder. 0 fetches everything.")
+        rows_row.set_value(settings.max_result_rows)
+        rows_row.connect(
+            "notify::value",
+            lambda row, *_: store.update(max_result_rows=int(row.get_value())),
+        )
+        results.add(rows_row)
+        page.add(results)
+
         safety = Adw.PreferencesGroup(
             title="Safety",
             description="How much friction a DROP, TRUNCATE, DELETE or "

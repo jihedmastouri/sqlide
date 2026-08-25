@@ -483,3 +483,41 @@ def test_postgres_alter_path_refuses_what_it_cannot_express(postgres):
             db, "users", ["id", "name", "email"],
             "CREATE TABLE users (id integer, name text, email text)",
         )
+
+
+def test_postgres_row_cap_reports_truncation(postgres):
+    _, db = postgres
+    result = db.execute("SELECT * FROM generate_series(1, 100)", max_rows=10)
+    assert len(result) == 10
+    assert result.truncated
+    # Exactly at the cap is the whole answer, not a clipped one.
+    exact = db.execute("SELECT * FROM generate_series(1, 10)", max_rows=10)
+    assert len(exact) == 10 and not exact.truncated
+
+
+def test_postgres_cancel_stops_a_running_statement(postgres):
+    import threading
+    import time
+
+    _, db = postgres
+    error: list[Exception] = []
+    started = threading.Event()
+
+    def run() -> None:
+        started.set()
+        try:
+            db.execute("SELECT pg_sleep(30)")
+        except Exception as exc:
+            error.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    started.wait(5)
+    time.sleep(0.3)  # let the statement reach the server
+    db.cancel()
+    worker.join(15)
+
+    assert not worker.is_alive(), "cancel did not unblock the statement"
+    assert isinstance(error[0], ConnectorError)
+    # The connection is still usable afterwards.
+    assert db.execute("SELECT 1").rows[0][0] == 1

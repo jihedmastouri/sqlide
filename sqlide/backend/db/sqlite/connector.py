@@ -131,7 +131,11 @@ class SqliteConnector(Connector):
             self._conn = None
 
     def _run(
-        self, sql: str, params: tuple = (), expect_rowcount: int | None = None
+        self,
+        sql: str,
+        params: tuple = (),
+        expect_rowcount: int | None = None,
+        fetch_limit: int | None = None,
     ) -> tuple[list[str], list[tuple], int]:
         """Execute one statement; returns (columns, rows, rowcount).
 
@@ -155,7 +159,11 @@ class SqliteConnector(Connector):
                     cur = self._conn.execute(sql, params)
                     if cur.description is not None:
                         columns = [d[0] for d in cur.description]
-                        rows = cur.fetchall()
+                        rows = (
+                            cur.fetchmany(fetch_limit)
+                            if fetch_limit is not None
+                            else cur.fetchall()
+                        )
                     else:
                         columns, rows = [], []
                     if (
@@ -393,11 +401,30 @@ class SqliteConnector(Connector):
         )
         return ResultSet(columns=columns, rows=rows)
 
-    def execute(self, sql: str) -> ResultSet | int:
-        columns, rows, rowcount = self._run(sql)
+    def execute(self, sql: str, max_rows: int | None = None) -> ResultSet | int:
+        # One row past the cap: the extra is what tells truncated from
+        # a result that happens to be exactly max_rows long.
+        limit = max_rows + 1 if max_rows else None
+        columns, rows, rowcount = self._run(sql, fetch_limit=limit)
         if columns:
-            return ResultSet(columns=columns, rows=rows)
+            truncated = max_rows is not None and len(rows) > max_rows
+            return ResultSet(
+                columns=columns,
+                rows=rows[:max_rows] if truncated else rows,
+                truncated=truncated,
+            )
         return max(rowcount, 0)
+
+    supports_cancel = True
+
+    def cancel(self) -> None:
+        # interrupt() is the one sqlite3 call meant to be made from
+        # another thread while a statement runs; the blocked execute
+        # then raises OperationalError("interrupted").
+        conn = self._conn
+        if conn is None:
+            return
+        conn.interrupt()
 
     def update_cell(
         self, table: str, pk_values: dict[str, Any], column: str, value: Any

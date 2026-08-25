@@ -8,7 +8,9 @@ every catalog query below scopes itself to DATABASE().
 from __future__ import annotations
 
 import threading
+from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pymysql
 from pymysql.constants import CLIENT, SERVER_STATUS
@@ -28,6 +30,7 @@ from sqlide.backend.db.base import (
     TypeSpec,
     build_filter_clauses,
 )
+from sqlide.backend.settings import session_time_zone
 
 # Server-side catalogs that are not user databases.
 _SYSTEM_SCHEMAS = ("information_schema", "performance_schema", "mysql", "sys")
@@ -198,6 +201,35 @@ class MysqlConnector(Connector):
         except pymysql.Error as exc:
             self._stop_tunnel()
             raise ConnectorError(_message(exc)) from exc
+        self._apply_time_zone()
+
+    def _apply_time_zone(self) -> None:
+        """Pin the session's zone, so a TIMESTAMP reads the same
+        against every server instead of following whichever time_zone
+        the server happens to be configured with.
+
+        Named zones only work where the server's mysql.time_zone
+        tables are populated, which many installations skip; the
+        fallback is the zone's current UTC offset, which MySQL always
+        accepts. An offset does not follow a DST change, so a session
+        left open across one shows timestamps an hour out until it is
+        reconnected — still better than not knowing the zone at all.
+
+        Best-effort: a server that rejects both keeps its own setting
+        rather than failing the whole connection.
+        """
+        zone = session_time_zone()
+        if zone is None or self._conn is None:
+            return
+        for value in (zone, _utc_offset(zone)):
+            if not value:
+                continue
+            try:
+                with self._conn.cursor() as cursor:
+                    cursor.execute("SET time_zone = %s", (value,))
+                return
+            except pymysql.Error:
+                continue
 
     def close(self) -> None:
         if self._conn is not None:
@@ -623,6 +655,22 @@ class MysqlConnector(Connector):
         if "\x00" in name:
             raise ConnectorError("Identifier contains a NUL byte")
         return "`" + name.replace("`", "``") + "`"
+
+
+def _utc_offset(zone: str) -> str:
+    """A zone name as the "+HH:MM" offset it is on right now, for a
+    server without the named-zone tables. Already-an-offset input is
+    handed back unchanged; an unknown name gives "" (nothing to try)."""
+    if zone.startswith(("+", "-")):
+        return zone
+    try:
+        delta = datetime.now(ZoneInfo(zone)).utcoffset()
+    except (ZoneInfoNotFoundError, ValueError):
+        return ""
+    total = int((delta or timedelta(0)).total_seconds()) // 60
+    sign = "-" if total < 0 else "+"
+    hours, minutes = divmod(abs(total), 60)
+    return f"{sign}{hours:02d}:{minutes:02d}"
 
 
 def _message(exc: pymysql.Error) -> str:

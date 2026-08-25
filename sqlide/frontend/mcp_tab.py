@@ -419,7 +419,7 @@ class McpServerTab(Gtk.Box):
             buffer.get_start_iter(), buffer.get_end_iter(), False
         )
         try:
-            Path(file.get_path()).write_text(text)
+            Path(file.get_path()).write_text(text, encoding="utf-8")
         except OSError as exc:
             self._show_error(f"Could not save: {exc}")
 

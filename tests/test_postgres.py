@@ -521,3 +521,33 @@ def test_postgres_cancel_stops_a_running_statement(postgres):
     assert isinstance(error[0], ConnectorError)
     # The connection is still usable afterwards.
     assert db.execute("SELECT 1").rows[0][0] == 1
+
+
+def test_unicode_round_trips(postgres):
+    _, db = postgres
+    db.execute("DROP TABLE IF EXISTS unicode_probe")
+    db.execute("CREATE TABLE unicode_probe (id integer PRIMARY KEY, s text)")
+    try:
+        db.execute("INSERT INTO unicode_probe VALUES (1, 'Ünïcødé 🎉')")
+        assert db.execute(
+            "SELECT s FROM unicode_probe"
+        ).rows[0][0] == "Ünïcødé 🎉"
+    finally:
+        db.execute("DROP TABLE unicode_probe")
+
+
+def test_client_encoding_is_utf8(postgres):
+    _, db = postgres
+    assert db.execute("SHOW client_encoding").rows[0][0].upper() == "UTF8"
+
+
+def test_session_time_zone_is_pinned(postgres):
+    """connect() sets TimeZone, so a timestamptz reads the same here as
+    it would against any other server."""
+    from sqlide.backend.settings import session_time_zone
+
+    _, db = postgres
+    expected = session_time_zone()
+    if expected is None:
+        pytest.skip("settings ask for the server's own zone")
+    assert db.execute("SHOW TimeZone").rows[0][0] == expected

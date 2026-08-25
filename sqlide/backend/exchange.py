@@ -131,14 +131,14 @@ def connections_from_xml(text: str) -> list[ConnectionProfile]:
 
 def read(path: Path) -> str:
     try:
-        return path.read_text()
+        return path.read_text(encoding="utf-8")
     except OSError as exc:
         raise ExchangeError(f"Could not read {path}: {exc}") from exc
 
 
 def write(path: Path, text: str) -> None:
     try:
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
     except OSError as exc:
         raise ExchangeError(f"Could not write {path}: {exc}") from exc
 

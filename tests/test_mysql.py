@@ -379,3 +379,33 @@ def test_mysql_cancel_kills_the_running_query(mysql):
     # the connector keeps working without reconnecting.
     assert not worker.is_alive(), "cancel did not unblock the statement"
     assert db.execute("SELECT 1").rows[0][0] == 1
+
+
+def test_utf8mb4_round_trips(mysql):
+    """The connection is utf8mb4 whatever the server's default charset
+    is, so a 4-byte character survives instead of being mangled."""
+    _, db = mysql
+    db.execute("DROP TABLE IF EXISTS unicode_probe")
+    db.execute("CREATE TABLE unicode_probe (id int PRIMARY KEY, s text)")
+    try:
+        db.execute(
+            "INSERT INTO unicode_probe VALUES (1, 'Ünïcødé 🎉')"
+        )
+        assert db.execute(
+            "SELECT s FROM unicode_probe"
+        ).rows[0][0] == "Ünïcødé 🎉"
+    finally:
+        db.execute("DROP TABLE unicode_probe")
+
+
+def test_session_time_zone_is_pinned(mysql):
+    """connect() asks for the configured zone, so UTC_TIMESTAMP and
+    NOW() differ by exactly that zone's offset rather than by whatever
+    the server was configured with."""
+    _, db = mysql
+    assert db.execute("SELECT @@session.time_zone").rows[0][0] != "SYSTEM"
+
+
+def test_binary_column_comes_back_as_bytes(mysql):
+    _, db = mysql
+    assert isinstance(db.execute("SELECT x'01ff'").rows[0][0], bytes)

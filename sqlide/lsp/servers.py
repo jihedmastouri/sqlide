@@ -145,12 +145,12 @@ def _known_command(
         return None
     if name == "postgrestools":
         (workdir / "postgrestools.jsonc").write_text(
-            _postgrestools_config(profile)
+            _postgrestools_config(profile), encoding="utf-8"
         )
         return [exe, "lsp-proxy"]
     if name == "sqls":
         config = workdir / "sqls.yml"
-        config.write_text(_sqls_config(profile))
+        config.write_text(_sqls_config(profile), encoding="utf-8")
         return [exe, "-config", str(config)]
     if name == "sql-language-server":
         return [exe, "up", "--method", "stdio"]
@@ -296,7 +296,7 @@ class LspManager:
             shutil.rmtree(workdir, ignore_errors=True)
             return None
         document = workdir / "console.sql"
-        document.write_text("")
+        document.write_text("", encoding="utf-8")
         try:
             client = LspClient(command, cwd=str(workdir), env=env)
             client.initialize(root_uri=workdir.as_uri())

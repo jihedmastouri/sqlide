@@ -160,7 +160,7 @@ class WorkspaceStore:
             self.workspaces = self._migrate_legacy()
             return self.workspaces
         items = [
-            Workspace.from_dict(json.loads(path.read_text()))
+            Workspace.from_dict(json.loads(path.read_text(encoding="utf-8")))
             for path in sorted(self.directory.glob("*.json"))
         ]
         items.sort(key=lambda w: w.name.lower())
@@ -170,7 +170,10 @@ class WorkspaceStore:
     def save(self, workspace: Workspace) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
         path = self.directory / f"{workspace.id}.json"
-        path.write_text(json.dumps(workspace.to_dict(), indent=2) + "\n")
+        path.write_text(
+            json.dumps(workspace.to_dict(), indent=2) + "\n",
+            encoding="utf-8",
+        )
 
     def default_name(self) -> str:
         """Default Workspace for the very first one; after that
@@ -199,7 +202,7 @@ class WorkspaceStore:
         try:
             profiles = [
                 ConnectionProfile(**item)
-                for item in json.loads(legacy.read_text())
+                for item in json.loads(legacy.read_text(encoding="utf-8"))
             ]
         except Exception:
             return []

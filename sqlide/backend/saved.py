@@ -47,7 +47,7 @@ class SavedStore:
                 try:
                     self.items = [
                         SavedItem(**item)
-                        for item in json.loads(self.path.read_text())
+                        for item in json.loads(self.path.read_text(encoding="utf-8"))
                     ]
                 except (ValueError, TypeError):
                     self.items = []  # unreadable file: start empty, keep it
@@ -86,7 +86,8 @@ class SavedStore:
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(
-            json.dumps([asdict(i) for i in self.items], indent=2) + "\n"
+            json.dumps([asdict(i) for i in self.items], indent=2) + "\n",
+            encoding="utf-8",
         )
         for listener in self._listeners:
             listener(self.items)

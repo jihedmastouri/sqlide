@@ -507,7 +507,7 @@ class ResultGrid(Gtk.ScrolledWindow):
             label.set_text("NULL")
             label.add_css_class("dim-label")
         else:
-            label.set_text(str(value))
+            label.set_text(_display_text(value))
             label.remove_css_class("dim-label")
         self._register_cell(label, list_item, index)
 
@@ -565,8 +565,11 @@ class ResultGrid(Gtk.ScrolledWindow):
     def _bind_editable(self, factory, list_item, index) -> None:
         widget = list_item.get_child()
         value = list_item.get_item().values[index]
-        widget.set_text("" if value is None else str(value))
-        widget.set_editable(self._unlocked)
+        widget.set_text("" if value is None else _display_text(value))
+        # A binary cell renders as an abbreviated hex summary, so
+        # committing the box's text would replace the blob with that
+        # summary. Show it, never edit it.
+        widget.set_editable(self._unlocked and not is_binary(value))
         self._register_cell(widget, list_item, index)
 
     def set_unlocked(self, unlocked: bool) -> None:
@@ -594,6 +597,8 @@ class ResultGrid(Gtk.ScrolledWindow):
         if row is None:
             return
         old = row.values[index]
+        if is_binary(old):
+            return  # see _bind_editable: blobs are display-only
         old_text = "" if old is None else str(old)
         new_text = widget.get_text()
         if new_text != old_text:
@@ -1102,8 +1107,43 @@ class ResultGrid(Gtk.ScrolledWindow):
         return lines
 
 
+# Binary columns (BLOB, bytea, MySQL binary collations) arrive as
+# bytes/memoryview. str() on those gives a Python repr — b'\x89PNG' —
+# which is neither readable nor valid SQL, so every rendering path goes
+# through _display_text instead.
+_BINARY_TYPES = (bytes, bytearray, memoryview)
+
+# Hex bytes shown in full before a blob is summarised by size instead.
+_HEX_PREVIEW = 24
+
+
+def is_binary(value: Any) -> bool:
+    return isinstance(value, _BINARY_TYPES)
+
+
+def _hex(value: Any) -> str:
+    return bytes(value).hex().upper()
+
+
+def _display_text(value: Any) -> str:
+    """A cell's value as text. Binary becomes 0x-hex, truncated to a
+    size summary once it is too long to read."""
+    if is_binary(value):
+        raw = bytes(value)
+        if len(raw) <= _HEX_PREVIEW:
+            return "0x" + raw.hex().upper()
+        head = raw[:_HEX_PREVIEW].hex().upper()
+        return f"0x{head}… ({len(raw)} bytes)"
+    return str(value)
+
+
 def _cell_text(value: Any) -> str:
-    return "NULL" if value is None else str(value)
+    """A cell's value for the copy formats. Unlike the grid's own
+    labels these keep a blob's full hex: what is copied has to be what
+    the row holds."""
+    if value is None:
+        return "NULL"
+    return "0x" + _hex(value) if is_binary(value) else str(value)
 
 
 def _sql_literal(value: Any) -> str:
@@ -1113,6 +1153,11 @@ def _sql_literal(value: Any) -> str:
         return "TRUE" if value else "FALSE"
     if isinstance(value, (int, float)):
         return str(value)
+    if is_binary(value):
+        # X'..' is SQLite's and MySQL's blob literal; PostgreSQL reads
+        # it as a bit string, so a bytea column needs the pasted
+        # literal adjusted to '\x..'::bytea by hand.
+        return "X'" + _hex(value) + "'"
     return "'" + str(value).replace("'", "''") + "'"
 
 
@@ -1128,7 +1173,7 @@ def _format_json(headers: list[str], rows: list[list[Any]]) -> str:
     return json.dumps(
         [
             {
-                header: value if _json_safe(value) else str(value)
+                header: value if _json_safe(value) else _json_value(value)
                 for header, value in zip(headers, row)
             }
             for row in rows
@@ -1136,6 +1181,12 @@ def _format_json(headers: list[str], rows: list[list[Any]]) -> str:
         indent=2,
         ensure_ascii=False,
     )
+
+
+def _json_value(value: Any) -> str:
+    """Anything JSON cannot hold, as text. Binary keeps its full hex —
+    an export is not a preview, so it must not lose bytes."""
+    return "0x" + _hex(value) if is_binary(value) else str(value)
 
 
 def _json_safe(value: Any) -> bool:
@@ -1147,7 +1198,10 @@ def _format_csv(headers: list[str], rows: list[list[Any]]) -> str:
     writer = csv.writer(buffer, lineterminator="\n")
     writer.writerow(headers)
     for row in rows:
-        writer.writerow("" if v is None else v for v in row)
+        writer.writerow(
+            "" if v is None else ("0x" + _hex(v) if is_binary(v) else v)
+            for v in row
+        )
     return buffer.getvalue().rstrip("\n")
 
 

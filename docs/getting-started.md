@@ -63,6 +63,20 @@ many, and the result is shown under a banner saying so, so a capped
 result is never mistaken for the whole answer. Set it to 0 to fetch
 everything.
 
+Timestamps come back in the zone named by **Preferences ▸ General ▸
+Session Time Zone**, which a new connection asks the server for. The
+default, *This Computer*, makes every server agree with the clock on
+your screen; *UTC* is the choice to make when you want one reading
+everywhere; *Server Default* takes whatever the server is configured
+with, the way a bare `psql` or `mysql` session does. The setting
+applies on the next connect, not to open connections.
+
+Binary columns — `BLOB`, `bytea`, MySQL's binary collations — show as
+hex (`0x89504E47`), abbreviated to a byte count once they are too long
+to read. They are display-only: a blob cannot be edited in the grid,
+since what the cell shows is a summary rather than its contents.
+Copying or exporting one writes its full hex.
+
 **Explain** runs the same statement as a plan instead, and shows it
 three ways: as a **Graph** (the tree a plan actually is — zoomable,
 with each step's full text on hover), as the **Table** the server

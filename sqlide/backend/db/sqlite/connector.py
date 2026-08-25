@@ -86,6 +86,11 @@ def create_database_file(path: str) -> None:
         raise ConnectorError(str(exc)) from exc
 
 
+def _decode_text(raw: bytes) -> str:
+    """TEXT bytes as UTF-8, lossily rather than not at all."""
+    return raw.decode("utf-8", "replace")
+
+
 class SqliteConnector(Connector):
     """Catalog via sqlite_master and PRAGMA table_info().
 
@@ -122,6 +127,12 @@ class SqliteConnector(Connector):
                 check_same_thread=False,
                 isolation_level=None,
             )
+            # Legacy files sometimes hold TEXT that is not valid UTF-8
+            # (latin1 written by an older tool). The default text
+            # factory decodes strictly, so one bad byte raises out of
+            # fetchall() and loses the whole result set; replacing the
+            # undecodable bytes keeps the rest of the row readable.
+            self._conn.text_factory = _decode_text
         except sqlite3.Error as exc:
             raise ConnectorError(str(exc)) from exc
 

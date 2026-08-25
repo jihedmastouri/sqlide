@@ -13,7 +13,7 @@ from __future__ import annotations
 from gi.repository import Adw, Gdk, GObject, Gtk
 
 from sqlide import APP_ID, __version__
-from sqlide.backend.settings import THEMES, Settings, store
+from sqlide.backend.settings import THEMES, TIME_ZONES, Settings, store
 from sqlide.backend.sql_risk import CONFIRM_MODES
 from sqlide.frontend import feedback, keymap
 from sqlide.frontend.backup_dialog import BackupWindow
@@ -32,6 +32,12 @@ _CONFIRM_LABELS = (
     "Always",
     "Outside Development",
     "Never",
+)
+# Parallel to settings.TIME_ZONES.
+_TIME_ZONE_LABELS = (
+    "This Computer",
+    "UTC",
+    "Server Default",
 )
 
 
@@ -103,6 +109,21 @@ class PreferencesDialog(Adw.PreferencesDialog):
             lambda row, *_: store.update(max_result_rows=int(row.get_value())),
         )
         results.add(rows_row)
+
+        zone_row = Adw.ComboRow(
+            title="Session Time Zone",
+            subtitle="What a new connection asks the server to report "
+            "timestamps in. Takes effect on the next connect.",
+            model=Gtk.StringList.new(list(_TIME_ZONE_LABELS)),
+        )
+        zone_row.set_selected(TIME_ZONES.index(settings.time_zone))
+        zone_row.connect(
+            "notify::selected",
+            lambda row, *_: store.update(
+                time_zone=TIME_ZONES[row.get_selected()]
+            ),
+        )
+        results.add(zone_row)
         page.add(results)
 
         safety = Adw.PreferencesGroup(

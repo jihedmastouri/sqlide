@@ -18,6 +18,11 @@ Settings:
   into a grid. An unbounded SELECT over a big table otherwise pulls
   the whole result into memory and freezes the app; past the cap the
   result is marked truncated and the UI says so. 0 means no cap.
+- time_zone: which time zone a database session reports timestamps
+  in — "local" (the default: the machine's own zone, so every server
+  agrees with the clock on screen), "utc", or "server" (ask for
+  nothing and take whatever the server is configured for, which is
+  what a bare psql/mysql session gets). See session_time_zone().
 - lsp_enabled: master switch for completion language servers
 - lsp_defaults: connection kind -> what an "auto" console LSP choice
   resolves to ("auto" keeps the built-in resolution in
@@ -44,12 +49,15 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
 from sqlide.backend.sql_risk import CONFIRM_MODES, DEFAULT_CONFIRM_MODE
 
 THEMES = ("system", "light", "dark")
+TIME_ZONES = ("local", "utc", "server")
+DEFAULT_TIME_ZONE = "local"
 DEFAULT_FONT_SIZE = 11
 DEFAULT_MAX_RESULT_ROWS = 5000
 
@@ -66,6 +74,7 @@ class Settings:
     vim_mode: bool = False
     confirm_destructive: str = DEFAULT_CONFIRM_MODE
     max_result_rows: int = DEFAULT_MAX_RESULT_ROWS
+    time_zone: str = DEFAULT_TIME_ZONE
     lsp_enabled: bool = True
     lsp_defaults: dict[str, str] = field(default_factory=dict)
     mcp_defaults: dict[str, str] = field(default_factory=dict)
@@ -89,6 +98,11 @@ class Settings:
             max_result_rows=max(
                 0, int(data.get("max_result_rows", DEFAULT_MAX_RESULT_ROWS))
             ),
+            time_zone=(
+                tz
+                if (tz := data.get("time_zone")) in TIME_ZONES
+                else DEFAULT_TIME_ZONE
+            ),
             lsp_enabled=bool(data.get("lsp_enabled", True)),
             lsp_defaults={
                 str(k): str(v)
@@ -106,6 +120,43 @@ class Settings:
         )
 
 
+def session_time_zone() -> str | None:
+    """The zone name a new database session should be pinned to, or
+    None to leave the server's own setting alone.
+
+    Returned as an IANA name ("Europe/Paris") where the machine's zone
+    can be identified, since a name survives a DST change that a fixed
+    "+02:00" offset would not; the offset is only a fallback for hosts
+    that expose no name.
+    """
+    mode = store.settings.time_zone
+    if mode == "server":
+        return None
+    if mode == "utc":
+        return "UTC"
+    return _local_time_zone()
+
+
+def _local_time_zone() -> str:
+    """The machine's IANA zone name, falling back to its current UTC
+    offset when nothing on the host names one."""
+    name = os.environ.get("TZ", "").strip()
+    if name and "/" in name:
+        return name
+    localtime = Path("/etc/localtime")
+    if localtime.is_symlink():
+        target = os.readlink(localtime)
+        # .../zoneinfo/Europe/Paris -> Europe/Paris
+        _, _, tail = target.partition("zoneinfo/")
+        if tail:
+            return tail
+    offset = datetime.now().astimezone().utcoffset() or timedelta(0)
+    total = int(offset.total_seconds())
+    sign = "-" if total < 0 else "+"
+    hours, minutes = divmod(abs(total) // 60, 60)
+    return f"{sign}{hours:02d}:{minutes:02d}"
+
+
 def result_row_cap() -> int | None:
     """The row cap to pass as Connector.execute(max_rows=…), or None
     when the user turned capping off."""
@@ -121,7 +172,7 @@ class SettingsStore:
     def load(self) -> Settings:
         if self.path.exists():
             self.settings = Settings.from_dict(
-                json.loads(self.path.read_text())
+                json.loads(self.path.read_text(encoding="utf-8"))
             )
         return self.settings
 
@@ -142,7 +193,8 @@ class SettingsStore:
             setattr(self.settings, name, value)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(
-            json.dumps(asdict(self.settings), indent=2) + "\n"
+            json.dumps(asdict(self.settings), indent=2) + "\n",
+            encoding="utf-8",
         )
         for listener in self._listeners:
             listener(self.settings)

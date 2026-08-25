@@ -902,7 +902,7 @@ class QueryConsole(Gtk.Box):
             return  # cancelled
         path = Path(file.get_path())
         try:
-            self._editor.set_text(path.read_text())
+            self._editor.set_text(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError) as exc:
             self._set_status(f"Could not open {path}: {exc}", error=True)
             return
@@ -925,7 +925,7 @@ class QueryConsole(Gtk.Box):
 
     def _write_file(self, path: Path) -> None:
         try:
-            path.write_text(self._editor.get_text())
+            path.write_text(self._editor.get_text(), encoding="utf-8")
         except OSError as exc:
             self._set_status(f"Could not save {path}: {exc}", error=True)
             return

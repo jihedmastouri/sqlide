@@ -55,6 +55,7 @@ from sqlide.backend.db.base import (
     TypeSpec,
     build_filter_clauses,
 )
+from sqlide.backend.settings import session_time_zone
 
 _TEMPLATES = {
     "table": (
@@ -211,6 +212,7 @@ class PostgresConnector(Connector):
         except psycopg.Error as exc:
             self._stop_tunnel()
             raise ConnectorError(_message(exc)) from exc
+        self._apply_time_zone()
         if self.schema:
             # One schema on the path, so every later query — catalog
             # lookups, bare-name SELECTs, CREATE without a qualifier —
@@ -243,6 +245,28 @@ class PostgresConnector(Connector):
             except ConnectorError:
                 self.close()
                 raise
+
+    def _apply_time_zone(self) -> None:
+        """Pin the session's zone, so a timestamptz reads the same
+        against every server instead of following whichever TimeZone
+        the server happens to be configured with.
+
+        Best-effort: a server that rejects the name (an unusual
+        zoneinfo build) keeps its own setting rather than failing the
+        whole connection.
+        """
+        zone = session_time_zone()
+        if zone is None:
+            return
+        try:
+            # set_config() rather than SET TIME ZONE: a utility
+            # statement takes no parameters, and the zone name is not
+            # ours to interpolate.
+            self._conn.execute(
+                "SELECT set_config('TimeZone', %s, false)", (zone,)
+            )
+        except psycopg.Error:
+            pass
 
     def close(self) -> None:
         if self._conn is not None:

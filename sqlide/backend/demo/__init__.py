@@ -100,7 +100,7 @@ def load(kind: str, database: str = "") -> DemoScript:
     `database` renames the database the demo builds; the default is
     whatever the file's own CREATE DATABASE says.
     """
-    text = sql_path(kind).read_text()
+    text = sql_path(kind).read_text(encoding="utf-8")
     # psql spells the switch \connect, MySQL spells it USE. Rewriting
     # to one form here means the parse loop below has a single case.
     text = "\n".join(

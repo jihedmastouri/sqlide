@@ -78,7 +78,7 @@ sqlide/
     ├── application.py      # Adw.Application entry point
     ├── welcome.py          # first-run home page
     ├── launcher.py         # in-app workspace switcher
-    ├── window.py           # one workspace: split view, tabs, connector cache
+    ├── window.py           # one workspace: split view, tabs, pop-outs, connectors
     ├── sidebar.py           # lazy schema tree (TreeListModel)
     ├── data_grid.py         # ResultGrid + TableTab
     ├── query_console.py

@@ -33,6 +33,15 @@ others, the ones to its right, or all of them across every pane; Close
 All Tabs is on the sidebar menu and on ctrl+shift+w as well, and each
 close still goes through the guards below (an open transaction or a
 running MCP server asks first).
+
+Any tab can also be popped out into a window of its own — "Move to New
+Window" in its menu, or dragging it off the tab bar — and moved (or
+dragged) back. A pop-out is a pane like any other, in a _PopoutWindow:
+this window still owns the tabs in it, so history, saved state, tab
+colours and the close guards all keep working, and its window closes
+itself when its last tab leaves. MCP server tabs open popped out.
+Pop-outs are a session-level layout: on reopen every tab is restored
+into the main window, exactly as a split is.
 The window owns the shared
 Gtk.StringList of connection names that every query console's dropdown
 observes, records each console run into the workspace history, and
@@ -69,7 +78,7 @@ from sqlide.frontend.definition_tab import DefinitionTab, FunctionTab
 from sqlide.frontend.indexes_tab import IndexesTab
 from sqlide.frontend import identity as identity_ui
 from sqlide.frontend.drop_dialog import present_drop_dialog
-from sqlide.frontend.mcp_tab import McpServerWindow
+from sqlide.frontend.mcp_tab import McpServerTab
 from sqlide.frontend.query_builder import QueryBuilderTab
 from sqlide.frontend.query_console import QueryConsole
 from sqlide.frontend.relation_graph import RelationGraphTab
@@ -121,11 +130,13 @@ class _HistoryTab(Gtk.Box):
         return None
 
 
-def _tab_menu() -> Gio.Menu:
+def _tab_menu(popped_out: bool = False) -> Gio.Menu:
     """Right-click menu of a tab. The bulk-close items are the only way
     to clear a workspace that has collected twenty tabs without closing
     them one by one; they are also on the main menu, so they can be
-    found without knowing that tabs have a menu at all."""
+    found without knowing that tabs have a menu at all. The move items
+    are the discoverable half of pop-out: dragging a tab off its bar
+    does the same thing, but nothing on screen says so."""
     menu = Gio.Menu()
     menu.append("Close Tab", "win.close-tab")
     section = Gio.Menu()
@@ -133,6 +144,11 @@ def _tab_menu() -> Gio.Menu:
     section.append("Close Tabs to the Right", "win.close-tabs-right")
     section.append("Close All Tabs", "win.close-all-tabs")
     menu.append_section(None, section)
+    move = Gio.Menu()
+    move.append("Move to New Window", "win.move-to-window")
+    if popped_out:
+        move.append("Move Back to Main Window", "win.move-to-main")
+    menu.append_section(None, move)
     return menu
 
 
@@ -151,6 +167,58 @@ class _TabPane(Gtk.Box):
         self.bar = Adw.TabBar(view=self.view, expand_tabs=False)
         self.append(self.bar)
         self.append(self.view)
+
+
+class _PopoutWindow(Adw.ApplicationWindow):
+    """One tab pane in a top-level window of its own. Any kind of tab
+    can live here: tabs arrive by the tab menu's Move to New Window or
+    by being dragged off a tab bar, and can be dragged (or moved) back.
+
+    The main window still owns them — the pane is wired to the same
+    handlers, and the tabs stay in its history, its saved state and its
+    close guards. The window closes itself once its last tab leaves."""
+
+    def __init__(self, main: MainWindow, **kwargs) -> None:
+        super().__init__(application=main.get_application(), **kwargs)
+        self.main = main
+        self.set_default_size(900, 620)
+
+        self.pane = main.build_pane(popped_out=True)
+        header = Adw.HeaderBar()
+        toolbar_view = Adw.ToolbarView()
+        toolbar_view.add_top_bar(header)
+        toolbar_view.set_content(self.pane)
+        self._toasts = Adw.ToastOverlay(child=toolbar_view)
+        self.set_content(self._toasts)
+        self._retitle()
+
+        main.install_tab_actions(self, self.pane)
+        self.pane.view.connect(
+            "notify::selected-page", lambda *_: self._retitle()
+        )
+        self.connect("close-request", self._on_close_request)
+
+    @property
+    def toasts(self) -> Adw.ToastOverlay:
+        return self._toasts
+
+    def _retitle(self) -> None:
+        page = self.pane.view.get_selected_page()
+        title = page.get_title() if page is not None else ""
+        self.set_title(title or self.main.workspace.name)
+
+    def _on_close_request(self, *_args) -> bool:
+        """Close the tabs, not the window: each one still goes through
+        its own guard (an open transaction, a running MCP server). The
+        window is destroyed once the last page is actually gone, so a
+        cancelled guard leaves the window standing."""
+        view = self.pane.view
+        pages = [view.get_nth_page(i) for i in range(view.get_n_pages())]
+        if not pages:
+            return False
+        for page in pages:
+            view.close_page(page)
+        return True
 
 
 class MainWindow(Adw.ApplicationWindow):
@@ -213,7 +281,7 @@ class MainWindow(Adw.ApplicationWindow):
         # Content: one or more tab panes (each with its own tab bar) in
         # nested Paned splitters, or a placeholder when nothing is open.
         self._panes: list[_TabPane] = []
-        self._mcp_windows: list[McpServerWindow] = []
+        self._popouts: list[_PopoutWindow] = []
         self._panes_root = Gtk.Box(hexpand=True, vexpand=True)
         self._active_pane = self._add_pane()
 
@@ -364,10 +432,6 @@ class MainWindow(Adw.ApplicationWindow):
             ("new-mcp", lambda *_: self.open_mcp_server()),
             ("refresh-schema", lambda *_: self._sidebar.reload_all()),
             ("split-view", self._split_current_tab),
-            ("close-tab", self._close_menu_tab),
-            ("close-other-tabs", self._close_other_tabs),
-            ("close-tabs-right", self._close_tabs_right),
-            ("close-all-tabs", self._close_all_tabs),
             ("export-workspace", self._export_workspace),
             ("export-connections", self._export_connections),
             ("import-connections", self._import_connections),
@@ -375,6 +439,10 @@ class MainWindow(Adw.ApplicationWindow):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", callback)
             self.add_action(action)
+        # The tab menu's own actions, installed here and again on every
+        # pop-out window — its menu says "win." too, and a pop-out has
+        # an action map of its own.
+        self.install_tab_actions(self)
 
         # The launcher can recolour a workspace while its window is
         # open, so the stripe is refreshed whenever the window comes
@@ -610,7 +678,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._refresh_tab_identity()
 
     def _refresh_tab_identity(self) -> None:
-        for pane in self._panes:
+        for pane in self._all_panes():
             for i in range(pane.view.get_n_pages()):
                 page = pane.view.get_nth_page(i)
                 self._apply_page_identity(
@@ -627,18 +695,31 @@ class MainWindow(Adw.ApplicationWindow):
 
     # Tab panes (split screen)
 
-    def _add_pane(self) -> _TabPane:
+    def build_pane(self, popped_out: bool = False) -> _TabPane:
+        """A pane wired to this window's tab handling. Docked panes go
+        on to join the splitter layout (_add_pane); a popped-out pane
+        lives in a _PopoutWindow and shares only the handlers."""
         pane = _TabPane()
-        pane.view.set_menu_model(_tab_menu())
+        pane.view.set_menu_model(_tab_menu(popped_out))
         # setup-menu names the tab the menu was opened on (and hands
         # back None when it closes); the actions fall back to the
-        # selected tab, which is what the menu bar and the shortcuts
-        # mean by "this tab".
+        # selected tab of the pane they were invoked from, which is what
+        # the menu bar and the shortcuts mean by "this tab".
         pane.view.connect("setup-menu", self._on_tab_menu)
+        pane.view.connect("close-page", self._on_close_page)
+        # Dragging a tab off its bar and dropping it on nothing: hand
+        # libadwaita a fresh window's view to move the page into.
+        pane.view.connect("create-window", self._on_create_window)
+        if popped_out:
+            # No autohide: a pop-out with one tab still needs the bar,
+            # as the bar is where it is dragged back from.
+            pane.bar.set_autohide(False)
+            for signal in ("page-attached", "page-detached", "page-reordered"):
+                pane.view.connect(signal, self._on_popout_pages_changed)
+            return pane
         pane.view.connect("page-attached", self._on_pages_changed)
         pane.view.connect("page-detached", self._on_pages_changed)
         pane.view.connect("page-reordered", self._on_pages_changed)
-        pane.view.connect("close-page", self._on_close_page)
         pane.view.connect(
             "notify::selected-page",
             lambda *_: self._update_active_panel(),
@@ -648,9 +729,108 @@ class MainWindow(Adw.ApplicationWindow):
         click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         click.connect("pressed", self._on_pane_pressed, pane)
         pane.add_controller(click)
+        return pane
+
+    def _add_pane(self) -> _TabPane:
+        pane = self.build_pane()
         self._panes.append(pane)
         self._rebuild_panes()
         return pane
+
+    def _all_panes(self) -> list[_TabPane]:
+        """Every pane that holds tabs: the docked ones plus one per
+        pop-out window. Anything that walks all open tabs goes through
+        here; the layout (splitters, placeholder, active pane) is about
+        docked panes only."""
+        return self._panes + [window.pane for window in self._popouts]
+
+    # Pop-out windows
+
+    def install_tab_actions(
+        self, target: Gio.ActionMap, pane: _TabPane | None = None
+    ) -> None:
+        """Install the tab menu's actions on `target` (this window, or
+        a pop-out). `pane` is the fallback target for an action that did
+        not come from a tab's own context menu — for a pop-out, its own
+        pane; for the main window, whichever pane is active."""
+        for name, callback in (
+            ("close-tab", self._close_menu_tab),
+            ("close-other-tabs", self._close_other_tabs),
+            ("close-tabs-right", self._close_tabs_right),
+            ("close-all-tabs", self._close_all_tabs),
+            ("move-to-window", self._move_tab_out),
+            ("move-to-main", self._move_tab_back),
+        ):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect(
+                "activate", lambda _a, _p, cb=callback: cb(pane)
+            )
+            target.add_action(action)
+
+    def _new_popout(self) -> _PopoutWindow:
+        window = _PopoutWindow(self)
+        self._popouts.append(window)
+        window.connect("destroy", self._on_popout_destroyed)
+        return window
+
+    def _on_popout_destroyed(self, window: _PopoutWindow) -> None:
+        if window in self._popouts:
+            self._popouts.remove(window)
+
+    def _on_create_window(self, _view) -> Adw.TabView:
+        window = self._new_popout()
+        window.present()
+        return window.pane.view
+
+    def _popout_for(self, view: Adw.TabView) -> _PopoutWindow | None:
+        for window in self._popouts:
+            if window.pane.view is view:
+                return window
+        return None
+
+    def _on_popout_pages_changed(self, view: Adw.TabView, *_args) -> None:
+        window = self._popout_for(view)
+        if window is not None and view.get_n_pages() == 0:
+            # Deferred: the window owns the view this signal is being
+            # emitted on, so it cannot be torn down from inside it.
+            GLib.idle_add(self._close_empty_popout, window)
+        if not self._restoring:
+            self._save_state()
+
+    def _close_empty_popout(self, window: _PopoutWindow) -> bool:
+        """Idle callback: a pop-out whose last tab left closes. It is
+        dropped from the list here rather than in the destroy handler —
+        a destroyed window still holding references does not always
+        reach dispose, and ::destroy with it."""
+        if window.pane.view.get_n_pages() == 0:
+            self._on_popout_destroyed(window)
+            window.destroy()
+        return False
+
+    def _move_tab_out(self, pane: _TabPane | None = None) -> None:
+        """Move a tab into a window of its own."""
+        target = self._target_tab(pane)
+        if target is None:
+            self.show_error("No tab to move")
+            return
+        source, page = target
+        window = self._new_popout()
+        window.present()
+        source.view.transfer_page(page, window.pane.view, 0)
+
+    def _move_tab_back(self, pane: _TabPane | None = None) -> None:
+        """Move a popped-out tab back into the main window."""
+        target = self._target_tab(pane)
+        if target is None:
+            return
+        source, page = target
+        if source in self._panes:
+            self.show_error("That tab is already in the main window")
+            return
+        view = self._active_pane.view
+        source.view.transfer_page(page, view, view.get_n_pages())
+        view.set_selected_page(page)
+        self.present()
 
     def _rebuild_panes(self) -> None:
         """Re-nest the panes into a chain of horizontal Paned splitters
@@ -889,8 +1069,9 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_close_page(self, view, page: Adw.TabPage) -> bool:
         """A tab is being closed. A query console whose connection has
-        an open transaction is held back behind a confirmation dialog;
-        forcing the close rolls the transaction back. Either way the
+        an open transaction — or an MCP tab whose server is running — is held
+        back behind a confirmation dialog; forcing the close rolls the
+        transaction back (or stops the server). Either way the
         closed tab's entries leave the side panel's history scopes
         (panel_closed) but stay in the workspace-wide History tab."""
         child = page.get_child()
@@ -899,6 +1080,9 @@ class MainWindow(Adw.ApplicationWindow):
             if name:
                 self._confirm_console_close(view, page, name)
                 return True  # close_page_finish decides later
+        if isinstance(child, McpServerTab) and child.running:
+            self._confirm_mcp_close(view, page, child)
+            return True
         self._mark_panel_closed(page)
         return False  # let the default handler close the page
 
@@ -928,6 +1112,31 @@ class MainWindow(Adw.ApplicationWindow):
         dialog.connect("response", respond)
         dialog.present(self)
 
+    def _confirm_mcp_close(
+        self, view: Adw.TabView, page: Adw.TabPage, tab: McpServerTab
+    ) -> None:
+        dialog = Adw.AlertDialog(
+            heading="MCP Server Running",
+            body="This server is still running. Close the tab anyway "
+            "and stop it?",
+        )
+        dialog.add_response("cancel", "Keep Open")
+        dialog.add_response("stop", "Stop and Close")
+        dialog.set_response_appearance(
+            "stop", Adw.ResponseAppearance.DESTRUCTIVE
+        )
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def respond(_dialog, response: str) -> None:
+            force = response == "stop"
+            if force:
+                tab.stop_instance()
+            view.close_page_finish(page, force)
+
+        dialog.connect("response", respond)
+        dialog.present(view.get_root() or self)
+
     def _mark_panel_closed(self, page: Adw.TabPage) -> None:
         title = page.get_title()
         changed = False
@@ -949,50 +1158,56 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_tab_menu(self, _view, page: Adw.TabPage | None) -> None:
         self._menu_tab_page = page
 
-    def _target_tab(self) -> tuple[_TabPane, Adw.TabPage] | None:
-        """The tab the close actions act on: the one whose menu is
-        open, else the selected one. None when nothing is open."""
+    def _target_tab(
+        self, pane: _TabPane | None = None
+    ) -> tuple[_TabPane, Adw.TabPage] | None:
+        """The tab the tab actions act on: the one whose menu is open,
+        else the selected tab of `pane` (the pane the action was
+        installed for) or of the active pane. None when nothing is
+        open."""
         page = self._menu_tab_page
         if page is None:
-            page = self._active_pane.view.get_selected_page()
+            pane = pane or self._active_pane
+            page = pane.view.get_selected_page()
             if page is None:
                 return None
-            return self._active_pane, page
-        for pane in self._panes:
+            return pane, page
+        for pane in self._all_panes():
             for i in range(pane.view.get_n_pages()):
                 if pane.view.get_nth_page(i) is page:
                     return pane, page
         return None
 
-    def _close_menu_tab(self, *_args) -> None:
-        target = self._target_tab()
+    def _close_menu_tab(self, pane: _TabPane | None = None) -> None:
+        target = self._target_tab(pane)
         if target is None:
             self.show_error("No tab to close")
             return
         pane, page = target
         pane.view.close_page(page)
 
-    def _close_other_tabs(self, *_args) -> None:
-        target = self._target_tab()
+    def _close_other_tabs(self, pane: _TabPane | None = None) -> None:
+        target = self._target_tab(pane)
         if target is None:
             return
         pane, page = target
         pane.view.close_other_pages(page)
 
-    def _close_tabs_right(self, *_args) -> None:
-        target = self._target_tab()
+    def _close_tabs_right(self, pane: _TabPane | None = None) -> None:
+        target = self._target_tab(pane)
         if target is None:
             return
         pane, page = target
         pane.view.close_pages_after(page)
 
-    def _close_all_tabs(self, *_args) -> None:
-        """Every tab in every pane. Pages are collected first: closing
-        one mutates the views (and may re-enter through a close
-        confirmation), so iterating them live would skip tabs."""
+    def _close_all_tabs(self, _pane: _TabPane | None = None) -> None:
+        """Every tab in every pane, pop-out windows included. Pages are
+        collected first: closing one mutates the views (and may re-enter
+        through a close confirmation), so iterating them live would skip
+        tabs."""
         pages = [
             (pane, pane.view.get_nth_page(i))
-            for pane in self._panes
+            for pane in self._all_panes()
             for i in range(pane.view.get_n_pages())
         ]
         if not pages:
@@ -1076,7 +1291,7 @@ class MainWindow(Adw.ApplicationWindow):
                     connector.rollback()
 
         def done(_result):
-            for pane in self._panes:
+            for pane in self._all_panes():
                 for i in range(pane.view.get_n_pages()):
                     child = pane.view.get_nth_page(i).get_child()
                     if isinstance(child, QueryConsole):
@@ -1131,13 +1346,14 @@ class MainWindow(Adw.ApplicationWindow):
         self._update_placeholder()
 
     def _save_state(self) -> None:
-        # Tabs are stored flat, pane order first: a split restores as a
-        # single pane on reopen. Session-only tabs (tab_state() is
+        # Tabs are stored flat, pane order first (docked panes, then
+        # each pop-out window): a split or a pop-out restores as a
+        # single pane in the main window on reopen. Session-only tabs (tab_state() is
         # None, e.g. the history view) are not saved.
         selected = self._active_pane.view.get_selected_page()
         self.workspace.selected_tab = -1
         tabs = []
-        for pane in self._panes:
+        for pane in self._all_panes():
             for i in range(pane.view.get_n_pages()):
                 page = pane.view.get_nth_page(i)
                 state = page.get_child().tab_state()
@@ -1197,11 +1413,16 @@ class MainWindow(Adw.ApplicationWindow):
             return
 
         def finish() -> None:
-            # MCP server windows are transient children: stop any
-            # still running now that the close is actually going
-            # through, no separate per-window confirmation.
-            for window in list(self._mcp_windows):
-                window.tab.stop_instance()
+            # The workspace is going: stop any MCP server still running
+            # in one of its tabs and take the pop-out windows with it,
+            # no separate per-tab confirmation.
+            for pane in self._all_panes():
+                for i in range(pane.view.get_n_pages()):
+                    child = pane.view.get_nth_page(i).get_child()
+                    if isinstance(child, McpServerTab):
+                        child.stop_instance()
+            for window in list(self._popouts):
+                self._on_popout_destroyed(window)
                 window.destroy()
             self._close_confirmed = True
             self.close()
@@ -1214,15 +1435,25 @@ class MainWindow(Adw.ApplicationWindow):
 
     # UI actions (main thread)
 
+    def _toast_overlay(self) -> Adw.ToastOverlay:
+        """Toasts belong on the window the user is looking at: a
+        pop-out's own overlay while it has the focus, otherwise the
+        main window's. The status bar (main window only) says it too,
+        so nothing is lost either way."""
+        for window in self._popouts:
+            if window.is_active():
+                return window.toasts
+        return self._toasts
+
     def show_error(self, message: str) -> None:
-        self._toasts.add_toast(Adw.Toast(title=message))
+        self._toast_overlay().add_toast(Adw.Toast(title=message))
         self._status_bar.set_status(message, error=True)
 
     def show_message(self, message: str) -> None:
         """Something worked and left no visible trace of its own (an
         export writing a file, say) — the same two surfaces as an
         error, without the error styling."""
-        self._toasts.add_toast(Adw.Toast(title=message))
+        self._toast_overlay().add_toast(Adw.Toast(title=message))
         self._status_bar.set_status(message, error=False)
 
     def show_aggregate(self, lines: list[str], live: bool = False) -> None:
@@ -1367,14 +1598,21 @@ class MainWindow(Adw.ApplicationWindow):
         self._refresh_placeholder_actions()
 
     def _focus_tab(self, key: tuple) -> bool:
-        """Select the open tab with this tab_key, if any."""
-        for pane in self._panes:
+        """Select the open tab with this tab_key, if any — including
+        one that has been popped out, whose window is raised."""
+        for pane in self._all_panes():
             for i in range(pane.view.get_n_pages()):
                 page = pane.view.get_nth_page(i)
-                if getattr(page.get_child(), "tab_key", None) == key:
-                    pane.view.set_selected_page(page)
+                if getattr(page.get_child(), "tab_key", None) != key:
+                    continue
+                pane.view.set_selected_page(page)
+                if pane in self._panes:
                     self._set_active_pane(pane)
-                    return True
+                else:
+                    window = self._popout_for(pane.view)
+                    if window is not None:
+                        window.present()
+                return True
         return False
 
     def _append_tab(
@@ -1525,24 +1763,25 @@ class MainWindow(Adw.ApplicationWindow):
         self, profile: ConnectionProfile | None = None
     ) -> None:
         # Not deduplicated: several instances (different ports, maybe
-        # different connection sets) can run side by side. A separate
-        # window, not a tab: a running server is a background process
-        # worth keeping visible independent of the tab layout.
-        window = McpServerWindow(
+        # different connection sets) can run side by side. It opens
+        # popped out, because a running server is a background process
+        # worth keeping visible independent of the tab layout — but it
+        # is an ordinary tab and can be moved back in like any other.
+        tab = McpServerTab(
             self.workspace.name,
             self.workspace.connections,
             self.show_error,
-            initial_profile=profile,
-            transient_for=self,
-            application=self.get_application(),
+            profile,
         )
-        self._mcp_windows.append(window)
-        window.connect(
-            "destroy",
-            lambda w: self._mcp_windows.remove(w)
-            if w in self._mcp_windows else None,
+        page = self._append_tab(
+            tab,
+            ("mcp", id(tab)),
+            "MCP Server",
+            f"MCP server for {self.workspace.name}",
         )
+        window = self._new_popout()
         window.present()
+        self._active_pane.view.transfer_page(page, window.pane.view, 0)
 
     def open_relation_graph(self, profile: ConnectionProfile) -> None:
         key = ("relations", profile.name)
@@ -1772,7 +2011,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._refresh_history_tab()
 
     def _refresh_history_tab(self) -> None:
-        for pane in self._panes:
+        for pane in self._all_panes():
             for i in range(pane.view.get_n_pages()):
                 child = pane.view.get_nth_page(i).get_child()
                 if isinstance(child, _HistoryTab):

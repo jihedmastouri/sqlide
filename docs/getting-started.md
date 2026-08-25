@@ -91,7 +91,20 @@ so opening the panel is enough to read it. **Ctrl+C** copies the
 selection; the column header's menu (either mouse button) sorts,
 copies and moves the column.
 
-## 7. Restart and pick up where you left off
+## 7. Give a tab its own window
+
+Any tab — a table, a console, a graph, an MCP server — can be popped
+out: right-click it and pick **Move to New Window**, or just drag it
+off the tab bar. The window is a tab bar of its own, so several tabs
+can share it, and **Move Back to Main Window** (or a drag back onto
+the main tab bar) puts one home again. MCP server tabs open this way
+already, since a running server is usually something you want to keep
+in the corner of your eye.
+
+Pop-outs are for the session you're in: on the next launch every tab
+is restored into the main window, the same way a split view is.
+
+## 8. Restart and pick up where you left off
 
 Close and relaunch — you land back in the workspace you were last in,
 with both the connections and the tabs you left open restored,

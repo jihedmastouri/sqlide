@@ -226,7 +226,9 @@ connection's context menu ("MCP Server", preselecting that
 connection). Each tab is a **fresh, independent instance** — its own
 connectors, its own port — that never touches the connections cached
 by the rest of the app; several tabs run side by side without sharing
-state, and closing a tab (or Stop) shuts that instance down. Nothing
+state, and closing a tab (or Stop) shuts that instance down. It opens
+in a window of its own — like any tab can, via Move to New Window —
+so a running server stays visible whatever the tab layout is doing. Nothing
 is persisted across restarts.
 
 The form:

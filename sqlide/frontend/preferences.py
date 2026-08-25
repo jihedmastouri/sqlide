@@ -137,7 +137,56 @@ class PreferencesDialog(Adw.PreferencesDialog):
         backup_row.connect("activated", self._open_backup_window)
         backup_group.add(backup_row)
         page.add(backup_group)
+        page.add(self._transfer_group())
         return page
+
+    # Workspace transfer (XML export/import)
+
+    def _transfer_group(self) -> Adw.PreferencesGroup:
+        """The XML transfer actions, which used to be a section of the
+        main menu. They act on the window the dialog was opened from,
+        through its win.* actions, so the whole group hides itself on
+        the welcome page and the launcher, which have no workspace.
+
+        The root is only known once the dialog is on screen, hence the
+        check on map rather than in the constructor."""
+        group = Adw.PreferencesGroup(
+            title="Workspace Transfer",
+            description="Portable XML files. Passwords are left out "
+            "unless you ask for them, and importing never overwrites a "
+            "connection that is already there.",
+            visible=False,
+        )
+        rows = (
+            ("Export Workspace…", "win.export-workspace"),
+            ("Export Connections…", "win.export-connections"),
+            ("Import Connections…", "win.import-connections"),
+        )
+        for title, action in rows:
+            row = Adw.ActionRow(title=title, activatable=True)
+            row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
+            row.connect("activated", self._run_transfer, action)
+            group.add(row)
+        # A hidden widget is never mapped, so the check hangs off the
+        # dialog, which always is.
+        self.connect("map", lambda *_: self._show_if_workspace(group))
+        return group
+
+    def _show_if_workspace(self, group: Adw.PreferencesGroup) -> None:
+        root = self.get_root()
+        group.set_visible(
+            isinstance(root, Gtk.ApplicationWindow)
+            and root.lookup_action("export-workspace") is not None
+        )
+
+    def _run_transfer(self, row: Adw.ActionRow, action: str) -> None:
+        """Close first: the file chooser and any error the transfer
+        reports belong to the window, and would otherwise open behind
+        this dialog."""
+        root = self.get_root()
+        self.close()
+        if root is not None:
+            root.activate_action(action, None)
 
     # Keyboard shortcuts
 

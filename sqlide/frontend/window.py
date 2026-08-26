@@ -87,6 +87,7 @@ from sqlide.frontend.query_builder import QueryBuilderTab
 from sqlide.frontend.query_console import QueryConsole
 from sqlide.frontend.relation_graph import RelationGraphTab
 from sqlide.frontend.side_panel import SidePanel
+from sqlide.frontend import tree_search
 from sqlide.frontend.sidebar import Sidebar
 from sqlide.frontend.status_bar import StatusBar
 from sqlide.frontend.table_designer import TableDesignerTab
@@ -100,6 +101,11 @@ from sqlide.frontend import transfer
 # window, which is the size this window opens at.
 _SIDE_PANEL_WIDTH = 340
 _SIDE_PANEL_MIN_WIDTH = 260
+
+# How long the sidebar's search box waits for the typing to stop before
+# refiltering the tree: long enough that a fast typist rebuilds it once,
+# short enough to feel immediate.
+_SEARCH_DEBOUNCE_MS = 180
 
 
 def _page_connection(child: Gtk.Widget | None) -> str:
@@ -280,6 +286,13 @@ class MainWindow(Adw.ApplicationWindow):
         # app behaves. Everything else the sidebar does is a row below.
         sidebar_header.pack_start(workspaces_button())
         sidebar_header.pack_end(sidebar_menu_button())
+
+        # Sidebar search state: the chosen object-kind scope is kept
+        # for the session (empty = All), and the pending debounce.
+        self._sidebar_scopes: frozenset[str] = frozenset()
+        self._sidebar_search: Gtk.SearchEntry | None = None
+        self._sidebar_search_source = 0
+        self._sidebar_filter_label = None
 
         self._sidebar = Sidebar(
             ensure_connector=self.ensure_connector,
@@ -517,34 +530,79 @@ class MainWindow(Adw.ApplicationWindow):
     # Sidebar toolbar
 
     def _sidebar_actions(self) -> Gtk.Widget:
-        """The row under the sidebar header: "Add Connection" and a
-        search icon, then Refresh. The first two swap for the search
-        entry once the icon is clicked — a search box that is always
-        there costs a row of the sidebar to a control most sessions
-        never touch, so it is summoned instead.
+        """The row under the sidebar header: "Add Connection", a search
+        icon and Refresh — until the search icon is clicked, when the
+        whole row becomes the search row: the entry, a Filter menu that
+        scopes the hunt by object kind, and Exit. A search box that is
+        always there costs a row of the sidebar to a control most
+        sessions never touch, so it is summoned instead, and while it is
+        up it gets the row to itself rather than fighting the buttons
+        for it.
 
-        Escape, or clearing the entry and leaving it, puts the buttons
-        back and drops the filter; the sidebar is never left silently
-        filtered by a box that is no longer visible."""
+        Exit, Escape, or clearing the entry and leaving it, puts the
+        buttons back, drops the filter and restores the tree's previous
+        expansion; the sidebar is never left silently filtered by a box
+        that is no longer visible. The chosen scope outlives one search
+        and is kept for the session."""
         stack = Gtk.Stack(
             transition_type=Gtk.StackTransitionType.CROSSFADE,
         )
 
-        search = Gtk.SearchEntry(placeholder_text="Find tables…", hexpand=True)
+        search = Gtk.SearchEntry(placeholder_text="Find objects…", hexpand=True)
         search.set_tooltip_text(
-            "Fuzzy-find tables, views and functions in loaded connections"
+            "Find objects by name in loaded connections"
         )
+        # Typing re-filters the whole tree, so the keystrokes are
+        # collected first: on a big schema every letter would otherwise
+        # rebuild it.
         search.connect(
-            "search-changed",
-            lambda entry: self._sidebar.set_filter(entry.get_text()),
+            "search-changed", lambda entry: self._queue_sidebar_search()
         )
+        self._sidebar_search = search
+
+        filter_button = Gtk.MenuButton(
+            child=Adw.ButtonContent(
+                icon_name="view-list-symbolic",
+                label=tree_search.scope_label(self._sidebar_scopes),
+            ),
+            css_classes=["flat"],
+            popover=self._sidebar_scope_popover(),
+        )
+        describe(filter_button, "Filter search by object kind")
+        self._sidebar_filter_label = filter_button.get_child()
 
         def close_search(*_args) -> None:
             search.set_text("")
-            self._sidebar.set_filter("")
+            self._cancel_sidebar_search()
+            self._sidebar.clear_filter()
             stack.set_visible_child_name("actions")
 
+        self._close_sidebar_search = close_search
         search.connect("stop-search", close_search)
+
+        exit_search = Gtk.Button(icon_name="window-close-symbolic")
+        exit_search.add_css_class("flat")
+        describe(exit_search, "Exit search")
+        exit_search.connect("clicked", close_search)
+
+        # Escape reaches here even when the focus has moved on to the
+        # Filter menu or the tree.
+        escape = Gtk.EventControllerKey()
+
+        def on_key(_controller, keyval, _code, _state) -> bool:
+            if keyval == Gdk.KEY_Escape and (
+                stack.get_visible_child_name() == "search"
+            ):
+                close_search()
+                return True
+            return False
+
+        escape.connect("key-pressed", on_key)
+
+        search_row = Gtk.Box(spacing=6)
+        search_row.append(search)
+        search_row.append(filter_button)
+        search_row.append(exit_search)
 
         actions = Gtk.Box(spacing=6)
         add = Gtk.Button(
@@ -559,7 +617,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         open_search = Gtk.Button(icon_name="system-search-symbolic")
         open_search.add_css_class("flat")
-        describe(open_search, "Search tables")
+        describe(open_search, "Search objects")
 
         def show_search(*_args) -> None:
             stack.set_visible_child_name("search")
@@ -568,18 +626,19 @@ class MainWindow(Adw.ApplicationWindow):
         open_search.connect("clicked", show_search)
         actions.append(open_search)
 
-        stack.add_named(actions, "actions")
-        stack.add_named(search, "search")
-        stack.set_visible_child_name("actions")
-        stack.set_hexpand(True)
-
-        # Refresh sits outside the stack, so it stays put when the row
-        # swaps to the search box — reloading is exactly what you do
-        # when a search comes up empty because the tree is stale.
+        # Refresh rides in the button half of the row: reloading is
+        # what you do when a search comes up empty because the tree is
+        # stale, but during a search the row belongs to the search.
         refresh = Gtk.Button(icon_name="view-refresh-symbolic")
         refresh.add_css_class("flat")
         describe(refresh, "Refresh schemas")
         refresh.connect("clicked", lambda *_: self._sidebar.reload_all())
+        actions.append(refresh)
+
+        stack.add_named(actions, "actions")
+        stack.add_named(search_row, "search")
+        stack.set_visible_child_name("actions")
+        stack.set_hexpand(True)
 
         row = Gtk.Box(
             spacing=6,
@@ -589,8 +648,92 @@ class MainWindow(Adw.ApplicationWindow):
             margin_end=6,
         )
         row.append(stack)
-        row.append(refresh)
+        row.add_controller(escape)
         return row
+
+    def _sidebar_scope_popover(self) -> Gtk.Popover:
+        """The Filter menu: "All" plus a check button per object kind.
+        Ticking any kind unticks All, and unticking the last one falls
+        back to All — an empty scope would search nothing, which is
+        never what the user meant."""
+        box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=6,
+            margin_top=6,
+            margin_bottom=6,
+            margin_start=6,
+            margin_end=6,
+        )
+        buttons: dict[str, Gtk.CheckButton] = {}
+        all_button = Gtk.CheckButton(label="All")
+        all_button.set_active(not self._sidebar_scopes)
+        box.append(all_button)
+        box.append(Gtk.Separator())
+
+        updating = False
+
+        def apply() -> None:
+            nonlocal updating
+            chosen = frozenset(
+                key for key, button in buttons.items() if button.get_active()
+            )
+            self._sidebar_scopes = chosen
+            updating = True
+            all_button.set_active(not chosen)
+            updating = False
+            if self._sidebar_filter_label is not None:
+                self._sidebar_filter_label.set_label(
+                    tree_search.scope_label(chosen)
+                )
+            self._run_sidebar_search()
+
+        def toggled(_button) -> None:
+            if not updating:
+                apply()
+
+        def all_toggled(_button) -> None:
+            nonlocal updating
+            if updating or not all_button.get_active():
+                return
+            updating = True
+            for button in buttons.values():
+                button.set_active(False)
+            updating = False
+            apply()
+
+        for key, label, _kinds in tree_search.SCOPES:
+            button = Gtk.CheckButton(label=label)
+            button.set_active(key in self._sidebar_scopes)
+            button.connect("toggled", toggled)
+            buttons[key] = button
+            box.append(button)
+        all_button.connect("toggled", all_toggled)
+        return Gtk.Popover(child=box)
+
+    # Sidebar search, debounced
+
+    def _queue_sidebar_search(self) -> None:
+        self._cancel_sidebar_search()
+        self._sidebar_search_source = GLib.timeout_add(
+            _SEARCH_DEBOUNCE_MS, self._sidebar_search_elapsed
+        )
+
+    def _sidebar_search_elapsed(self) -> bool:
+        self._sidebar_search_source = 0
+        self._run_sidebar_search()
+        return GLib.SOURCE_REMOVE
+
+    def _cancel_sidebar_search(self) -> None:
+        if self._sidebar_search_source:
+            GLib.source_remove(self._sidebar_search_source)
+            self._sidebar_search_source = 0
+
+    def _run_sidebar_search(self) -> None:
+        if self._sidebar_search is None:
+            return
+        self._sidebar.set_filter(
+            self._sidebar_search.get_text(), self._sidebar_scopes
+        )
 
     # Empty states
 

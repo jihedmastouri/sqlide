@@ -131,6 +131,7 @@ sqlide/
     ├── launcher.py         # in-app workspace switcher
     ├── window.py           # one workspace: split view, tabs, pop-outs, connectors
     ├── sidebar.py           # lazy schema tree (TreeListModel)
+    ├── tree_search.py       # sidebar search: matching, scopes, highlights
     ├── object_info.py       # read-only info view for any tree node
     ├── users_tab.py         # accounts + privileges (review-then-run DDL)
     ├── backups_tab.py       # backup manager: jobs, schedules, run history

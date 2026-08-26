@@ -1,6 +1,6 @@
 ## CORE-10 — Permission editor: split screen tree + permission grid
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-02
 
 ### Goal

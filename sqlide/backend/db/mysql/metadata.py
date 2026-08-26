@@ -14,7 +14,11 @@ shorter list rather than an error (db/metadata.py `_safe`).
 
 from __future__ import annotations
 
-from sqlide.backend.db.metadata import Capabilities, MetadataProvider
+from sqlide.backend.db.metadata import (
+    Capabilities,
+    MetadataProvider,
+    NodeRef,
+)
 
 
 class MysqlMetadata(MetadataProvider):
@@ -28,7 +32,62 @@ class MysqlMetadata(MetadataProvider):
         partitions=True,
         constraints=True,
         account_hosts=True,
+        permission_editor=True,
+        # GRANT commits as it runs here — MySQL gives DDL no
+        # transaction to roll back — so the editor stops at the
+        # statement that failed and says which one it was.
+        transactional_grants=False,
     )
+
+    #: MySQL's own grant list, per level: the same privileges narrow as
+    #: the target does. Global takes the administrative rights too
+    #: (RELOAD, PROCESS, SHUTDOWN); a database or a table takes only
+    #: what applies there; a column takes the four that can name one.
+    _TABLE_PRIVILEGES = (
+        "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP",
+        "ALTER", "INDEX", "REFERENCES", "CREATE VIEW", "SHOW VIEW",
+        "TRIGGER",
+    )
+    _DATABASE_PRIVILEGES = _TABLE_PRIVILEGES + (
+        "CREATE ROUTINE", "ALTER ROUTINE", "EXECUTE", "EVENT",
+        "LOCK TABLES", "CREATE TEMPORARY TABLES",
+    )
+    OBJECT_PRIVILEGES = {
+        "connection": _DATABASE_PRIVILEGES + (
+            "RELOAD", "PROCESS", "SHUTDOWN", "SUPER",
+            "CREATE USER", "REPLICATION CLIENT", "REPLICATION SLAVE",
+        ),
+        "database": _DATABASE_PRIVILEGES,
+        "table": _TABLE_PRIVILEGES,
+        "view": _TABLE_PRIVILEGES,
+        "column": ("SELECT", "INSERT", "UPDATE", "REFERENCES"),
+    }
+
+    def grant_target(self, ref: NodeRef) -> str:
+        """The object as MySQL's GRANT names it: `*.*` for the server,
+        `db`.* for a database, `db`.`table` for a table — and, for a
+        column, the table it belongs to, because the column goes in
+        beside the privilege instead."""
+        quote = self.connector.quote_ident
+        if ref.kind == "connection":
+            return "*.*"
+        if ref.kind == "database":
+            return f"{quote(ref.name)}.*"
+        database = ref.database or self._current_database()
+        if not database:
+            return ""
+        if ref.kind in ("table", "view"):
+            return f"{quote(database)}.{quote(ref.name)}"
+        if ref.kind == "column" and ref.table:
+            return f"{quote(database)}.{quote(ref.table)}"
+        return ""
+
+    def privilege_suffix(self, ref: NodeRef) -> str:
+        """A column grant names its column next to the privilege:
+        GRANT SELECT (`total`) ON `sales`.`orders`."""
+        if ref.kind == "column":
+            return f" ({self.connector.quote_ident(ref.name)})"
+        return ""
 
     def _current_database(self) -> str:
         return getattr(self.connector, "database", "") or ""

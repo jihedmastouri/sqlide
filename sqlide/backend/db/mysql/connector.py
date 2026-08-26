@@ -388,6 +388,18 @@ class MysqlConnector(Connector):
                 "ORDER BY table_schema, table_name, privilege_type",
                 lambda row: f"table {row[2]}.{row[3]}",
             ),
+            (
+                # Column grants are their own rows here (mysql.columns_priv),
+                # not the columns a table grant happens to cover, so the
+                # permission editor can show them as the grants they are.
+                "SELECT privilege_type, is_grantable, table_schema, "
+                "table_name, column_name "
+                "FROM information_schema.column_privileges "
+                "WHERE grantee = %s "
+                "ORDER BY table_schema, table_name, column_name, "
+                "privilege_type",
+                lambda row: f"column {row[2]}.{row[3]}.{row[4]}",
+            ),
         ):
             _, rows, _ = self._run(sql, (grantee,))
             privileges += [

@@ -467,6 +467,13 @@ class PostgresConnector(Connector):
                 "ORDER BY table_schema, table_name, privilege_type",
                 lambda row: f"table {row[2]}.{row[3]}",
             ),
+            (
+                "SELECT privilege_type, is_grantable, routine_schema, "
+                "routine_name FROM information_schema.routine_privileges "
+                "WHERE grantee = %s "
+                "ORDER BY routine_schema, routine_name, privilege_type",
+                lambda row: f"function {row[2]}.{row[3]}",
+            ),
         ):
             _, rows, _ = self._run(sql, (user.name,))
             privileges += [

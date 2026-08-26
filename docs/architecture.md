@@ -66,6 +66,15 @@ sqlide/
 │   ├── settings.py        # global settings store (theme, font, vim…)
 │   ├── saved.py           # saved snippets/queries
 │   ├── secrets.py         # connection passwords: system keyring or plain text
+│   ├── backup.py          # zip/restore of the config directory itself
+│   ├── backups/           # database backups: jobs, dumps, destinations
+│   │   ├── jobs.py        # Destination/Job/Run + backups.json store
+│   │   ├── dump.py        # pg_dump / mysqldump / sqlite3 argv + streaming
+│   │   ├── targets.py     # local, S3-compatible, SFTP, FTP(S)
+│   │   ├── runner.py      # one job: dump -> upload -> prune -> record
+│   │   ├── restore.py     # a dump back in through psql / mysql / sqlite3
+│   │   ├── schedule.py    # next-due maths + systemd user timers
+│   │   └── cli.py         # `sqlide-backup`, the headless entry point
 │   ├── mcp/                # the read-only MCP server
 │   └── db/
 │       ├── base.py         # Connector ABC + dataclasses + ConnectorError
@@ -80,6 +89,10 @@ sqlide/
     ├── launcher.py         # in-app workspace switcher
     ├── window.py           # one workspace: split view, tabs, pop-outs, connectors
     ├── sidebar.py           # lazy schema tree (TreeListModel)
+    ├── users_tab.py         # accounts + privileges (review-then-run DDL)
+    ├── backups_tab.py       # backup manager: jobs, schedules, run history
+    ├── backup_destinations.py  # destination list + per-kind editor
+    ├── backup_restore.py    # pick artifact -> pick target -> confirm -> run
     ├── data_grid.py         # ResultGrid + TableTab
     ├── query_console.py
     ├── sql_editor.py        # GtkSourceView 5 with TextView fallback

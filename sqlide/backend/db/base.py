@@ -42,6 +42,52 @@ class TriggerInfo:
 
 
 @dataclass(frozen=True)
+class UserInfo:
+    """One account on the server the connection reaches.
+
+    `name` is the login name; `host` is the half of a MySQL account
+    that is not the name ('app'@'10.0.%'), empty for dialects where an
+    account is just a name. `detail` is a one-line summary for the
+    sidebar row (superuser, locked, "no login"), and `can_login`
+    separates real accounts from group roles.
+    """
+
+    name: str
+    host: str = ""
+    detail: str = ""
+    can_login: bool = True
+
+
+@dataclass(frozen=True)
+class PrivilegeInfo:
+    """One thing an account is allowed to do, as the catalog reports it.
+
+    `scope` is where the privilege applies, already human-readable
+    ("server", "database sales", "table sales.orders", "role member of
+    analysts"); `privilege` is the right itself (SELECT, CREATEDB);
+    `grantable` says the account may pass it on (WITH GRANT OPTION).
+    """
+
+    scope: str
+    privilege: str
+    grantable: bool = False
+
+
+@dataclass(frozen=True)
+class GrantScope:
+    """One entry of the grant dialog's "on what" list.
+
+    `label` is what the user picks ("Database: sales"); `target` is the
+    dialect's own text for it, dropped in after ON (MySQL's
+    `sales`.*, PostgreSQL's DATABASE "sales"). Adapters build these
+    from the catalog so the list only offers what exists.
+    """
+
+    label: str
+    target: str
+
+
+@dataclass(frozen=True)
 class TypeSpec:
     """One entry of the table designer's type list.
 
@@ -280,6 +326,98 @@ class Connector(ABC):
         """
         return []
 
+    # Accounts and privileges. Reading is a catalog query like any
+    # other; changing anything returns SQL for the user to review and
+    # run, the same contract the create/drop surface below keeps —
+    # nothing here executes a GRANT behind anyone's back.
+
+    #: Whether this adapter can list accounts at all (drives the
+    #: sidebar's Users category and the users tab). False for the
+    #: file-based and dialect-blind adapters: SQLite has no accounts,
+    #: and JDBC has no portable catalog for them.
+    supports_users = False
+
+    def list_users(self) -> list[UserInfo]:
+        """Accounts on the server this connection reaches, sorted by
+        name. Server-wide rather than per-database: an account outlives
+        any one database on the same server.
+
+        Concrete default (not abstract) so adapters without accounts
+        need no override.
+        """
+        return []
+
+    def list_privileges(self, user: UserInfo) -> list[PrivilegeInfo]:
+        """Everything `user` is allowed to do, as the catalog reports
+        it — server-wide rights, per-database and per-table grants, and
+        role memberships where the dialect has them."""
+        return []
+
+    def grant_scopes(self) -> list[GrantScope]:
+        """What the grant/revoke dialog can target on this server: the
+        whole server plus each database (and, where they are a level of
+        their own, each schema). Reads the catalog, so call it from a
+        worker thread."""
+        return []
+
+    def privilege_names(self) -> tuple[str, ...]:
+        """The privileges the grant/revoke dialog offers, in the order
+        it shows them."""
+        return ()
+
+    def account_ident(self, user: UserInfo) -> str:
+        """`user` as it is written inside a statement — MySQL's
+        'name'@'host' form, a plain quoted identifier elsewhere."""
+        return self.quote_ident(user.name)
+
+    def create_user_sql(
+        self, name: str, host: str = "", password: str = ""
+    ) -> str:
+        """Statement creating an account that can log in. An empty
+        password means the dialect's own default (no password clause),
+        not an empty one."""
+        raise ConnectorError("This connection cannot manage accounts")
+
+    def drop_user_sql(self, user: UserInfo) -> str:
+        raise ConnectorError("This connection cannot manage accounts")
+
+    def set_password_sql(self, user: UserInfo, password: str) -> str:
+        raise ConnectorError("This connection cannot manage accounts")
+
+    def grant_sql(
+        self, user: UserInfo, privileges: list[str], target: str
+    ) -> str:
+        """GRANT statement for `privileges` on a GrantScope's target.
+
+        Privileges are checked against privilege_names(): they land in
+        the statement as text, and the catalog cannot vouch for them
+        the way it vouches for a table name.
+        """
+        return (
+            f"GRANT {self._privilege_list(privileges)} ON {target} "
+            f"TO {self.account_ident(user)}"
+        )
+
+    def revoke_sql(
+        self, user: UserInfo, privileges: list[str], target: str
+    ) -> str:
+        return (
+            f"REVOKE {self._privilege_list(privileges)} ON {target} "
+            f"FROM {self.account_ident(user)}"
+        )
+
+    def _privilege_list(self, privileges: list[str]) -> str:
+        allowed = self.privilege_names()
+        chosen = [p.strip().upper() for p in privileges if p.strip()]
+        unknown = [p for p in chosen if p not in allowed]
+        if unknown:
+            raise ConnectorError(
+                f"Unsupported privilege(s): {', '.join(unknown)}"
+            )
+        if not chosen:
+            raise ConnectorError("No privileges selected")
+        return ", ".join(chosen)
+
     def in_transaction(self) -> bool:
         """Whether an explicit transaction (user-issued BEGIN) is open
         on this connection. Drives the console's transaction badge and
@@ -307,9 +445,9 @@ class Connector(ABC):
         """Every CREATE statement needed to rebuild this database's
         structure, in an order that can be replayed top to bottom.
 
-        Structure only — no INSERTs. This is what "save this schema
-        for later" captures (backend/schemas.py) and what the sidebar
-        offers as a whole-database script.
+        Structure only — no INSERTs. This is what the sidebar's
+        "Open Schema" captures (backend/schemas.py) and offers as a
+        whole-database script.
 
         The generic implementation walks the catalog through get_ddl(),
         which covers tables, views and programmable objects. Adapters

@@ -15,14 +15,13 @@ pip install "sqlide[mcp]"
 
 Open it from the header bar's network icon (blank form) or a
 connection's context menu ("MCP Server", preselecting that connection).
-Each tab is a **fresh, independent instance** — its own connectors, its
+Each one is a **fresh, independent instance** — its own connectors, its
 own port — that never touches the connections cached by the rest of the
-app. Several tabs can run side by side without sharing state, and
-closing a tab (or Stop) shuts that instance down. It opens in a window
-of its own, so a running server stays visible whatever the tab layout
-is doing; its menu's **Move Back to Main Window** makes it an ordinary
-tab again. Nothing is persisted
-across restarts.
+app. Several can run side by side without sharing state, and closing
+one (or Stop) shuts that instance down. Each gets a window of its own
+with no tab bar — it cannot be dragged into the main window or buried
+behind another tab — carrying the stripe of the workspace it was
+opened from. Nothing is persisted across restarts.
 
 ## The form
 

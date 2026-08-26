@@ -5,7 +5,12 @@ from __future__ import annotations
 
 import pytest
 
-from sqlide.backend.db.base import ConnectorError, FilterCondition, SortSpec
+from sqlide.backend.db.base import (
+    ConnectorError,
+    FilterCondition,
+    SortSpec,
+    UserInfo,
+)
 
 
 def test_server_version_matches_fixture(mysql):
@@ -409,3 +414,47 @@ def test_session_time_zone_is_pinned(mysql):
 def test_binary_column_comes_back_as_bytes(mysql):
     _, db = mysql
     assert isinstance(db.execute("SELECT x'01ff'").rows[0][0], bytes)
+
+
+def test_list_users_includes_the_connected_account(mysql):
+    _, db = mysql
+    accounts = {(u.name, u.host) for u in db.list_users()}
+    assert ("sqlide", "%") in accounts
+
+
+def test_list_privileges_reports_the_test_database(mysql):
+    _, db = mysql
+    user = next(u for u in db.list_users() if u.name == "sqlide")
+    privileges = db.list_privileges(user)
+    assert any(
+        p.scope == "database sqlide" and p.privilege == "SELECT"
+        for p in privileges
+    )
+
+
+def test_grant_scopes_cover_the_server_and_each_database(mysql):
+    _, db = mysql
+    targets = {s.target for s in db.grant_scopes()}
+    assert "*.*" in targets
+    assert "`sqlide`.*" in targets
+
+
+def test_account_statements_quote_name_host_and_password(mysql):
+    _, db = mysql
+    user = UserInfo(name="app", host="10.0.%")
+    assert db.create_user_sql("app", "10.0.%", "pa'ss") == (
+        "CREATE USER 'app'@'10.0.%' IDENTIFIED BY 'pa''ss'"
+    )
+    assert db.drop_user_sql(user) == "DROP USER 'app'@'10.0.%'"
+    assert db.grant_sql(user, ["select", "INSERT"], "`sqlide`.*") == (
+        "GRANT SELECT, INSERT ON `sqlide`.* TO 'app'@'10.0.%'"
+    )
+    assert db.revoke_sql(user, ["SELECT"], "*.*") == (
+        "REVOKE SELECT ON *.* FROM 'app'@'10.0.%'"
+    )
+
+
+def test_grant_rejects_a_privilege_the_dialect_has_no_name_for(mysql):
+    _, db = mysql
+    with pytest.raises(ConnectorError):
+        db.grant_sql(UserInfo(name="app"), ["DROP DATABASE"], "*.*")

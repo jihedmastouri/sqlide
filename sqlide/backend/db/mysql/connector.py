@@ -21,13 +21,16 @@ from sqlide.backend.db.base import (
     ConnectorError,
     FilterCondition,
     FunctionInfo,
+    GrantScope,
     IndexInfo,
+    PrivilegeInfo,
     RelationInfo,
     ResultSet,
     SortSpec,
     TableInfo,
     TriggerInfo,
     TypeSpec,
+    UserInfo,
     build_filter_clauses,
 )
 from sqlide.backend.settings import session_time_zone
@@ -321,6 +324,116 @@ class MysqlConnector(Connector):
         _, rows, _ = self._run("SHOW DATABASES")
         return sorted(
             name for (name,) in rows if name not in _SYSTEM_SCHEMAS
+        )
+
+    # Accounts and privileges
+
+    supports_users = True
+
+    def list_users(self) -> list[UserInfo]:
+        # mysql.user is readable by administrators only; a connection
+        # that cannot read it still knows one account — its own — and
+        # showing that beats an empty list that reads as "no accounts".
+        try:
+            _, rows, _ = self._run(
+                "SELECT user, host, account_locked FROM mysql.user "
+                "ORDER BY user, host"
+            )
+        except ConnectorError:
+            try:
+                _, rows, _ = self._run(
+                    "SELECT user, host, 'N' FROM mysql.user "
+                    "ORDER BY user, host"
+                )
+            except ConnectorError:
+                _, rows, _ = self._run(
+                    "SELECT SUBSTRING_INDEX(CURRENT_USER(), '@', 1), "
+                    "SUBSTRING_INDEX(CURRENT_USER(), '@', -1), 'N'"
+                )
+        return [
+            UserInfo(
+                name=name,
+                host=host,
+                detail="locked" if (locked or "N") == "Y" else "",
+            )
+            for name, host, locked in rows
+        ]
+
+    def list_privileges(self, user: UserInfo) -> list[PrivilegeInfo]:
+        # The information_schema privilege views name their grantee in
+        # the same 'user'@'host' spelling account_ident() builds, so one
+        # parameter matches all three levels.
+        grantee = self.account_ident(user)
+        privileges = []
+        for sql, scope in (
+            (
+                "SELECT privilege_type, is_grantable "
+                "FROM information_schema.user_privileges "
+                "WHERE grantee = %s ORDER BY privilege_type",
+                lambda row: "server",
+            ),
+            (
+                "SELECT privilege_type, is_grantable, table_schema "
+                "FROM information_schema.schema_privileges "
+                "WHERE grantee = %s ORDER BY table_schema, privilege_type",
+                lambda row: f"database {row[2]}",
+            ),
+            (
+                "SELECT privilege_type, is_grantable, table_schema, table_name "
+                "FROM information_schema.table_privileges "
+                "WHERE grantee = %s "
+                "ORDER BY table_schema, table_name, privilege_type",
+                lambda row: f"table {row[2]}.{row[3]}",
+            ),
+        ):
+            _, rows, _ = self._run(sql, (grantee,))
+            privileges += [
+                PrivilegeInfo(
+                    scope=scope(row),
+                    privilege=row[0],
+                    grantable=row[1] == "YES",
+                )
+                for row in rows
+            ]
+        return privileges
+
+    def grant_scopes(self) -> list[GrantScope]:
+        scopes = [GrantScope("Whole server", "*.*")]
+        for database in self.list_databases():
+            quoted = self.quote_ident(database)
+            scopes.append(
+                GrantScope(f"Database: {database}", f"{quoted}.*")
+            )
+        return scopes
+
+    def privilege_names(self) -> tuple[str, ...]:
+        return (
+            "ALL PRIVILEGES", "SELECT", "INSERT", "UPDATE", "DELETE",
+            "CREATE", "DROP", "ALTER", "INDEX", "REFERENCES",
+            "CREATE VIEW", "SHOW VIEW", "CREATE ROUTINE", "ALTER ROUTINE",
+            "EXECUTE", "TRIGGER", "EVENT", "LOCK TABLES",
+            "CREATE TEMPORARY TABLES", "RELOAD", "PROCESS", "GRANT OPTION",
+        )
+
+    def account_ident(self, user: UserInfo) -> str:
+        return f"{_quote_str(user.name)}@{_quote_str(user.host or '%')}"
+
+    def create_user_sql(
+        self, name: str, host: str = "", password: str = ""
+    ) -> str:
+        account = self.account_ident(UserInfo(name=name, host=host))
+        sql = f"CREATE USER {account}"
+        if password:
+            sql += f" IDENTIFIED BY {_quote_str(password)}"
+        return sql
+
+    def drop_user_sql(self, user: UserInfo) -> str:
+        return f"DROP USER {self.account_ident(user)}"
+
+    def set_password_sql(self, user: UserInfo, password: str) -> str:
+        return (
+            f"ALTER USER {self.account_ident(user)} "
+            f"IDENTIFIED BY {_quote_str(password)}"
         )
 
     def list_tables(self) -> list[TableInfo]:
@@ -655,6 +768,16 @@ class MysqlConnector(Connector):
         if "\x00" in name:
             raise ConnectorError("Identifier contains a NUL byte")
         return "`" + name.replace("`", "``") + "`"
+
+
+def _quote_str(value: str) -> str:
+    """A string literal for a statement the user is about to review —
+    account names and passwords cannot be bound as parameters inside
+    CREATE USER / GRANT. Backslash escapes as well as quotes: MySQL
+    honors backslash escapes in literals by default."""
+    if "\x00" in value:
+        raise ConnectorError("Value contains a NUL byte")
+    return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
 
 
 def _utc_offset(zone: str) -> str:

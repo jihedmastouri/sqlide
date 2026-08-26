@@ -14,6 +14,7 @@ app.preferences / app.about actions that windows put in their menus.
 """
 
 import sys
+import threading
 from pathlib import Path
 
 import gi
@@ -21,10 +22,13 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gdk, Gio, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from sqlide import APP_ID
 from sqlide.backend import settings as app_settings
+from sqlide.backend.backups import runner as backup_runner
+from sqlide.backend.backups import schedule as backup_schedule
+from sqlide.backend.backups.jobs import BackupStore
 from sqlide.backend.workspaces import Workspace, WorkspaceStore
 from sqlide.frontend import identity
 from sqlide.frontend.help import help_dialog
@@ -34,6 +38,11 @@ from sqlide.frontend.preferences import PreferencesDialog, about_dialog
 from sqlide.frontend.shortcuts import shortcuts_dialog
 from sqlide.frontend.welcome import WelcomeWindow
 from sqlide.frontend.window import MainWindow
+
+# How often the in-app scheduler looks for a due backup job. A minute
+# is fine: the finest schedule the UI offers is "every N minutes", and
+# a backup that starts 40 seconds late is still on time.
+_BACKUP_TICK = 60
 
 _COLOR_SCHEMES = {
     "system": Adw.ColorScheme.DEFAULT,
@@ -52,6 +61,7 @@ class SqlideApplication(Adw.Application):
         self.store_error: str | None = None
         self._launcher: WorkspaceLauncher | None = None
         self._workspace_windows: dict[str, MainWindow] = {}
+        self._backup_store: BackupStore | None = None
 
     def do_startup(self) -> None:
         Adw.Application.do_startup(self)
@@ -98,6 +108,31 @@ class SqlideApplication(Adw.Application):
         # Preferences takes effect without a restart.
         keymap.apply_app_accels(self)
         app_settings.store.subscribe(lambda _s: keymap.apply_app_accels(self))
+        GLib.timeout_add_seconds(_BACKUP_TICK, self._run_due_backups)
+
+    # Scheduled backups
+
+    def _run_due_backups(self) -> bool:
+        """The in-app backup clock (backend/backups/schedule.py).
+
+        Reloaded from disk each tick, because the headless runner
+        writes the same file — its runs count as "the job ran", and a
+        stale in-memory copy would run it again. Jobs with a systemd
+        timer installed are skipped there, not here.
+
+        Each due job goes onto its own thread. A failing one records a
+        failed run and is otherwise ignored: the desktop app must not
+        put a dialog on screen because a backup server was down.
+        """
+        store = BackupStore()
+        due = backup_schedule.due_jobs(store)
+        for job in due:
+            threading.Thread(
+                target=backup_runner.run_job,
+                args=(store, job),
+                daemon=True,
+            ).start()
+        return GLib.SOURCE_CONTINUE
 
     def _apply_settings(self, settings: app_settings.Settings) -> None:
         Adw.StyleManager.get_default().set_color_scheme(

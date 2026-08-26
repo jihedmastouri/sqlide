@@ -148,7 +148,12 @@ class PreferencesDialog(Adw.PreferencesDialog):
         safety.add(confirm_row)
         page.add(safety)
 
-        backup_group = Adw.PreferencesGroup(title="Backup")
+        backup_group = Adw.PreferencesGroup(
+            title="Backup",
+            description="Settings and workspaces only. Database backups —"
+            " scheduled dumps to disk, S3, SFTP or FTP — live in the "
+            "Backups tab.",
+        )
         backup_row = Adw.ActionRow(
             title="Backup &amp; Restore…",
             subtitle="Export or restore settings and workspaces",

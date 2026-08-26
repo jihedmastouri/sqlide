@@ -46,13 +46,16 @@ from sqlide.backend.db.base import (
     ConnectorError,
     FilterCondition,
     FunctionInfo,
+    GrantScope,
     IndexInfo,
+    PrivilegeInfo,
     RelationInfo,
     ResultSet,
     SortSpec,
     TableInfo,
     TriggerInfo,
     TypeSpec,
+    UserInfo,
     build_filter_clauses,
 )
 from sqlide.backend.settings import session_time_zone
@@ -364,6 +367,156 @@ class PostgresConnector(Connector):
             "ORDER BY datname"
         )
         return [name for (name,) in rows]
+
+    # Accounts and privileges
+
+    supports_users = True
+
+    def list_users(self) -> list[UserInfo]:
+        """Every role on the cluster, login roles and group roles
+        alike — in PostgreSQL a "user" is only a role that may log in,
+        and the groups it belongs to are half of what it can do. The
+        pg_* built-in roles stay out; they are the server's, not the
+        administrator's.
+        """
+        _, rows, _ = self._run(
+            "SELECT rolname, rolcanlogin, rolsuper, rolcreatedb, "
+            "rolcreaterole, rolreplication FROM pg_roles "
+            "WHERE rolname NOT LIKE 'pg\\_%' ORDER BY rolname"
+        )
+        users = []
+        for name, login, super_, createdb, createrole, replication in rows:
+            flags = [
+                label
+                for flag, label in (
+                    (super_, "superuser"),
+                    (createdb, "createdb"),
+                    (createrole, "createrole"),
+                    (replication, "replication"),
+                    (not login, "no login"),
+                )
+                if flag
+            ]
+            users.append(
+                UserInfo(
+                    name=name,
+                    detail=", ".join(flags),
+                    can_login=bool(login),
+                )
+            )
+        return users
+
+    def list_privileges(self, user: UserInfo) -> list[PrivilegeInfo]:
+        """Role attributes, memberships, and the ACL entries granted to
+        this role on databases, schemas and tables.
+
+        Databases are cluster-wide, but schemas and tables can only be
+        read from the database this connection is attached to: their
+        catalogs live inside it. Privileges elsewhere show up when the
+        sidebar's other database is opened, which is its own connection.
+        """
+        privileges = []
+        _, rows, _ = self._run(
+            "SELECT rolsuper, rolcreatedb, rolcreaterole, rolreplication, "
+            "rolcanlogin, rolbypassrls FROM pg_roles WHERE rolname = %s",
+            (user.name,),
+        )
+        if rows:
+            for flag, label in zip(
+                rows[0],
+                (
+                    "SUPERUSER", "CREATEDB", "CREATEROLE",
+                    "REPLICATION", "LOGIN", "BYPASSRLS",
+                ),
+            ):
+                if flag:
+                    privileges.append(PrivilegeInfo("server", label))
+        _, rows, _ = self._run(
+            "SELECT g.rolname FROM pg_auth_members m "
+            "JOIN pg_roles g ON g.oid = m.roleid "
+            "JOIN pg_roles r ON r.oid = m.member "
+            "WHERE r.rolname = %s ORDER BY g.rolname",
+            (user.name,),
+        )
+        privileges += [
+            PrivilegeInfo("role membership", f"member of {name}")
+            for (name,) in rows
+        ]
+        for sql, scope in (
+            (
+                "SELECT a.privilege_type, a.is_grantable, d.datname "
+                "FROM pg_database d, aclexplode(d.datacl) a "
+                "JOIN pg_roles r ON r.oid = a.grantee "
+                "WHERE r.rolname = %s ORDER BY d.datname, a.privilege_type",
+                lambda row: f"database {row[2]}",
+            ),
+            (
+                "SELECT a.privilege_type, a.is_grantable, n.nspname "
+                "FROM pg_namespace n, aclexplode(n.nspacl) a "
+                "JOIN pg_roles r ON r.oid = a.grantee "
+                "WHERE r.rolname = %s ORDER BY n.nspname, a.privilege_type",
+                lambda row: f"schema {row[2]}",
+            ),
+            (
+                "SELECT privilege_type, is_grantable, table_schema, table_name "
+                "FROM information_schema.table_privileges "
+                "WHERE grantee = %s "
+                "ORDER BY table_schema, table_name, privilege_type",
+                lambda row: f"table {row[2]}.{row[3]}",
+            ),
+        ):
+            _, rows, _ = self._run(sql, (user.name,))
+            privileges += [
+                PrivilegeInfo(
+                    scope=scope(row),
+                    privilege=row[0],
+                    grantable=row[1] in (True, "YES"),
+                )
+                for row in rows
+            ]
+        return privileges
+
+    def grant_scopes(self) -> list[GrantScope]:
+        scopes = [
+            GrantScope(f"Database: {name}", f"DATABASE {self.quote_ident(name)}")
+            for name in self.list_databases()
+        ]
+        for schema in self.list_schemas():
+            quoted = self.quote_ident(schema)
+            scopes.append(GrantScope(f"Schema: {schema}", f"SCHEMA {quoted}"))
+            scopes.append(
+                GrantScope(
+                    f"All tables in schema: {schema}",
+                    f"ALL TABLES IN SCHEMA {quoted}",
+                )
+            )
+        return scopes
+
+    def privilege_names(self) -> tuple[str, ...]:
+        return (
+            "ALL PRIVILEGES", "SELECT", "INSERT", "UPDATE", "DELETE",
+            "TRUNCATE", "REFERENCES", "TRIGGER", "CREATE", "CONNECT",
+            "TEMPORARY", "EXECUTE", "USAGE",
+        )
+
+    def create_user_sql(
+        self, name: str, host: str = "", password: str = ""
+    ) -> str:
+        # `host` has no counterpart here: PostgreSQL decides where a
+        # role may connect from in pg_hba.conf, not in the role itself.
+        sql = f"CREATE ROLE {self.quote_ident(name)} LOGIN"
+        if password:
+            sql += f" PASSWORD {_quote_str(password)}"
+        return sql
+
+    def drop_user_sql(self, user: UserInfo) -> str:
+        return f"DROP ROLE {self.quote_ident(user.name)}"
+
+    def set_password_sql(self, user: UserInfo, password: str) -> str:
+        return (
+            f"ALTER ROLE {self.quote_ident(user.name)} "
+            f"PASSWORD {_quote_str(password)}"
+        )
 
     def list_schemas(self) -> list[str]:
         """Every schema in the database the user could work in, system
@@ -934,6 +1087,17 @@ class PostgresConnector(Connector):
         if "\x00" in name:
             raise ConnectorError("Identifier contains a NUL byte")
         return '"' + name.replace('"', '""') + '"'
+
+
+def _quote_str(value: str) -> str:
+    """A string literal for a statement the user is about to review —
+    a password inside CREATE ROLE cannot be bound as a parameter.
+    Doubling the quote is the whole escape: PostgreSQL has had
+    standard_conforming_strings on since 9.1, so a backslash in a
+    plain literal is a backslash."""
+    if "\x00" in value:
+        raise ConnectorError("Value contains a NUL byte")
+    return "'" + value.replace("'", "''") + "'"
 
 
 def _message(exc: psycopg.Error) -> str:

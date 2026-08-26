@@ -93,13 +93,18 @@ copies and moves the column.
 
 ## 7. Give a tab its own window
 
-Any tab — a table, a console, a graph, an MCP server — can be popped
-out: right-click it and pick **Move to New Window**, or just drag it
-off the tab bar. The window is a tab bar of its own, so several tabs
-can share it, and **Move Back to Main Window** (or a drag back onto
-the main tab bar) puts one home again. MCP server tabs open this way
-already, since a running server is usually something you want to keep
-in the corner of your eye.
+Any tab — a table, a console, a graph — can be popped out three ways:
+right-click it and pick **Move to New Window**, drag it off the tab
+bar, or hold **Shift** while opening it from anywhere at all (the
+sidebar, the New menu, a context menu). The window is a tab bar of its
+own, so several tabs can share it, and **Move Back to Main Window**
+(or a drag back onto the main tab bar) puts one home again. Every
+pop-out wears its workspace's stripe, so you can tell at a glance
+which window belongs to which.
+
+An [MCP server](/docs/mcp-server/) is always a window, and a bare one:
+no tab bar, nothing to drag it in or out of. A running server should
+not be able to end up buried behind the tab you're working in.
 
 Pop-outs are for the session you're in: on the next launch every tab
 is restored into the main window, the same way a split view is.

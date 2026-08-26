@@ -10,6 +10,25 @@ The Indexes/Triggers/Events categories appear only when the adapter's
 ddl_kinds() advertises the kind (known after connect) and it supports
 dropping (JDBC stays template-only).
 
+A MySQL or PostgreSQL connection reaches a whole server, not one
+database, so there the shape gains a level and the categories hang off
+a database instead:
+
+    connection → database → Tables / Views / … → object → columns
+
+Every database the server has is listed, the connection's own first
+and marked "current"; tables never sit at the connection root, because
+a table belongs to a database and not to the server. Each database row
+loads through a connection of its own (see _database_profile — a
+profile copy named "connection · database", which is also what a query
+console's database dropdown builds, so the two share a connector); the
+current database's row reuses the connection's own profile.
+
+Accounts stay out of the tree: they are not schema objects, and a
+category of them under every connection buries the tables people came
+for. "Users & Permissions…" on the connection menu opens them in a tab
+instead (frontend/users_tab.py).
+
 Column rows show "name  type" with a PK marker and are informational.
 Rows lead with a per-kind icon (connections also get a connection
 status dot) and expandable rows end with a caret; the built-in
@@ -54,6 +73,7 @@ retries.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Callable
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
@@ -64,12 +84,13 @@ from sqlide.backend.db.base import Connector
 from sqlide.frontend import identity as identity_ui
 from sqlide.frontend.util import describe, run_async
 
-_EXPANDABLE = ("connection", "category", "table", "view")
+_EXPANDABLE = ("connection", "database", "category", "table", "view")
 
 # Leading icon per row kind; kinds not listed (category, column, note)
 # show no icon.
 _KIND_ICONS = {
     "connection": "network-server-symbolic",
+    "database": "drive-multidisk-symbolic",
     "table": "view-grid-symbolic",
     "view": "view-reveal-symbolic",
     "function": "system-run-symbolic",
@@ -106,8 +127,8 @@ _LAZY_CATEGORIES = {
 class Node(GObject.Object):
     """One tree row; kind decides expandability, look, and activation.
 
-    kind: "connection" | "category" | "table" | "view" | "function"
-        | "index" | "trigger" | "event"
+    kind: "connection" | "database" | "category" | "table" | "view"
+        | "function" | "index" | "trigger" | "event"
         | "column" | "note" (dim placeholder: loading/empty/error)
     """
 
@@ -163,7 +184,8 @@ class Sidebar(Gtk.ScrolledWindow):
         ],  # (profile, kind, name, owning table)
         on_new_object: Callable[[ConnectionProfile, str], None],
         on_mcp_server: Callable[[ConnectionProfile], None],
-        on_save_schema: Callable[[ConnectionProfile], None],
+        on_manage_users: Callable[[ConnectionProfile], None],
+        on_open_schema: Callable[[ConnectionProfile], None],
         on_edit_connection: Callable[[ConnectionProfile], None],
         on_remove_connection: Callable[[ConnectionProfile], None],
         on_add_connection: Callable[[], None],
@@ -182,7 +204,8 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_drop_object = on_drop_object
         self._on_new_object = on_new_object
         self._on_mcp_server = on_mcp_server
-        self._on_save_schema = on_save_schema
+        self._on_manage_users = on_manage_users
+        self._on_open_schema = on_open_schema
         self._on_edit_connection = on_edit_connection
         self._on_remove_connection = on_remove_connection
         self._show_error = show_error
@@ -243,7 +266,8 @@ class Sidebar(Gtk.ScrolledWindow):
             ("drop-object", self._menu_drop),
             ("refresh", self._menu_refresh),
             ("mcp-server", self._menu_mcp_server),
-            ("save-schema", self._menu_save_schema),
+            ("manage-users", self._menu_manage_users),
+            ("open-schema", self._menu_open_schema),
             ("edit-connection", self._menu_edit_connection),
             ("remove-connection", self._menu_remove_connection),
         ):
@@ -328,30 +352,38 @@ class Sidebar(Gtk.ScrolledWindow):
 
     def _search_candidates(self):
         """Fresh table/view/function Nodes from every connection whose
-        schema has been loaded (detail carries the connection name)."""
+        schema has been loaded (detail carries the connection name),
+        and from each of its already-loaded other databases."""
         for i in range(self._roots.get_n_items()):
             conn = self._roots.get_item(i)
-            if conn.store is None:
+            yield from self._node_candidates(conn)
+
+    def _node_candidates(self, conn: Node):
+        """The searchable objects under one connection or database
+        row, recursing into the databases it has loaded."""
+        if conn.store is None:
+            return
+        for j in range(conn.store.get_n_items()):
+            category = conn.store.get_item(j)
+            if category.kind == "database":
+                yield from self._node_candidates(category)
                 continue
-            for j in range(conn.store.get_n_items()):
-                category = conn.store.get_item(j)
-                if category.kind != "category":
-                    continue
-                if category.category in ("tables", "views"):
-                    kind = "table" if category.category == "tables" else "view"
-                    for info in category.payload or []:
+            if category.kind != "category":
+                continue
+            if category.category in ("tables", "views"):
+                kind = "table" if category.category == "tables" else "view"
+                for info in category.payload or []:
+                    yield Node(
+                        kind, info.name,
+                        detail=conn.label, profile=conn.profile,
+                    )
+            else:
+                for child in _items(category.store):
+                    if child.kind == "function":
                         yield Node(
-                            kind, info.name,
+                            "function", child.label,
                             detail=conn.label, profile=conn.profile,
                         )
-                elif category.store is not None:
-                    for k in range(category.store.get_n_items()):
-                        child = category.store.get_item(k)
-                        if child.kind == "function":
-                            yield Node(
-                                "function", child.label,
-                                detail=conn.label, profile=conn.profile,
-                            )
 
     def expand_profile(self, name: str) -> None:
         """Expand (and thereby connect/load) the row for a profile."""
@@ -396,11 +428,14 @@ class Sidebar(Gtk.ScrolledWindow):
             self.reload_connection(node.label)
             return
         if node.kind == "category" and node.category in ("tables", "views"):
-            # Both are filled from the connection's single list_tables()
-            # call, so only reloading the connection refetches them.
-            root = self._root_node(node.profile)
-            if root is not None:
-                self.reload_connection(root.label)
+            # Both are filled from the row above them, out of one
+            # list_tables() call, so only reloading that row refetches
+            # them.
+            parent = node.parent or self._root_node(node.profile)
+            if parent is not None and parent.kind == "database":
+                self.refresh_node(parent)
+            elif parent is not None:
+                self.reload_connection(parent.label)
             return
         if node.kind not in _EXPANDABLE:
             # Leaves (a function, an index) carry no children of their
@@ -434,7 +469,14 @@ class Sidebar(Gtk.ScrolledWindow):
             return None
         for i in range(self._roots.get_n_items()):
             node = self._roots.get_item(i)
-            if node.profile is profile or node.label == profile.name:
+            if (
+                node.profile is profile
+                or node.label == profile.name
+                # A database row's profile is a copy named
+                # "connection · database" (see _database_profile); the
+                # capability flags still live on the connection row.
+                or profile.name.startswith(node.label + _DATABASE_SEPARATOR)
+            ):
                 return node
         return None
 
@@ -455,8 +497,8 @@ class Sidebar(Gtk.ScrolledWindow):
         return node.store
 
     def _fill_category(self, node: Node) -> None:
-        # Tables/Views got their objects from the connection's
-        # list_tables() call; filling is synchronous.
+        # Tables/Views got their objects from the row above them, in
+        # one list_tables() call, so filling is synchronous.
         kind = "table" if node.category == "tables" else "view"
         for info in node.payload or []:
             node.store.append(Node(kind, info.name, profile=node.profile))
@@ -475,6 +517,13 @@ class Sidebar(Gtk.ScrolledWindow):
     def _load_children(self, node: Node) -> None:
         if node.kind not in _EXPANDABLE or node.loaded or node.loading:
             return
+        if node.kind == "category" and node.category not in _LAZY_CATEGORIES:
+            # Payload-filled (Tables/Views): nothing to fetch, the row
+            # above already did it.
+            if node.store is None:
+                node.store = Gio.ListStore(item_type=Node)
+            self._fill_category(node)
+            return
         if node.store is None:
             node.store = Gio.ListStore(item_type=Node)
         node.loading = True
@@ -482,19 +531,38 @@ class Sidebar(Gtk.ScrolledWindow):
         store.remove_all()
         store.append(Node("note", "Loading…"))
 
-        if node.kind == "connection":
+        if node.kind in ("connection", "database"):
+            # On a server that hosts several databases the connection
+            # row lists them and stops there: its children are
+            # databases, and the object categories belong to each of
+            # those (see the module docstring). Where list_databases()
+            # comes back empty — SQLite, JDBC — one connection is one
+            # database and the categories sit at the root instead.
+            root = node.kind == "connection"
+
             def work():
                 connector = self._ensure(node.profile)
+                databases = connector.list_databases() if root else []
                 return (
-                    connector.list_tables(),
+                    [] if databases else connector.list_tables(),
                     connector.ddl_kinds(),
                     connector.supports_drop,
+                    databases,
                 )
 
             def fill(loaded):
-                objects, kinds, supports_drop = loaded
+                objects, kinds, supports_drop, databases = loaded
                 node.ddl_kinds = kinds
                 node.supports_drop = supports_drop
+                if databases:
+                    current = node.profile.database
+                    for name in sorted(databases, key=lambda n: n != current):
+                        store.append(Node(
+                            "database", name,
+                            detail="current" if name == current else "",
+                            profile=_database_profile(node.profile, name),
+                        ))
+                    return
                 tables = [t for t in objects if t.kind != "view"]
                 views = [t for t in objects if t.kind == "view"]
                 store.append(Node(
@@ -536,15 +604,17 @@ class Sidebar(Gtk.ScrolledWindow):
             def fill(objects):
                 kind = _LAZY_CATEGORIES[node.category]
                 for obj in objects:
+                    table = ""  # only index/trigger rows own one
                     if node.category == "events":  # plain names
-                        name, table = obj, ""
+                        name, detail = obj, ""
                     elif node.category == "functions":
-                        name, table = obj.name, ""
+                        name, detail = obj.name, ""
                     else:  # IndexInfo | TriggerInfo
                         name, table = obj.name, obj.table
+                        detail = table
                     store.append(Node(
                         kind, name,
-                        detail=table, profile=node.profile, table=table,
+                        detail=detail, profile=node.profile, table=table,
                     ))
                 if not objects:
                     store.append(Node("note", "(none)"))
@@ -731,20 +801,25 @@ class Sidebar(Gtk.ScrolledWindow):
             if node.category == "indexes" and node.profile is not None:
                 menu.append("View All…", "schema.view-indexes")
             return menu
-        if node.kind == "connection":
+        if node.kind in ("connection", "database"):
             menu = Gio.Menu()
             menu.append("New Query Console", "schema.query-console")
             menu.append("New CLI Client", "schema.cli-console")
             menu.append("Relation Graph", "schema.relation-graph")
             menu.append("Query Builder", "schema.query-builder")
             menu.append("MCP Server", "schema.mcp-server")
-            menu.append("Save Schema…", "schema.save-schema")
+            menu.append("Open Schema", "schema.open-schema")
             menu.append_submenu(
                 "New", _new_items(node.ddl_kinds or _DEFAULT_NEW_KINDS)
             )
             menu.append("Refresh", "schema.refresh")
-            menu.append("Edit…", "schema.edit-connection")
-            menu.append("Remove…", "schema.remove-connection")
+            if node.kind == "connection":
+                # Accounts belong to the server and the profile is the
+                # workspace's, so both stop at the connection row: a
+                # database row is a view onto the same server.
+                menu.append("Users & Permissions…", "schema.manage-users")
+                menu.append("Edit…", "schema.edit-connection")
+                menu.append("Remove…", "schema.remove-connection")
             return menu
         if node.kind == "function" and node.profile is not None:
             menu = Gio.Menu()
@@ -903,10 +978,15 @@ class Sidebar(Gtk.ScrolledWindow):
         if node is not None and node.profile is not None:
             self._on_mcp_server(node.profile)
 
-    def _menu_save_schema(self, *_args) -> None:
+    def _menu_manage_users(self, *_args) -> None:
         node = self._menu_node
         if node is not None and node.profile is not None:
-            self._on_save_schema(node.profile)
+            self._on_manage_users(node.profile)
+
+    def _menu_open_schema(self, *_args) -> None:
+        node = self._menu_node
+        if node is not None and node.profile is not None:
+            self._on_open_schema(node.profile)
 
     def _menu_edit_connection(self, *_args) -> None:
         node = self._menu_node
@@ -983,8 +1063,44 @@ class Sidebar(Gtk.ScrolledWindow):
             self._on_open_table(node.profile, node.label)
         elif node.kind in ("function", "trigger") and node.profile is not None:
             self._on_open_function(node.profile, node.label)
-        elif node.kind in ("connection", "category"):
+        elif node.kind in ("connection", "database", "category"):
             row.set_expanded(not row.get_expanded())
+
+
+#: Separator between a connection's name and the database a derived
+#: profile points at. The query console builds the same names, so a
+#: console opened on "prod · billing" and the sidebar row under it
+#: share one connector.
+_DATABASE_SEPARATOR = " · "
+
+
+def _database_profile(
+    profile: ConnectionProfile, database: str
+) -> ConnectionProfile:
+    """`profile` pointed at another database on the same server.
+
+    MySQL and PostgreSQL connections reach a whole server, but a
+    connector is attached to one database: its catalog queries are
+    scoped to it, and in PostgreSQL another database is not reachable
+    at all without reconnecting. So each database gets its own derived
+    profile — and, through it, its own connector — rather than the
+    tree pretending one connection covers them all. The schema is
+    dropped: a schema pinned on one database means nothing in another.
+    """
+    if database == profile.database:
+        return profile
+    return replace(
+        profile,
+        name=f"{profile.name}{_DATABASE_SEPARATOR}{database}",
+        database=database,
+        schema="",
+    )
+
+
+def _items(store: Gio.ListStore | None):
+    """Every node in a (possibly unloaded) child store."""
+    for i in range(store.get_n_items() if store is not None else 0):
+        yield store.get_item(i)
 
 
 def _adopt(node: Node) -> None:

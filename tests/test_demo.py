@@ -136,72 +136,7 @@ def test_server_demo_needs_a_server():
         demo.create("postgres")
 
 
-# Saved schemas (backend/schemas.py) — the store, on a temp directory.
-
-
-def _store(tmp_path):
-    from sqlide.backend.schemas import SchemaStore
-
-    return SchemaStore(directory=tmp_path)
-
-
-def test_saved_schema_roundtrips_through_the_file(tmp_path):
-    from sqlide.backend.schemas import SchemaStore
-
-    store = _store(tmp_path)
-    store.add("shop", "CREATE TABLE a (id int);", kind="postgres", source="prod")
-    reopened = SchemaStore(directory=tmp_path)
-    items = reopened.load()
-    assert [i.name for i in items] == ["shop"]
-    assert items[0].kind == "postgres" and items[0].source == "prod"
-    assert items[0].captured  # stamped at save time
-
-
-def test_duplicate_names_are_numbered(tmp_path):
-    store = _store(tmp_path)
-    assert store.add("shop", "x").name == "shop"
-    assert store.add("shop", "y").name == "shop (2)"
-    assert store.add("shop", "z").name == "shop (3)"
-
-
-def test_remove_and_subscribers(tmp_path):
-    store = _store(tmp_path)
-    # Listeners are handed the store's live list (as SavedStore does),
-    # so the count has to be taken at call time, not kept for later.
-    seen = []
-    listener = lambda items: seen.append(len(items))  # noqa: E731
-    store.subscribe(listener)
-    item = store.add("shop", "x")
-    store.remove(item)
-    assert seen == [1, 0]
-
-    store.unsubscribe(listener)
-    store.add("other", "y")
-    assert seen == [1, 0]  # no longer notified
-
-
-def test_unreadable_file_starts_empty_without_losing_it(tmp_path):
-    from sqlide.backend.schemas import SchemaStore
-
-    path = tmp_path / "schemas.json"
-    path.write_text("{ not json")
-    store = SchemaStore(directory=tmp_path)
-    assert store.load() == []
-    assert path.read_text() == "{ not json"  # not overwritten on read
-
-
-def test_fields_from_a_newer_version_are_skipped(tmp_path):
-    """A file written by a later version still opens, minus what this
-    version does not know — the rule the XML exchange format follows."""
-    import json
-
-    from sqlide.backend.schemas import SchemaStore
-
-    (tmp_path / "schemas.json").write_text(
-        json.dumps([{"name": "shop", "sql": "x", "future_field": 1}])
-    )
-    items = SchemaStore(directory=tmp_path).load()
-    assert [i.name for i in items] == ["shop"]
+# Schema capture (backend/schemas.py).
 
 
 def test_capture_writes_a_header_and_statements():

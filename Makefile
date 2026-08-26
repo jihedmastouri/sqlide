@@ -1,15 +1,15 @@
 # Development entry points. `make` on its own lists them.
 #
-# Two interpreters, on purpose:
+# One interpreter, built two ways:
 #
-#   * the app runs on the system python ($(PYTHON)), because GTK,
-#     libadwaita and PyGObject are system packages — a plain venv
-#     cannot import `gi`;
-#   * the tests and the seeding script run in $(VENV), which is where
-#     the database drivers and pytest live (nothing there touches GTK).
+#   * GTK, libadwaita and PyGObject are system packages, so $(VENV) is
+#     created on the system python ($(PYTHON)) with --system-site-packages
+#     — that is the only way `import gi` works from a venv;
+#   * the database drivers and pytest are installed into that venv.
 #
-# `make install` creates that venv with --system-site-packages, so a
-# venv built on the system interpreter can do both.
+# So everything — the app, the tests, the seeding script — runs on
+# $(BIN)/python. Running the app on $(PYTHON) directly would find GTK
+# but none of the drivers.
 
 PYTHON ?= python3
 VENV ?= .venv
@@ -47,24 +47,24 @@ else
 	uv pip install --python $(BIN)/python -e ".[test,all]"
 endif
 
-run:  ## Launch the app (system python: GTK lives there)
-	$(PYTHON) -m sqlide
+run: venv  ## Launch the app (venv python: GTK via system site packages)
+	$(BIN)/python -m sqlide
 
 # Startup goes straight into the last-used workspace, so the only way
 # back to a first run is a config directory that has never seen one.
 # SCRATCH_CONFIG defaults to a fresh mktemp dir per run; point it at a
 # fixed path to keep a throwaway profile between runs.
-run-fresh:  ## Launch with a throwaway config (a real first run)
+run-fresh: venv  ## Launch with a throwaway config (a real first run)
 	@dir="$${SCRATCH_CONFIG:-$$(mktemp -d -t sqlide-config-XXXXXX)}"; \
 	echo "→ XDG_CONFIG_HOME=$$dir"; \
-	XDG_CONFIG_HOME="$$dir" $(PYTHON) -m sqlide
+	XDG_CONFIG_HOME="$$dir" $(BIN)/python -m sqlide
 
 demo:  ## Build the SQLite demo database (demo.db)
 	$(PYTHON) scripts/make_demo_db.py $(DEMO_DB)
 
-check:  ## Compile every module and import the GTK entry point
-	$(PYTHON) -m compileall -q sqlide
-	$(PYTHON) -c "import sqlide.frontend.application"
+check: venv  ## Compile every module and import the GTK entry point
+	$(BIN)/python -m compileall -q sqlide
+	$(BIN)/python -c "import sqlide.frontend.application"
 
 test: venv  ## Run the tests (server tests skip when nothing is up)
 	$(BIN)/python -m pytest

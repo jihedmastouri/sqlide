@@ -5,7 +5,12 @@ from __future__ import annotations
 
 import pytest
 
-from sqlide.backend.db.base import ConnectorError, FilterCondition, SortSpec
+from sqlide.backend.db.base import (
+    ConnectorError,
+    FilterCondition,
+    SortSpec,
+    UserInfo,
+)
 
 
 def test_server_version_matches_fixture(postgres):
@@ -551,3 +556,51 @@ def test_session_time_zone_is_pinned(postgres):
     if expected is None:
         pytest.skip("settings ask for the server's own zone")
     assert db.execute("SHOW TimeZone").rows[0][0] == expected
+
+
+def test_list_users_reports_role_attributes(postgres):
+    _, db = postgres
+    users = {u.name: u for u in db.list_users()}
+    assert "sqlide" in users
+    assert users["sqlide"].can_login
+    # The cluster's built-in pg_* roles are the server's own business.
+    assert not any(name.startswith("pg_") for name in users)
+
+
+def test_list_privileges_reports_role_attributes_and_grants(postgres):
+    _, db = postgres
+    user = next(u for u in db.list_users() if u.name == "sqlide")
+    privileges = db.list_privileges(user)
+    assert any(
+        p.scope == "server" and p.privilege == "LOGIN" for p in privileges
+    )
+
+
+def test_grant_scopes_cover_databases_and_schemas(postgres):
+    _, db = postgres
+    targets = {s.target for s in db.grant_scopes()}
+    assert 'DATABASE "sqlide"' in targets
+    assert 'SCHEMA "public"' in targets
+    assert 'ALL TABLES IN SCHEMA "public"' in targets
+
+
+def test_account_statements_quote_role_and_password(postgres):
+    _, db = postgres
+    user = UserInfo(name="app")
+    assert db.create_user_sql("app", "", "pa'ss") == (
+        'CREATE ROLE "app" LOGIN PASSWORD \'pa\'\'ss\''
+    )
+    assert db.set_password_sql(user, "x") == 'ALTER ROLE "app" PASSWORD \'x\''
+    assert db.drop_user_sql(user) == 'DROP ROLE "app"'
+    assert db.grant_sql(user, ["select"], 'SCHEMA "public"') == (
+        'GRANT SELECT ON SCHEMA "public" TO "app"'
+    )
+    assert db.revoke_sql(user, ["USAGE"], 'SCHEMA "public"') == (
+        'REVOKE USAGE ON SCHEMA "public" FROM "app"'
+    )
+
+
+def test_grant_rejects_an_unknown_privilege(postgres):
+    _, db = postgres
+    with pytest.raises(ConnectorError):
+        db.grant_sql(UserInfo(name="app"), ["SUPERUSER"], 'DATABASE "sqlide"')

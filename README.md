@@ -15,6 +15,8 @@ included (experimental). See [PLAN.md](PLAN.md) for design and status.
   - JDBC: `pip install JayDeBeApi` + a Java runtime + the driver jar
   - MCP server: `pip install "sqlide[mcp]"` (the `mcp` SDK + uvicorn)
   - System keyring for connection passwords: `pip install "sqlide[keyring]"`
+  - S3 backup destinations: `pip install "sqlide[s3]"` (boto3; SFTP uses the
+    `ssh` extra, FTP needs nothing)
 
 SQLite needs nothing extra.
 
@@ -107,6 +109,47 @@ Passwords are left out unless the export explicitly asks for them, and
 an import never overwrites what is already there. See
 [docs/transfer.md](docs/transfer.md).
 
+## Backups
+
+**Backups** (sidebar menu) is a manager for real database dumps, not just
+a settings export. A *job* says what to back up — a connection, optionally
+a single schema or a chosen list of tables, schema and data or either
+alone — where it goes, and how often.
+
+The dump itself is the vendor's own tool: `pg_dump`, `mysqldump`, or
+`sqlite3 .dump`. The exact command is shown in the editor before you run
+it, and the artifact is a plain SQL script (gzipped by default) that
+`psql`/`mysql`/`sqlite3` can restore with or without sqlide.
+
+Destinations are a local folder, any S3-compatible bucket (AWS, MinIO,
+R2, B2, Wasabi), SFTP, or FTP/FTPS. Each job keeps its newest N backups
+there and prunes the rest — only files it wrote itself. Credentials go to
+the keyring alongside connection passwords.
+
+Two clocks are available per job:
+
+- The in-app schedule (every N minutes, hourly, daily, weekly) runs while
+  sqlide is open, and catches up on one missed run when you reopen it.
+- **Install a system timer** writes a systemd user timer that runs the job
+  with the app closed, through the `sqlide-backup` command.
+
+That command is also the whole headless interface, if you would rather use
+your own cron:
+
+```sh
+sqlide-backup list            # jobs and destinations
+sqlide-backup run nightly     # one job, by id or name
+sqlide-backup due             # only what the schedule says is due
+sqlide-backup history         # what happened
+```
+
+**Restore…** goes the other way: pick a backup from a destination (or a
+file on disk), pick the connection to restore *into* — restoring
+production into a scratch database is a click, not a workaround — and
+confirm, with the target's environment marking spelled out. Backups of
+sqlide's own configuration are one more job kind, so settings and
+workspaces can go to the same bucket on the same schedule.
+
 ## Language servers (smarter completion)
 
 The query console always has built-in keyword completion. If a language
@@ -181,16 +224,58 @@ MySQL needs none of this: there a schema and a database are the same
 object, so the Database dropdown is already the schema switcher.
 SQLite has no schemas at all.
 
-## Saving a schema to use later
+## Several databases on one server
 
-Right-click a connection → **Save Schema…** captures that database's
+A MySQL or PostgreSQL connection reaches a whole server, not one
+database, so the sidebar puts the databases themselves under the
+connection row — the one the profile opened first, marked *current*,
+then every other database on the server. Tables, Views and the rest
+hang off a database, never off the connection: a table belongs to one
+database, and on a server there is no such thing as a table at the
+root. Expanding any of them browses it the same way: its own tables,
+views, functions, indexes and triggers.
+
+SQLite and JDBC connections have no such level — one connection is one
+database, and the categories sit directly under the connection row.
+
+Each database is its own connection underneath (in PostgreSQL another
+database is not reachable without reconnecting, and every catalog
+query is scoped to the one it is attached to), named
+`connection · database` — the same name a query console's **Database**
+dropdown produces, so the console and the sidebar rows share one
+connector. Tabs opened from a database row carry that name too.
+
+## Users and permissions
+
+Right-click a connection → **Users & Permissions…** opens a tab
+listing every account the server reports. Opening one shows that
+account on its own: what it is allowed to do — server-wide rights,
+per-database and per-table grants, and on PostgreSQL role attributes
+and memberships — with a back button to the list. Accounts are not
+schema objects, so they stay out of the sidebar tree. MySQL accounts
+keep their host half (`'app'@'10.0.%'`); PostgreSQL lists roles,
+login roles and the groups they belong to alike.
+
+**New User…**, **Set Password…**, **Grant…**, **Revoke…** and
+**Drop…** do not change anything by themselves: each builds the
+dialect's statement and opens it in a query console for you to read
+and run. A revoked privilege breaks whoever was relying on it, and
+that is not visible from the statement, so account changes take the
+same review path the **New ▸** templates take. The Grant/Revoke dialog
+offers only the scopes the server actually has (each database, and on
+PostgreSQL each schema) and the privileges the dialect names.
+
+SQLite has no accounts, and JDBC connections have no portable catalog
+for them; neither shows a Users category.
+
+## Opening a database's whole schema
+
+Right-click a connection → **Open Schema** captures that database's
 whole structure (tables with their constraints, indexes, views,
-triggers, stored routines — no rows) as a named CREATE script. Saved
-schemas are global, not per-workspace, and appear on the side panel's
-**Schemas** page; activating one opens it in a query console to read
-and run, so nothing is ever executed behind your back. A schema
-captured from another engine still opens, after a warning that the
-dialect will not match.
+triggers, stored routines — no rows) as a CREATE script and opens it
+in a query console to read and run, so nothing is ever executed behind
+your back. Nothing is saved on the way: it is SQL like any other, and
+the side panel's **Queries** page keeps it if it is worth keeping.
 
 The scripts are written to replay cleanly: PostgreSQL adds foreign
 keys after every table exists, MySQL brackets its script with
@@ -223,13 +308,13 @@ databases without ever being able to write to them. Needs the optional
 
 Open it from the header bar's network icon (blank form) or a
 connection's context menu ("MCP Server", preselecting that
-connection). Each tab is a **fresh, independent instance** — its own
+connection). Each one is a **fresh, independent instance** — its own
 connectors, its own port — that never touches the connections cached
-by the rest of the app; several tabs run side by side without sharing
-state, and closing a tab (or Stop) shuts that instance down. It opens
-in a window of its own — like any tab can, via Move to New Window —
-so a running server stays visible whatever the tab layout is doing. Nothing
-is persisted across restarts.
+by the rest of the app; several run side by side without sharing
+state, and closing one (or Stop) shuts that instance down. Each gets
+a window of its own with no tab bar, so a running server can never end
+up buried behind the tab you are working in. Nothing is persisted
+across restarts.
 
 The form:
 

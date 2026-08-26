@@ -134,6 +134,7 @@ def sidebar_menu_button() -> Gtk.MenuButton:
     menu = Gio.Menu()
     tabs = Gio.Menu()
     tabs.append("Query History", "win.history")
+    tabs.append("Backups", "win.backups")
     tabs.append("Close All Tabs", "win.close-all-tabs")
     menu.append_section(None, tabs)
     _app_menu_items(menu)

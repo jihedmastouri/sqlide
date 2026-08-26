@@ -35,13 +35,16 @@ close still goes through the guards below (an open transaction or a
 running MCP server asks first).
 
 Any tab can also be popped out into a window of its own — "Move to New
-Window" in its menu, or dragging it off the tab bar — and moved (or
-dragged) back. A pop-out is a pane like any other, in a _PopoutWindow:
-this window still owns the tabs in it, so history, saved state, tab
-colours and the close guards all keep working, and its window closes
-itself when its last tab leaves. MCP server tabs open popped out.
-Pop-outs are a session-level layout: on reopen every tab is restored
-into the main window, exactly as a split is.
+Window" in its menu, dragging it off the tab bar, or holding Shift
+while opening it from anywhere at all — and moved (or dragged) back. A
+pop-out is a pane like any other, in a _PopoutWindow: this window still
+owns the tabs in it, so history, saved state, tab colours and the close
+guards all keep working, it wears the same workspace stripe, and it
+closes itself when its last tab leaves. MCP servers are the one tab
+that is always a window: a solo pop-out, with no tab bar, so a running
+server can neither be buried behind another tab nor dragged into the
+main window. Pop-outs are a session-level layout: on reopen every tab
+is restored into the main window, exactly as a split is.
 The window owns the shared
 Gtk.StringList of connection names that every query console's dropdown
 observes, records each console run into the workspace history, and
@@ -56,7 +59,7 @@ from dataclasses import asdict, fields
 from datetime import datetime
 from typing import Callable
 
-from gi.repository import Adw, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 from sqlide.frontend.util import (
     describe,
@@ -69,7 +72,6 @@ from sqlide.backend import identity, schemas
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import registry
 from sqlide.backend.db.base import Connector, ConnectorError, FilterCondition
-from sqlide.backend.schemas import SavedSchema
 from sqlide.backend.workspaces import HistoryEntry, Workspace
 from sqlide.frontend.cli_console import CliConsole
 from sqlide.frontend.connection_dialog import ConnectionDialog
@@ -78,14 +80,16 @@ from sqlide.frontend.definition_tab import DefinitionTab, FunctionTab
 from sqlide.frontend.indexes_tab import IndexesTab
 from sqlide.frontend import identity as identity_ui
 from sqlide.frontend.drop_dialog import present_drop_dialog
+from sqlide.frontend.backups_tab import BackupsTab
 from sqlide.frontend.mcp_tab import McpServerTab
 from sqlide.frontend.query_builder import QueryBuilderTab
 from sqlide.frontend.query_console import QueryConsole
 from sqlide.frontend.relation_graph import RelationGraphTab
-from sqlide.frontend.side_panel import SidePanel, ask_name
+from sqlide.frontend.side_panel import SidePanel
 from sqlide.frontend.sidebar import Sidebar
 from sqlide.frontend.status_bar import StatusBar
 from sqlide.frontend.table_designer import TableDesignerTab
+from sqlide.frontend.users_tab import UsersTab
 from sqlide.frontend import transfer
 
 
@@ -154,9 +158,14 @@ def _tab_menu(popped_out: bool = False) -> Gio.Menu:
 
 class _TabPane(Gtk.Box):
     """One tab pane: its own tab bar over an Adw.TabView. The window
-    shows a single pane normally and several side by side after Split."""
+    shows a single pane normally and several side by side after Split.
 
-    def __init__(self) -> None:
+    tabbed=False leaves the bar out: the pane holds exactly one tab and
+    never says so (the solo pop-out an MCP server lives in). Without a
+    bar there is nothing to drag a tab out of, and nothing for a tab
+    from another window to be dropped on, which is the point."""
+
+    def __init__(self, tabbed: bool = True) -> None:
         super().__init__(
             orientation=Gtk.Orientation.VERTICAL, hexpand=True, vexpand=True
         )
@@ -165,32 +174,49 @@ class _TabPane(Gtk.Box):
         # of stretching to fill the bar, so the names line up from the
         # left edge rather than floating in the middle of empty tabs.
         self.bar = Adw.TabBar(view=self.view, expand_tabs=False)
-        self.append(self.bar)
+        self.tabbed = tabbed
+        if tabbed:
+            self.append(self.bar)
         self.append(self.view)
 
 
 class _PopoutWindow(Adw.ApplicationWindow):
     """One tab pane in a top-level window of its own. Any kind of tab
-    can live here: tabs arrive by the tab menu's Move to New Window or
-    by being dragged off a tab bar, and can be dragged (or moved) back.
+    can live here: tabs arrive by the tab menu's Move to New Window, by
+    being dragged off a tab bar, or by being opened with Shift held,
+    and can be dragged (or moved) back. solo=True is the exception —
+    one tab, no tab bar, nothing to drag in or out (see MCP below).
 
     The main window still owns them — the pane is wired to the same
     handlers, and the tabs stay in its history, its saved state and its
     close guards. The window closes itself once its last tab leaves."""
 
-    def __init__(self, main: MainWindow, **kwargs) -> None:
+    def __init__(
+        self, main: MainWindow, solo: bool = False, **kwargs
+    ) -> None:
         super().__init__(application=main.get_application(), **kwargs)
         self.main = main
-        self.set_default_size(900, 620)
+        self.solo = solo
+        self.set_default_size(480 if solo else 900, 560 if solo else 620)
 
-        self.pane = main.build_pane(popped_out=True)
+        self.pane = main.build_pane(popped_out=True, solo=solo)
         header = Adw.HeaderBar()
         toolbar_view = Adw.ToolbarView()
         toolbar_view.add_top_bar(header)
+        # The workspace stripe, same colour as the window this was
+        # opened from: a window of its own must still say which
+        # workspace it belongs to, and the title alone gets lost in a
+        # row of taskbar entries.
+        self.stripe = identity_ui.stripe(main.workspace.color)
+        toolbar_view.add_top_bar(self.stripe)
         toolbar_view.set_content(self.pane)
         self._toasts = Adw.ToastOverlay(child=toolbar_view)
         self.set_content(self._toasts)
         self._retitle()
+        # The launcher can recolour a workspace while this is open.
+        self.connect(
+            "notify::is-active", lambda *_: main.refresh_workspace_identity()
+        )
 
         main.install_tab_actions(self, self.pane)
         self.pane.view.connect(
@@ -205,7 +231,8 @@ class _PopoutWindow(Adw.ApplicationWindow):
     def _retitle(self) -> None:
         page = self.pane.view.get_selected_page()
         title = page.get_title() if page is not None else ""
-        self.set_title(title or self.main.workspace.name)
+        name = self.main.workspace.name
+        self.set_title(f"{title} — {name}" if title else name)
 
     def _on_close_request(self, *_args) -> bool:
         """Close the tabs, not the window: each one still goes through
@@ -262,11 +289,12 @@ class MainWindow(Adw.ApplicationWindow):
             on_open_function=self.open_function,
             on_relation_graph=self.open_relation_graph,
             on_view_indexes=self.open_indexes,
+            on_manage_users=self.open_users,
             on_query_builder=self.open_query_builder,
             on_drop_object=self._drop_object,
             on_new_object=self._new_object,
             on_mcp_server=self.open_mcp_server,
-            on_save_schema=self._save_schema,
+            on_open_schema=self._open_schema,
             on_edit_connection=self._edit_connection,
             on_remove_connection=self._remove_connection,
             on_add_connection=self._add_connection,
@@ -281,6 +309,7 @@ class MainWindow(Adw.ApplicationWindow):
         # Content: one or more tab panes (each with its own tab bar) in
         # nested Paned splitters, or a placeholder when nothing is open.
         self._panes: list[_TabPane] = []
+        self._syncing_split = False
         self._popouts: list[_PopoutWindow] = []
         self._panes_root = Gtk.Box(hexpand=True, vexpand=True)
         self._active_pane = self._add_pane()
@@ -321,11 +350,13 @@ class MainWindow(Adw.ApplicationWindow):
         # against the connections sidebar, because it is a layout
         # control like the sidebar itself — not a thing you make. Its
         # old home in the menu meant nobody found it.
-        split_button = Gtk.Button(icon_name="view-dual-symbolic")
-        split_button.add_css_class("flat")
-        describe(split_button, "Split View")
-        split_button.connect("clicked", self._split_current_tab)
-        content_header.pack_start(split_button)
+        self._split_button = Gtk.ToggleButton(
+            icon_name="view-dual-symbolic"
+        )
+        self._split_button.add_css_class("flat")
+        describe(self._split_button, "Split View")
+        self._split_button.connect("toggled", self._on_split_toggled)
+        content_header.pack_start(self._split_button)
         content_header.pack_start(new_button)
 
         self._tab_button = Adw.TabButton(view=self._active_pane.view)
@@ -346,7 +377,6 @@ class MainWindow(Adw.ApplicationWindow):
             on_open_query=lambda sql: self.new_query(
                 self._default_query_profile(), sql=sql
             ),
-            on_open_schema=self._open_saved_schema,
             get_console_sql=self._current_console_sql,
             on_error=self.show_error,
             on_apply_filter=self._apply_saved_filter,
@@ -390,7 +420,7 @@ class MainWindow(Adw.ApplicationWindow):
         top_view.add_top_bar(content_header)
         self._stripe = identity_ui.stripe(workspace.color)
         top_view.add_top_bar(self._stripe)
-        self._refresh_workspace_identity()
+        self.refresh_workspace_identity()
         top_view.set_content(self._history_split)
 
         # Persistent status bar: where the active tab's connection,
@@ -424,6 +454,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._menu_tab_page: Adw.TabPage | None = None
         for name, callback in (
             ("history", lambda *_: self.open_history_tab()),
+            ("backups", lambda *_: self.open_backups()),
             ("new-query", lambda *_: self.new_query(
                 self._default_query_profile()
             )),
@@ -431,7 +462,7 @@ class MainWindow(Adw.ApplicationWindow):
             ("new-builder", self._new_query_builder),
             ("new-mcp", lambda *_: self.open_mcp_server()),
             ("refresh-schema", lambda *_: self._sidebar.reload_all()),
-            ("split-view", self._split_current_tab),
+            ("split-view", self._toggle_split),
             ("export-workspace", self._export_workspace),
             ("export-connections", self._export_connections),
             ("import-connections", self._import_connections),
@@ -448,7 +479,7 @@ class MainWindow(Adw.ApplicationWindow):
         # open, so the stripe is refreshed whenever the window comes
         # back to the front.
         self.connect(
-            "notify::is-active", lambda *_: self._refresh_workspace_identity()
+            "notify::is-active", lambda *_: self.refresh_workspace_identity()
         )
         identity_ui.subscribe(self._on_palette_changed)
         self.connect(
@@ -589,14 +620,17 @@ class MainWindow(Adw.ApplicationWindow):
 
     # Identity (colour + environment)
 
-    def _refresh_workspace_identity(self) -> None:
-        identity_ui.set_color(self._stripe, self.workspace.color)
+    def refresh_workspace_identity(self) -> None:
+        """The workspace stripe, on this window and on every pop-out:
+        a tab in a window of its own still wears the colour of the
+        workspace it came from."""
         color = identity.COLOR_LABELS[
             identity.normalize_color(self.workspace.color)
         ]
-        self._stripe.set_tooltip_text(
-            f"Workspace “{self.workspace.name}” · colour {color}"
-        )
+        tooltip = f"Workspace “{self.workspace.name}” · colour {color}"
+        for stripe in [self._stripe] + [w.stripe for w in self._popouts]:
+            identity_ui.set_color(stripe, self.workspace.color)
+            stripe.set_tooltip_text(tooltip)
         self.set_title(f"sqlide — {self.workspace.name}")
 
     # Status bar
@@ -695,12 +729,16 @@ class MainWindow(Adw.ApplicationWindow):
 
     # Tab panes (split screen)
 
-    def build_pane(self, popped_out: bool = False) -> _TabPane:
+    def build_pane(
+        self, popped_out: bool = False, solo: bool = False
+    ) -> _TabPane:
         """A pane wired to this window's tab handling. Docked panes go
         on to join the splitter layout (_add_pane); a popped-out pane
-        lives in a _PopoutWindow and shares only the handlers."""
-        pane = _TabPane()
-        pane.view.set_menu_model(_tab_menu(popped_out))
+        lives in a _PopoutWindow and shares only the handlers. A solo
+        pane has no tab bar and holds one tab that stays put."""
+        pane = _TabPane(tabbed=not solo)
+        if not solo:
+            pane.view.set_menu_model(_tab_menu(popped_out))
         # setup-menu names the tab the menu was opened on (and hands
         # back None when it closes); the actions fall back to the
         # selected tab of the pane they were invoked from, which is what
@@ -767,9 +805,10 @@ class MainWindow(Adw.ApplicationWindow):
             )
             target.add_action(action)
 
-    def _new_popout(self) -> _PopoutWindow:
-        window = _PopoutWindow(self)
+    def _new_popout(self, solo: bool = False) -> _PopoutWindow:
+        window = _PopoutWindow(self, solo=solo)
         self._popouts.append(window)
+        self.refresh_workspace_identity()  # stripe tooltip, once listed
         window.connect("destroy", self._on_popout_destroyed)
         return window
 
@@ -865,6 +904,7 @@ class MainWindow(Adw.ApplicationWindow):
             paned.set_end_child(pane)
             root = paned
         self._panes_root.append(root)
+        self._sync_split_button()
         # In a split, every pane keeps its tab bar even with a single
         # tab, so each tab stays visible and closable.
         single = len(self._panes) == 1
@@ -898,18 +938,18 @@ class MainWindow(Adw.ApplicationWindow):
             count -= 1
             node = node.get_start_child()
 
-    def _prune_empty_panes(self) -> bool:
-        """Idle callback: drop panes whose last tab was closed or moved
-        away, keeping at least one."""
-        keep = [p for p in self._panes if p.view.get_n_pages() > 0]
-        if not keep:
-            keep = [self._panes[0]]
-        if len(keep) != len(self._panes):
-            self._panes = keep
-            self._rebuild_panes()
-            if self._active_pane not in self._panes:
-                self._set_active_pane(self._panes[-1])
-        return False
+    def _sync_split_button(self) -> None:
+        """The button shows whether the split is open. Panes are never
+        dropped for going empty — only toggling the button closes the
+        split — so this only follows a programmatic layout change."""
+        button = getattr(self, "_split_button", None)
+        if button is None:  # first pane, built before the header
+            return
+        self._syncing_split = True
+        try:
+            button.set_active(len(self._panes) > 1)
+        finally:
+            self._syncing_split = False
 
     def _set_active_pane(self, pane: _TabPane) -> None:
         self._active_pane = pane
@@ -1216,21 +1256,50 @@ class MainWindow(Adw.ApplicationWindow):
         for pane, page in pages:
             pane.view.close_page(page)
 
-    def _split_current_tab(self, *_args) -> None:
+    def _on_split_toggled(self, button: Gtk.ToggleButton) -> None:
+        # The button is the split's state, so ignore the toggle it emits
+        # when the code below (or a restore) syncs it to the layout.
+        if self._syncing_split:
+            return
+        if button.get_active():
+            self._split_view()
+        else:
+            self._unsplit_view()
+
+    def _toggle_split(self, *_args) -> None:
+        self._split_button.set_active(not self._split_button.get_active())
+
+    def _split_view(self) -> None:
+        """Open the second pane. The selected tab moves into it when
+        there is another tab to leave behind; otherwise the new pane
+        starts empty, waiting for a tab to be opened or dragged in."""
+        if len(self._panes) >= 2:
+            return
         pane = self._active_pane
         page = pane.view.get_selected_page()
-        if page is None:
-            self.show_error("Nothing to split — open a tab first")
-            return
-        if pane.view.get_n_pages() == 1 and len(self._panes) == 1:
-            self.show_error("Open a second tab to split the view")
-            return
-        if len(self._panes) >= 2:
-            self.show_error("Split view is limited to 2 panes")
-            return
         new_pane = self._add_pane()
-        pane.view.transfer_page(page, new_pane.view, 0)
+        if page is not None and pane.view.get_n_pages() > 1:
+            pane.view.transfer_page(page, new_pane.view, 0)
         self._set_active_pane(new_pane)
+        self._update_placeholder()
+
+    def _unsplit_view(self) -> None:
+        """Close the split: every tab of the second pane joins the
+        first, in order, and the pane goes."""
+        if len(self._panes) < 2:
+            return
+        keep, extra = self._panes[0], self._panes[1:]
+        selected = self._active_pane.view.get_selected_page()
+        for pane in extra:
+            while pane.view.get_n_pages():
+                page = pane.view.get_nth_page(0)
+                pane.view.transfer_page(page, keep.view, keep.view.get_n_pages())
+        self._panes = [keep]
+        self._rebuild_panes()
+        self._set_active_pane(keep)
+        if selected is not None:
+            keep.view.set_selected_page(selected)
+        self._update_placeholder()
 
     # Backend access (blocking — worker threads only)
 
@@ -1328,6 +1397,9 @@ class MainWindow(Adw.ApplicationWindow):
                 elif tab.kind == "indexes":
                     if profile is not None:
                         self.open_indexes(profile)
+                elif tab.kind == "users":
+                    if profile is not None:
+                        self.open_users(profile)
                 elif tab.kind == "querybuilder":
                     if profile is not None:
                         self.open_query_builder(profile, tab.table)
@@ -1370,9 +1442,6 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_pages_changed(self, *_args) -> None:
         self._update_placeholder()
-        # Deferred: pruning re-parents widgets, which must not happen
-        # inside the TabView signal emission.
-        GLib.idle_add(self._prune_empty_panes)
         if not self._restoring:
             self._save_state()
 
@@ -1616,7 +1685,12 @@ class MainWindow(Adw.ApplicationWindow):
         return False
 
     def _append_tab(
-        self, tab: Gtk.Widget, key: tuple, title: str, tooltip: str
+        self,
+        tab: Gtk.Widget,
+        key: tuple,
+        title: str,
+        tooltip: str,
+        place: bool = True,
     ) -> Adw.TabPage:
         tab.tab_key = key
         view = self._active_pane.view
@@ -1625,6 +1699,34 @@ class MainWindow(Adw.ApplicationWindow):
         page.set_tooltip(tooltip)
         self._apply_page_identity(page, _page_connection(tab))
         view.set_selected_page(page)
+        if place:
+            self._place_new_page(page)
+        return page
+
+    def _shift_held(self) -> bool:
+        """Is Shift down right now, on its own? Ctrl+Shift accelerators
+        (Close All Tabs, Open History) are not "…and in a new window",
+        so a held Ctrl takes Shift out of play."""
+        display = self.get_display()
+        seat = display.get_default_seat() if display is not None else None
+        keyboard = seat.get_keyboard() if seat is not None else None
+        if keyboard is None:
+            return False
+        state = keyboard.get_modifier_state()
+        if state & Gdk.ModifierType.CONTROL_MASK:
+            return False
+        return bool(state & Gdk.ModifierType.SHIFT_MASK)
+
+    def _place_new_page(self, page: Adw.TabPage) -> Adw.TabPage:
+        """Shift held while a tab was opened — from the sidebar, a
+        menu, anywhere — means "in a window of its own". The tab is
+        made as a tab either way and moved after, so nothing that
+        opens one has to know about pop-outs."""
+        if self._restoring or not self._shift_held():
+            return page
+        window = self._new_popout()
+        window.present()
+        self._active_pane.view.transfer_page(page, window.pane.view, 0)
         return page
 
     def open_table(self, profile: ConnectionProfile, table: str) -> None:
@@ -1763,10 +1865,11 @@ class MainWindow(Adw.ApplicationWindow):
         self, profile: ConnectionProfile | None = None
     ) -> None:
         # Not deduplicated: several instances (different ports, maybe
-        # different connection sets) can run side by side. It opens
-        # popped out, because a running server is a background process
-        # worth keeping visible independent of the tab layout — but it
-        # is an ordinary tab and can be moved back in like any other.
+        # different connection sets) can run side by side. Always a
+        # window of its own, and a solo one — no tab bar, nothing to
+        # drag it in or out of: a running server is a background
+        # process to keep an eye on, not something that can end up
+        # buried behind the tab you are working in.
         tab = McpServerTab(
             self.workspace.name,
             self.workspace.connections,
@@ -1778,8 +1881,9 @@ class MainWindow(Adw.ApplicationWindow):
             ("mcp", id(tab)),
             "MCP Server",
             f"MCP server for {self.workspace.name}",
+            place=False,
         )
-        window = self._new_popout()
+        window = self._new_popout(solo=True)
         window.present()
         self._active_pane.view.transfer_page(page, window.pane.view, 0)
 
@@ -1805,6 +1909,41 @@ class MainWindow(Adw.ApplicationWindow):
             key,
             f"{profile.name} ▸ indexes",
             f"Indexes on {profile.name}",
+        )
+
+    def open_users(self, profile: ConnectionProfile) -> None:
+        """The connection's accounts and their privileges. Deduplicated
+        per connection: accounts are server-wide, so a second tab on
+        the same server would show the same list."""
+        key = ("users", profile.name)
+        if self._focus_tab(key):
+            return
+        tab = UsersTab(
+            profile,
+            self.ensure_connector,
+            self.show_error,
+            lambda target, sql: self.new_query(target, sql=sql),
+        )
+        self._append_tab(
+            tab,
+            key,
+            f"{profile.name} ▸ users",
+            f"Users and permissions on {profile.name}",
+        )
+
+    def open_backups(self) -> None:
+        """The backup manager. One per window: jobs, destinations and
+        run history are workspace-wide, so a second tab would be two
+        views of the same list disagreeing about what is selected."""
+        key = ("backups",)
+        if self._focus_tab(key):
+            return
+        tab = BackupsTab(self.workspace, self.ensure_connector, self.show_error)
+        self._append_tab(
+            tab,
+            key,
+            "Backups",
+            f"Backup jobs for {self.workspace.name}",
         )
 
     def open_history_tab(self) -> None:
@@ -1855,7 +1994,7 @@ class MainWindow(Adw.ApplicationWindow):
         console.on_connection_changed = set_title
         set_title(console.selected_connection())
         view.set_selected_page(page)
-        return page
+        return self._place_new_page(page)
 
     def _new_cli_console(self, *_args) -> None:
         self.open_cli(self._default_query_profile())
@@ -1885,82 +2024,32 @@ class MainWindow(Adw.ApplicationWindow):
         console.on_connection_changed = set_title
         set_title(console.selected_connection())
         view.set_selected_page(page)
-        return page
+        return self._place_new_page(page)
 
-    # Saved schemas (backend/schemas.py)
+    # Whole-database schema (backend/schemas.py)
 
-    def _open_saved_schema(self, item: SavedSchema) -> None:
-        """Open a saved schema's script in a console, to read and run.
-
-        Never executed from here: this is DDL like any other in the
-        app, and DDL is shown before it runs. A script captured from
-        another engine still opens — it may well be the reason the
-        user saved it — but only after saying that the dialect will
-        not match.
-        """
-        profile = self._default_query_profile()
-        if (
-            profile is not None
-            and item.kind
-            and item.kind != profile.kind
-        ):
-            dialog = Adw.AlertDialog(
-                heading="Different database engine",
-                body=(
-                    f"“{item.name}” was captured from {item.kind}, and the "
-                    f"console will run it against {profile.kind}. The SQL "
-                    "is dialect-specific, so expect to edit it before it "
-                    "runs."
-                ),
-            )
-            dialog.add_response("cancel", "Cancel")
-            dialog.add_response("open", "Open Anyway")
-            dialog.set_response_appearance(
-                "open", Adw.ResponseAppearance.SUGGESTED
-            )
-            dialog.set_default_response("open")
-            dialog.set_close_response("cancel")
-            dialog.connect(
-                "response",
-                lambda _d, response: (
-                    self.new_query(profile, sql=item.sql)
-                    if response == "open"
-                    else None
-                ),
-            )
-            dialog.present(self)
-            return
-        self.new_query(profile, sql=item.sql)
-
-    def _save_schema(self, profile: ConnectionProfile) -> None:
-        """Capture a connection's whole structure under a name.
+    def _open_schema(self, profile: ConnectionProfile) -> None:
+        """Open a connection's whole structure in a console to read.
 
         The capture is a catalog walk — one round trip per object —
-        so it runs on a worker thread and the name is asked for first,
-        while there is still something to cancel.
+        so it runs on a worker thread and the console opens when the
+        script is ready. Nothing is saved on the way: this is a query
+        like any other, and the console's Save keeps it if it is
+        worth keeping. Nothing is executed either — DDL is shown
+        before it runs.
         """
 
-        def capture(name: str) -> None:
-            def work() -> str:
-                connector = self.ensure_connector(profile)
-                return schemas.capture(
-                    connector, kind=profile.kind, source=profile.name
-                )
+        def work() -> str:
+            connector = self.ensure_connector(profile)
+            return schemas.capture(
+                connector, kind=profile.kind, source=profile.name
+            )
 
-            def done(sql: str) -> None:
-                schemas.store.add(
-                    name, sql, kind=profile.kind, source=profile.name
-                )
-                # Opened on the page it landed on, like the Aggregate
-                # menu item: a save with no visible result reads as a
-                # save that did not happen.
-                self._side_panel.show_schemas()
-                self._set_side_panel_shown(True)
-                self.show_message(f"Saved schema “{name}”")
-
-            run_async(work, done, lambda exc: self.show_error(str(exc)))
-
-        ask_name(self, "Save Schema As", profile.name, capture)
+        run_async(
+            work,
+            lambda sql: self.new_query(profile, sql=sql),
+            lambda exc: self.show_error(str(exc)),
+        )
 
     def _default_query_profile(self) -> ConnectionProfile | None:
         """Connection preselected in a new console: the current tab's,
@@ -2026,7 +2115,9 @@ class MainWindow(Adw.ApplicationWindow):
         )
 
     def _update_placeholder(self, *_args) -> None:
-        has_tabs = any(p.view.get_n_pages() > 0 for p in self._panes)
+        has_tabs = len(self._panes) > 1 or any(
+            p.view.get_n_pages() > 0 for p in self._panes
+        )
         self._stack.set_visible_child_name(
             "tabs" if has_tabs else "placeholder"
         )

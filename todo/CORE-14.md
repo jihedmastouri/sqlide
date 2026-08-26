@@ -1,6 +1,6 @@
 ## CORE-14 — Spike: resource & usage monitoring feasibility (PG + MySQL)
 
-- **Status:** todo
+- **Status:** done
 - **Blocks:** CORE-15
 - **Timebox:** short — this is the "if yes, do it" from the TODO.
 
@@ -23,8 +23,14 @@ normal client connection, and what does it require from the user?
 
 ### Deliverable
 
-- [ ] A written recommendation: which metrics ship, which are opt-in, which are
+- [x] A written recommendation: which metrics ship, which are opt-in, which are
       out of reach.
-- [ ] Required privileges per engine, documented.
-- [ ] A go/no-go on CORE-15 with a scoped metric list.
+- [x] Required privileges per engine, documented.
+- [x] A go/no-go on CORE-15 with a scoped metric list.
 
+
+### Outcome
+
+**Go.** Written up in `docs/monitoring-spike.md`, with the availability
+probe it recommends in `sqlide/backend/db/monitoring.py` and its
+evidence in `tests/test_monitoring.py`.

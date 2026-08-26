@@ -1,9 +1,14 @@
 """Accounts and permissions tab: who can reach this server, and what
 each of them is allowed to do.
 
-Two pages in an Adw.NavigationView. The first lists the accounts the
-server reports (MySQL's 'name'@'host' pairs, PostgreSQL's roles —
-login roles and the groups they belong to alike). Opening one pushes
+Two pages in an Adw.NavigationView. The first is a table of the
+accounts the server reports (MySQL's 'name'@'host' pairs, PostgreSQL's
+roles — login roles and the groups they belong to alike), sortable by
+any column and filtered by a search box. Which columns it has is the
+provider's answer, not this file's: `principal_columns()` names the
+attributes the engine actually records, so a host column appears for
+MySQL and a "can create db" one for PostgreSQL without either engine
+being mentioned here (CORE-12). Opening a row pushes
 the second, which is that account alone: its attributes, what it is
 allowed to do (server-wide rights, per-database and per-table grants,
 role memberships), and the buttons that act on it. The list is a way
@@ -32,7 +37,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from gi.repository import Adw, Gtk
+from gi.repository import Adw, Gio, GObject, Gtk, Pango
 
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import registry
@@ -65,13 +70,43 @@ class UsersTab(Gtk.Box):
         self._wanted: tuple[str, NodeRef | None] | None = None
         self._seq = 0  # discards privilege loads for a since-closed page
 
-        self._list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
-        self._list.add_css_class("boxed-list")
-        self._list.set_margin_top(12)
-        self._list.set_margin_bottom(12)
-        self._list.set_margin_start(12)
-        self._list.set_margin_end(12)
-        self._list.connect("row-activated", self._row_activated)
+        # The table: a ListStore of rows, filtered by the search box,
+        # sorted by whichever header was clicked, shown through a
+        # ColumnView. Only visible rows are ever built into widgets, so
+        # a server with hundreds of accounts scrolls like one with ten.
+        self._store = Gio.ListStore(item_type=_PrincipalRow)
+        self._search_text = ""
+        self._filter = Gtk.CustomFilter.new(self._matches)
+        filtered = Gtk.FilterListModel(model=self._store, filter=self._filter)
+        self._view = Gtk.ColumnView(hexpand=True, vexpand=True)
+        self._view.add_css_class("data-table")
+        self._view.set_show_row_separators(True)
+        sorted_model = Gtk.SortListModel(
+            model=filtered, sorter=self._view.get_sorter()
+        )
+        selection = Gtk.SingleSelection(model=sorted_model, autoselect=False)
+        self._view.set_model(selection)
+        self._view.set_single_click_activate(True)
+        self._view.connect("activate", self._row_activated)
+        self._columns: tuple[str, ...] = ()
+        self._empty = Adw.StatusPage(
+            icon_name="system-users-symbolic",
+            title="No accounts reported",
+            description="This connection sees no accounts on the server.",
+        )
+        self._stack = Gtk.Stack()
+        self._stack.add_named(
+            Gtk.ScrolledWindow(child=self._view, vexpand=True), "table"
+        )
+        self._stack.add_named(self._empty, "empty")
+
+        search = Gtk.SearchEntry(placeholder_text="Filter accounts")
+        search.set_hexpand(True)
+        search.connect("search-changed", self._search_changed)
+        search_bar = Gtk.Box(
+            margin_top=6, margin_bottom=6, margin_start=12, margin_end=12,
+        )
+        search_bar.append(search)
 
         header = Adw.HeaderBar()
         new_user = Gtk.Button(label="New User…")
@@ -82,9 +117,10 @@ class UsersTab(Gtk.Box):
         describe(refresh, "Reload the account list")
         refresh.connect("clicked", lambda *_: self.reload())
         header.pack_end(refresh)
-        page = Adw.ToolbarView(
-            content=Gtk.ScrolledWindow(child=self._list, vexpand=True)
-        )
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        body.append(search_bar)
+        body.append(self._stack)
+        page = Adw.ToolbarView(content=body)
         page.add_top_bar(header)
         self._nav = Adw.NavigationView(vexpand=True)
         self._nav.add(
@@ -106,28 +142,66 @@ class UsersTab(Gtk.Box):
         list is popped: the account it was showing may be gone, and a
         detail page nobody refreshed is worse than going back."""
         def work():
-            return self._ensure(self.profile).list_users()
+            provider = registry.create_provider(
+                self.profile.kind, self._ensure(self.profile)
+            )
+            return provider.principal_table()
 
-        def done(users: list[UserInfo]) -> None:
+        def done(table) -> None:
+            columns, rows = table
             self._seq += 1
             self._nav.pop_to_tag("list")
-            self._users = users
-            while (row := self._list.get_row_at_index(0)) is not None:
-                self._list.remove(row)
-            for user in users:
-                self._list.append(_user_row(user))
-            if not users:
-                self._list.append(
-                    Adw.ActionRow(title="No accounts reported")
-                )
+            self._users = [user for user, _cells in rows]
+            self._set_columns(tuple(columns))
+            self._store.remove_all()
+            for index, (user, cells) in enumerate(rows):
+                self._store.append(_PrincipalRow(index, user, tuple(cells)))
+            self._stack.set_visible_child_name("table" if rows else "empty")
             self._open_wanted()
 
         run_async(work, done, lambda exc: self._show_error(str(exc)))
 
-    def _row_activated(self, _list, row: Gtk.ListBoxRow) -> None:
-        index = row.get_index()
-        if 0 <= index < len(self._users):
-            self._open_user(self._users[index])
+    def _set_columns(self, columns: tuple[str, ...]) -> None:
+        """Rebuild the header when the engine's column set changes —
+        which is once, on the first load, unless the tab is pointed at
+        another connection."""
+        if columns == self._columns:
+            return
+        existing = self._view.get_columns()
+        for column in [
+            existing.get_item(i) for i in range(existing.get_n_items())
+        ]:
+            self._view.remove_column(column)
+        self._columns = columns
+        for index, name in enumerate(columns):
+            factory = Gtk.SignalListItemFactory()
+            factory.connect("setup", _setup_cell)
+            factory.connect("bind", _bind_cell, index)
+            column = Gtk.ColumnViewColumn(title=name, factory=factory)
+            column.set_resizable(True)
+            column.set_expand(name in ("Name", "Member of"))
+            column.set_sorter(
+                Gtk.CustomSorter.new(_cell_sorter(index))
+            )
+            self._view.append_column(column)
+
+    def _search_changed(self, entry: Gtk.SearchEntry) -> None:
+        self._search_text = entry.get_text().strip().casefold()
+        self._filter.changed(Gtk.FilterChange.DIFFERENT)
+
+    def _matches(self, row: "_PrincipalRow") -> bool:
+        """A row survives the filter when the search text appears in
+        any of its cells — a name, a host, a role it is a member of are
+        all things you would type looking for an account."""
+        if not self._search_text:
+            return True
+        return any(self._search_text in cell.casefold() for cell in row.cells)
+
+    def _row_activated(self, _view, position: int) -> None:
+        model = self._view.get_model()
+        row = model.get_item(position)
+        if row is not None:
+            self._open_user(row.user)
 
     # One account
 
@@ -407,21 +481,49 @@ def _account_label(user: UserInfo) -> str:
     return f"{user.name}@{user.host}" if user.host else user.name
 
 
-def _user_row(user: UserInfo) -> Adw.ActionRow:
-    row = Adw.ActionRow(
-        title=_account_label(user),
-        subtitle=user.detail or _account_kind(user),
-        activatable=True,
-    )
-    row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
-    row.add_prefix(
-        Gtk.Image(
-            icon_name="avatar-default-symbolic"
-            if user.can_login
-            else "system-users-symbolic"
-        )
-    )
-    return row
+class _PrincipalRow(GObject.Object):
+    """One row of the overview: the account, and the cells the provider
+    rendered for it. The account rides along so activating a row opens
+    that principal without the table being parsed back into a name."""
+
+    def __init__(
+        self, index: int, user: UserInfo, cells: tuple[str, ...]
+    ) -> None:
+        super().__init__()
+        self.index = index
+        self.user = user
+        self.cells = cells
+
+
+def _cell(row: _PrincipalRow, index: int) -> str:
+    return row.cells[index] if index < len(row.cells) else ""
+
+
+def _cell_sorter(index: int) -> Callable[[object, object], int]:
+    """Sort one column as text, case-insensitively, with empty cells
+    after filled ones — ascending on "Superuser" is then the superusers
+    first rather than a wall of blanks. Equal cells keep the order the
+    server listed them in, so a sort never shuffles ties.""" 
+    def compare(left, right, *_args) -> int:
+        a, b = _cell(left, index).casefold(), _cell(right, index).casefold()
+        if (not a) != (not b):
+            return 1 if not a else -1
+        if a == b:
+            return (left.index > right.index) - (left.index < right.index)
+        return 1 if a > b else -1
+
+    return compare
+
+
+def _setup_cell(_factory, item: Gtk.ListItem) -> None:
+    label = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
+    label.set_margin_start(6)
+    label.set_margin_end(6)
+    item.set_child(label)
+
+
+def _bind_cell(_factory, item: Gtk.ListItem, index: int) -> None:
+    item.get_child().set_text(_cell(item.get_item(), index))
 
 
 def _prompt(

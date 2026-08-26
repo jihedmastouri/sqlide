@@ -21,6 +21,13 @@ from sqlide.backend.db.metadata import Capabilities, MetadataProvider, NodeRef
 
 class PostgresMetadata(MetadataProvider):
     HIERARCHY = ("connection", "database", "schema", "object")
+    #: A role's attributes as pg_roles records them. No host column:
+    #: where a role may connect from is pg_hba.conf's business, not the
+    #: catalog's.
+    PRINCIPAL_COLUMNS = (
+        "Name", "Type", "Login", "Superuser", "Create DB", "Create role",
+        "Member of", "Valid until", "Connection limit",
+    )
     CAPABILITIES = Capabilities(
         databases=True,
         schemas=True,

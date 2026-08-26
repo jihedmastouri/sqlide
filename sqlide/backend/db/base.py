@@ -50,12 +50,33 @@ class UserInfo:
     account is just a name. `detail` is a one-line summary for the
     sidebar row (superuser, locked, "no login"), and `can_login`
     separates real accounts from group roles.
+
+    The rest are the attributes the overview table shows a column per
+    (CORE-12). Every one of them is optional: an adapter fills what its
+    catalog records and leaves the rest at the default, and the
+    metadata provider decides which of them its engine has a column
+    for — no screen ever reads a field the engine cannot fill.
+
+    `kind` is "user", "role" or "group"; `member_of` are the roles this
+    account inherits from; `valid_until` and `password_expiry` are
+    already-formatted dates; `connection_limit` is empty where the
+    engine sets none, and negative numbers mean unlimited.
     """
 
     name: str
     host: str = ""
     detail: str = ""
     can_login: bool = True
+    kind: str = "user"
+    superuser: bool = False
+    create_db: bool = False
+    create_role: bool = False
+    member_of: tuple[str, ...] = ()
+    valid_until: str = ""
+    connection_limit: str = ""
+    plugin: str = ""  # MySQL's authentication plugin
+    locked: bool = False
+    password_expiry: str = ""
 
 
 @dataclass(frozen=True)

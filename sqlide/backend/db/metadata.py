@@ -24,6 +24,9 @@ So the UI asks a provider instead:
 * `get_ddl(ref)` — the object's CREATE statement, where there is one.
 * `list_grants(ref)` / `list_principals()` — accounts and what they may
   do; empty everywhere the `grants`/`roles` capabilities are off.
+* `principal_columns()` / `principal_table()` — the account overview
+  (CORE-12): the columns this engine has attributes for, and the rows
+  filled in for them.
 * `object_grants(ref)` — the inverse: who may do what to one object,
   direct and inherited, for the Permissions section of its properties
   (CORE-11).
@@ -57,6 +60,7 @@ catalog call goes through `_safe` and answers with an empty list.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, fields, replace
 
 from sqlide.backend.db import objects
@@ -287,6 +291,44 @@ def _grant_table(
     )
 
 
+#: How one account attribute is rendered as a table cell, by column
+#: name. A provider names the columns its engine fills
+#: (`PRINCIPAL_COLUMNS`); this is the one place that turns a
+#: `UserInfo` field into text, so every engine spells "yes", a role
+#: list or an unlimited connection count the same way.
+PRINCIPAL_FIELDS: dict[str, Callable[[UserInfo], str]] = {
+    "Name": lambda u: u.name,
+    "Host": lambda u: u.host,
+    "Type": lambda u: u.kind,
+    "Login": lambda u: _yes(u.can_login),
+    "Superuser": lambda u: _yes(u.superuser),
+    "Create DB": lambda u: _yes(u.create_db),
+    "Create role": lambda u: _yes(u.create_role),
+    "Member of": lambda u: ", ".join(u.member_of),
+    "Valid until": lambda u: u.valid_until,
+    "Connection limit": lambda u: (
+        "unlimited"
+        if u.connection_limit.lstrip("-").isdigit()
+        and int(u.connection_limit) < 0
+        else u.connection_limit
+    ),
+    "Plugin": lambda u: u.plugin,
+    "Locked": lambda u: _yes(u.locked),
+    "Password expiry": lambda u: u.password_expiry,
+}
+
+#: Every column an engine could name, for tests and for UI that has to
+#: know the vocabulary before a provider is chosen.
+PRINCIPAL_COLUMN_NAMES = tuple(PRINCIPAL_FIELDS)
+
+
+def _yes(flag: bool) -> str:
+    """A boolean cell: "yes" or nothing. An empty cell reads as "no"
+    at a glance in a wide table, where a column of "no" reads as noise.
+    """
+    return "yes" if flag else ""
+
+
 def _safe(call, default):
     """A catalog call that is allowed to be unsupported.
 
@@ -314,6 +356,10 @@ class MetadataProvider:
     #: The levels this engine has, a slice of LEVELS.
     HIERARCHY: tuple[str, ...] = ("connection", "object")
     CAPABILITIES = Capabilities()
+    #: The accounts-overview columns this engine can fill (CORE-12),
+    #: keys of PRINCIPAL_FIELDS. The generic provider knows only what
+    #: every account has.
+    PRINCIPAL_COLUMNS: tuple[str, ...] = ("Name", "Type", "Login")
 
     def __init__(self, connector: Connector) -> None:
         self.connector = connector
@@ -415,6 +461,32 @@ class MetadataProvider:
         if not self.CAPABILITIES.roles:
             return []
         return _safe(self.connector.list_users, [])
+
+    @classmethod
+    def principal_columns(cls) -> tuple[str, ...]:
+        """The columns the accounts overview shows on this engine, in
+        display order — answerable without a connection, like every
+        other capability question here.
+
+        An engine only lists a column it has an attribute behind: a
+        PostgreSQL account has no host and a MySQL one has no
+        "can create db", and a column that would be blank in every row
+        is a column that teaches nothing.
+        """
+        return cls.PRINCIPAL_COLUMNS if cls.CAPABILITIES.roles else ()
+
+    def principal_table(
+        self,
+    ) -> tuple[tuple[str, ...], list[tuple[UserInfo, tuple[str, ...]]]]:
+        """The overview as (columns, rows), each row the account itself
+        paired with its already-rendered cells — the account travels
+        with the row so activating one opens that principal without the
+        UI parsing its own table back into a name."""
+        columns = self.principal_columns()
+        return columns, [
+            (user, tuple(PRINCIPAL_FIELDS[name](user) for name in columns))
+            for user in self.list_principals()
+        ]
 
     def list_grants(self, ref: NodeRef) -> list[PrivilegeInfo]:
         """Who may do what to `ref`.

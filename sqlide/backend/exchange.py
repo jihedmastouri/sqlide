@@ -1,6 +1,6 @@
 """Workspaces and connections as portable XML files.
 
-The workspace store's own files are JSON keyed by a machine-local id,
+The workspace store's own files are TOML keyed by a machine-local id,
 with passwords living in that machine's keyring — good for the app,
 useless for carrying a setup to another installation. This module is
 the transfer format instead: one readable, hand-editable XML file per

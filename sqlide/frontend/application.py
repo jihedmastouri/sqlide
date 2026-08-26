@@ -25,6 +25,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from sqlide import APP_ID
+from sqlide.backend import config as app_config
 from sqlide.backend import settings as app_settings
 from sqlide.backend.backups import runner as backup_runner
 from sqlide.backend.backups import schedule as backup_schedule
@@ -43,6 +44,11 @@ from sqlide.frontend.window import MainWindow
 # is fine: the finest schedule the UI offers is "every N minutes", and
 # a backup that starts 40 seconds late is still on time.
 _BACKUP_TICK = 60
+
+# How often the config files are checked for an edit made outside the
+# app. Two seconds is under the threshold where a person editing
+# settings.toml in another window wonders whether it took.
+_CONFIG_TICK = 2
 
 _COLOR_SCHEMES = {
     "system": Adw.ColorScheme.DEFAULT,
@@ -109,6 +115,17 @@ class SqlideApplication(Adw.Application):
         keymap.apply_app_accels(self)
         app_settings.store.subscribe(lambda _s: keymap.apply_app_accels(self))
         GLib.timeout_add_seconds(_BACKUP_TICK, self._run_due_backups)
+        # Config files are meant to be edited on disk (or by an agent)
+        # while the app runs; each store watches its own file and
+        # reloads itself when this tick sees it change.
+        GLib.timeout_add_seconds(_CONFIG_TICK, self._poll_config)
+        errors = app_config.errors()
+        if errors and not self.store_error:
+            self.store_error = "\n".join(str(error) for error in errors)
+
+    def _poll_config(self) -> bool:
+        app_config.watcher.poll()
+        return True
 
     # Scheduled backups
 
@@ -227,5 +244,9 @@ class SqlideApplication(Adw.Application):
 
 
 def main() -> int:
+    """--config-dir PATH is consumed before GTK sees the arguments —
+    it has to be applied before any store resolves a path, and GTK
+    would refuse an option it doesn't know about."""
+    argv = app_config.take_config_dir_argv(sys.argv)
     app = SqlideApplication()
-    return app.run(sys.argv)
+    return app.run(argv)

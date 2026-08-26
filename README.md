@@ -73,7 +73,9 @@ Then, in the app:
    type SQL and press **Ctrl+Enter** (or Run).
 6. Close and restart — you land back in the workspace you were last in,
    with the connections *and* the tabs you left open restored, query
-   console text included (`~/.config/sqlide/workspaces/<id>.json`).
+   console text included (`~/.config/sqlide/workspaces/<id>/`; every
+   config file is TOML you can edit or commit — see
+   [docs/configuration.md](docs/configuration.md)).
    Other workspaces stay out of the way behind the grid icon in the
    sidebar header, which opens the workspace list.
 

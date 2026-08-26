@@ -1,7 +1,9 @@
 """Saved SQL — code snippets and whole queries.
 
 Both are global (cross-workspace) named lists of SQL text, each in
-its own JSON file under $XDG_CONFIG_HOME/sqlide/: snippets are
+its own JSON file in the config directory (backend/config.py): these
+are SQL text people wrote, not configuration, so they stay JSON rather
+than moving to the TOML config files. Snippets are
 fragments meant to be inserted into the editor at the cursor, saved
 queries are complete statements meant to open in a console. The two
 module-level stores are the single instances; panels subscribe to
@@ -15,15 +17,11 @@ connection names, so they live in the workspace file
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
-
-def _config_dir() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
-    return Path(base) / "sqlide"
+from sqlide.backend import config
 
 
 @dataclass
@@ -34,7 +32,7 @@ class SavedItem:
 
 class SavedStore:
     def __init__(self, filename: str, directory: Path | None = None) -> None:
-        self.path = (directory or _config_dir()) / filename
+        self.path = (directory or config.config_dir()) / filename
         self.items: list[SavedItem] = []
         self._loaded = False
         self._listeners: list[Callable[[list[SavedItem]], None]] = []

@@ -476,6 +476,50 @@ class PostgresConnector(Connector):
             ]
         return privileges
 
+    def list_object_grants(self, kind: str, name: str) -> list[PrivilegeInfo]:
+        """The ACL entries recorded on one table or view, in the
+        schemas on the search path. Other kinds carry no ACL of their
+        own — an index belongs to its table, a trigger to the table it
+        fires on."""
+        if kind not in ("table", "view"):
+            return []
+        _, rows, _ = self._run(
+            "SELECT grantee, privilege_type, is_grantable, table_schema "
+            "FROM information_schema.table_privileges "
+            "WHERE table_name = %s "
+            f"AND table_schema IN ({_USER_SCHEMAS}) "
+            "ORDER BY grantee, privilege_type",
+            (name,),
+        )
+        return [
+            PrivilegeInfo(
+                scope=f"role {grantee}",
+                privilege=privilege,
+                grantable=grantable in (True, "YES"),
+            )
+            for grantee, privilege, grantable, _schema in rows
+        ]
+
+    def list_tables_in(self, schema: str) -> list[TableInfo]:
+        """One named schema's tables and views — the search path does
+        not come into it, so a schema node shows what it holds even
+        when the same name exists nearer the front of the path."""
+        _, rows, _ = self._run(
+            "SELECT c.relname, c.relkind "
+            "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') "
+            "AND n.nspname = %s "
+            "ORDER BY c.relname",
+            (schema,),
+        )
+        return [
+            TableInfo(
+                name=name,
+                kind="view" if relkind in ("v", "m") else "table",
+            )
+            for name, relkind in rows
+        ]
+
     def grant_scopes(self) -> list[GrantScope]:
         scopes = [
             GrantScope(f"Database: {name}", f"DATABASE {self.quote_ident(name)}")

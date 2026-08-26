@@ -397,6 +397,28 @@ class MysqlConnector(Connector):
             ]
         return privileges
 
+    def list_object_grants(self, kind: str, name: str) -> list[PrivilegeInfo]:
+        """The table grants recorded on one object, scoped to the
+        connected database. Only tables and views carry per-object
+        grants here — a MySQL index or trigger is the table's."""
+        if kind not in ("table", "view"):
+            return []
+        _, rows, _ = self._run(
+            "SELECT grantee, privilege_type, is_grantable "
+            "FROM information_schema.table_privileges "
+            "WHERE table_schema = DATABASE() AND table_name = %s "
+            "ORDER BY grantee, privilege_type",
+            (name,),
+        )
+        return [
+            PrivilegeInfo(
+                scope=f"user {grantee}",
+                privilege=privilege,
+                grantable=grantable == "YES",
+            )
+            for grantee, privilege, grantable in rows
+        ]
+
     def grant_scopes(self) -> list[GrantScope]:
         scopes = [GrantScope("Whole server", "*.*")]
         for database in self.list_databases():

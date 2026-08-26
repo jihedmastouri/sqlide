@@ -67,6 +67,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 from sqlide.backend import placeholders as sql_placeholders
 from sqlide.backend.connections import ConnectionProfile
+from sqlide.backend.db import registry
 from sqlide.backend.db.base import Connector, ResultSet
 from sqlide.backend.settings import result_row_cap
 from sqlide.backend.sql_split import split_statements, statement_at
@@ -83,9 +84,6 @@ from sqlide.frontend.results_panel import ResultsPanel
 from sqlide.frontend.sql_editor import SqlEditor
 from sqlide.frontend.util import describe, font_size_stepper, run_async
 from sqlide.lsp import servers as lsp_servers
-
-# Connection kinds where one server hosts multiple databases.
-_MULTI_DB_KINDS = ("mysql", "postgres")
 
 
 class QueryConsole(Gtk.Box):
@@ -602,7 +600,9 @@ class QueryConsole(Gtk.Box):
         self._db_seq += 1
         seq = self._db_seq
         profile = self._find_connection(self.selected_connection())
-        multi = profile is not None and profile.kind in _MULTI_DB_KINDS
+        multi = profile is not None and registry.capabilities(
+            profile.kind
+        ).databases
         names = [profile.database] if multi and profile.database else []
         self._set_databases(names, select=names[0] if names else "")
         if not multi:
@@ -637,10 +637,10 @@ class QueryConsole(Gtk.Box):
         self._schema_seq += 1
         seq = self._schema_seq
         profile = self._active_profile()
-        # Which kinds *have* schemas is the adapter's answer
-        # (list_schemas returns nothing for the rest); the kind check
-        # is only here so a local file is never opened to be told so.
-        if profile is None or profile.kind not in _MULTI_DB_KINDS:
+        # Which engines *have* schemas is the provider layer's answer
+        # (backend/db/metadata.py); asking it here keeps a local file
+        # from being opened only to be told it has none.
+        if profile is None or not registry.capabilities(profile.kind).schemas:
             self._set_schemas([], select="")
             return
 

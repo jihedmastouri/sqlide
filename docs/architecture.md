@@ -41,6 +41,40 @@ Shared dataclasses: `TableInfo(name, kind)`, `ColumnInfo(name, type,
 is_pk, nullable)`, `FunctionInfo(name)`, `ResultSet(columns, rows)`. All
 driver errors are re-raised as `ConnectorError` with a readable message.
 
+## The metadata provider
+
+`backend/db/metadata.py` sits one level above the connector: it turns
+"what does this engine's object tree look like" into an interface the
+UI can walk without naming an engine.
+
+```python
+class MetadataProvider:
+    def hierarchy(self) -> tuple[str, ...]   # the levels this engine has
+    def capabilities(self) -> Capabilities   # feature flags
+    def list_children(self, ref) -> list[NodeRef]
+    def describe(self, ref) -> ObjectInfo    # the info view (db/objects.py)
+    def get_ddl(self, ref) -> str
+    def list_grants(self, ref) -> list[PrivilegeInfo]
+    def list_principals(self) -> list[UserInfo]
+```
+
+One implementation per engine, in that engine's folder
+(`postgres/metadata.py`, …). PostgreSQL nests `connection → database →
+schema → object`, MySQL `connection → database → object`, SQLite
+`connection → object`; JDBC falls back to the generic provider. Each
+declares a `Capabilities` — schemas, materialized views, procedures,
+events, grants, roles, extensions, partitions, pragmas — so a screen an
+engine cannot fill is hidden instead of shown broken.
+
+Those modules import nothing but `db.base`, which is what lets
+`registry.capabilities(kind)` and `registry.hierarchy(kind)` answer
+before a connection exists (or with the driver not installed):
+`frontend/query_console.py` asks it whether to offer a database
+switcher, and no UI module branches on the engine name.
+`registry.create_provider(kind, connector)` binds one to an open
+connection. Everything a provider does is a catalog query, so it runs
+on a worker thread like the connector underneath it.
+
 The **JDBC adapter** (`backend/db/jdbc/`) is the generic escape hatch: it
 bridges to any JDBC driver jar via JayDeBeApi/JPype and gets its catalog
 information from `java.sql.DatabaseMetaData` instead of dialect SQL.
@@ -80,6 +114,7 @@ sqlide/
 │       ├── base.py         # Connector ABC + dataclasses + ConnectorError
 │       ├── registry.py     # kind -> adapter, driver availability
 │       ├── objects.py      # per-node object descriptors (the info view)
+│       ├── metadata.py     # per-engine metadata providers (hierarchy, caps)
 │       ├── sqlite/
 │       ├── mysql/
 │       ├── postgres/

@@ -29,6 +29,7 @@ from typing import Callable
 from gi.repository import Adw, Gtk
 
 from sqlide.backend.connections import ConnectionProfile
+from sqlide.backend.db import registry
 from sqlide.backend.db.base import Connector, GrantScope, UserInfo
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend.data_grid import ResultGrid
@@ -189,9 +190,10 @@ class UsersTab(Gtk.Box):
         password = Adw.PasswordEntryRow(title="Password")
         group = Adw.PreferencesGroup()
         group.add(name)
-        # Only MySQL makes the host part of the account; PostgreSQL
-        # decides where a role may connect from in pg_hba.conf.
-        if self.profile.kind == "mysql":
+        # Only some engines make the host part of the account (MySQL);
+        # PostgreSQL decides where a role may connect from in
+        # pg_hba.conf, so the field would mean nothing there.
+        if registry.capabilities(self.profile.kind).account_hosts:
             group.add(host)
         group.add(password)
 

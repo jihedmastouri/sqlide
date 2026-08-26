@@ -26,6 +26,7 @@ class MysqlMetadata(MetadataProvider):
         grants=True,
         roles=True,
         partitions=True,
+        constraints=True,
         account_hosts=True,
     )
 

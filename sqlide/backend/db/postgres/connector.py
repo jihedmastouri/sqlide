@@ -44,15 +44,18 @@ from sqlide.backend.db.base import (
     ColumnInfo,
     Connector,
     ConnectorError,
+    ConstraintInfo,
     FilterCondition,
     FunctionInfo,
     GrantScope,
     IndexInfo,
+    ObjectSummary,
     PrivilegeInfo,
     RelationInfo,
     ResultSet,
     SortSpec,
     TableInfo,
+    TableStats,
     TriggerInfo,
     TypeSpec,
     UserInfo,
@@ -673,6 +676,158 @@ class PostgresConnector(Connector):
                 ref_table=ref_table, ref_column=ref_column or "",
             )
             for table, column, ref_table, ref_column in rows
+        ]
+
+    # Table properties (CORE-04). Every lookup goes through
+    # to_regclass(), which resolves a quoted name against the search
+    # path and answers NULL instead of raising for a name that is not
+    # a relation — so an object that vanished between two clicks costs
+    # an empty section, not an error.
+
+    #: pg_constraint.contype -> the word the properties view shows.
+    _CONSTRAINT_KINDS = {
+        "p": "PRIMARY KEY",
+        "u": "UNIQUE",
+        "f": "FOREIGN KEY",
+        "c": "CHECK",
+        "x": "EXCLUDE",
+        "t": "TRIGGER",
+    }
+
+    def table_stats(self, table: str) -> TableStats:
+        _, rows, _ = self._run(
+            "SELECT c.relkind, pg_get_userbyid(c.relowner), "
+            "pg_size_pretty(pg_total_relation_size(c.oid)), "
+            "c.reltuples::bigint, obj_description(c.oid, 'pg_class') "
+            "FROM pg_class c WHERE c.oid = to_regclass(%s)",
+            (self._relation_ref(table),),
+        )
+        if not rows:
+            return TableStats()
+        relkind, owner, size, estimate, comment = rows[0]
+        kinds = {
+            "r": "table", "p": "partitioned table", "v": "view",
+            "m": "materialized view", "f": "foreign table",
+        }
+        return TableStats(
+            kind=kinds.get(relkind, ""),
+            owner=owner or "",
+            size=size or "",
+            # -1 is "never analysed", which is not an estimate.
+            rows="" if estimate is None or estimate < 0 else str(estimate),
+            comment=comment or "",
+        )
+
+    def list_constraints(self, table: str) -> list[ConstraintInfo]:
+        _, rows, _ = self._run(
+            "SELECT con.conname, con.contype, "
+            "pg_get_constraintdef(con.oid), "
+            "(SELECT string_agg(a.attname, ', ' ORDER BY a.attnum) "
+            " FROM pg_attribute a "
+            " WHERE a.attrelid = con.conrelid "
+            " AND a.attnum = ANY (con.conkey)) "
+            "FROM pg_constraint con "
+            "WHERE con.conrelid = to_regclass(%s) "
+            "ORDER BY con.contype, con.conname",
+            (self._relation_ref(table),),
+        )
+        return [
+            ConstraintInfo(
+                name=name,
+                kind=self._CONSTRAINT_KINDS.get(contype, contype or ""),
+                table=table,
+                columns=columns or "",
+                definition=definition or "",
+            )
+            for name, contype, definition, columns in rows
+        ]
+
+    def list_partitions(self, table: str) -> list[ObjectSummary]:
+        _, rows, _ = self._run(
+            "SELECT c.relname, pg_get_expr(c.relpartbound, c.oid), "
+            "pg_size_pretty(pg_total_relation_size(c.oid)) "
+            "FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid "
+            "WHERE i.inhparent = to_regclass(%s) ORDER BY c.relname",
+            (self._relation_ref(table),),
+        )
+        return [
+            ObjectSummary(
+                name=name, kind="table", detail=size or "",
+                definition=bound or "",
+            )
+            for name, bound, size in rows
+        ]
+
+    def list_rules(self, table: str) -> list[ObjectSummary]:
+        _, rows, _ = self._run(
+            "SELECT r.rulename, pg_get_ruledef(r.oid) FROM pg_rewrite r "
+            "WHERE r.ev_class = to_regclass(%s) AND r.rulename <> '_RETURN' "
+            "ORDER BY r.rulename",
+            (self._relation_ref(table),),
+        )
+        return [
+            ObjectSummary(name=name, definition=(definition or "").strip())
+            for name, definition in rows
+        ]
+
+    def list_policies(self, table: str) -> list[ObjectSummary]:
+        _, rows, _ = self._run(
+            "SELECT p.polname, p.polcmd, "
+            "pg_get_expr(p.polqual, p.polrelid) "
+            "FROM pg_policy p WHERE p.polrelid = to_regclass(%s) "
+            "ORDER BY p.polname",
+            (self._relation_ref(table),),
+        )
+        commands = {
+            "r": "SELECT", "a": "INSERT", "w": "UPDATE", "d": "DELETE",
+            "*": "ALL",
+        }
+        return [
+            ObjectSummary(
+                name=name,
+                detail=commands.get(command, command or ""),
+                definition=using or "",
+            )
+            for name, command, using in rows
+        ]
+
+    def list_dependencies(self, table: str) -> list[ObjectSummary]:
+        """Views and materialized views built on this table — what a
+        DROP would take with it, or refuse over."""
+        _, rows, _ = self._run(
+            "SELECT DISTINCT dependent.relname, dependent.relkind "
+            "FROM pg_depend d "
+            "JOIN pg_rewrite r ON r.oid = d.objid "
+            "JOIN pg_class dependent ON dependent.oid = r.ev_class "
+            "WHERE d.refobjid = to_regclass(%s) "
+            "AND dependent.oid <> to_regclass(%s) "
+            "ORDER BY dependent.relname",
+            (self._relation_ref(table), self._relation_ref(table)),
+        )
+        kinds = {"v": "view", "m": "materialized view", "r": "table"}
+        return [
+            ObjectSummary(
+                name=name,
+                kind="view" if relkind in ("v", "m") else "table",
+                detail=kinds.get(relkind, ""),
+            )
+            for name, relkind in rows
+        ]
+
+    def list_table_functions(self, table: str) -> list[ObjectSummary]:
+        """The functions this table's triggers call."""
+        _, rows, _ = self._run(
+            "SELECT p.proname, t.tgname FROM pg_trigger t "
+            "JOIN pg_proc p ON p.oid = t.tgfoid "
+            "WHERE t.tgrelid = to_regclass(%s) AND NOT t.tgisinternal "
+            "ORDER BY p.proname",
+            (self._relation_ref(table),),
+        )
+        return [
+            ObjectSummary(
+                name=name, kind="function", detail=f"called by {trigger}",
+            )
+            for name, trigger in rows
         ]
 
     def _relation_ref(self, name: str) -> str:

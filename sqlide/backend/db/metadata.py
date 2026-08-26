@@ -17,6 +17,10 @@ So the UI asks a provider instead:
   object" from "connection → object" without naming an engine.
 * `list_children(ref)` — the children of any node, typed as `NodeRef`.
 * `describe(ref)` — the `ObjectInfo` the info view renders (db/objects.py).
+* `property_sections()` / `table_properties(ref)` — the sections a
+  table's Properties view can show on this engine, and that view's
+  descriptor (CORE-04); a section the engine has no concept of is
+  never offered, so it is omitted rather than drawn empty.
 * `get_ddl(ref)` — the object's CREATE statement, where there is one.
 * `list_grants(ref)` / `list_principals()` — accounts and what they may
   do; empty everywhere the `grants`/`roles` capabilities are off.
@@ -83,6 +87,11 @@ class Capabilities:
     extensions: bool = False
     partitions: bool = False
     pragmas: bool = False  # SQLite's PRAGMA settings
+    constraints: bool = False  # a constraint catalog of its own
+    rules: bool = False  # rewrite rules (PostgreSQL)
+    policies: bool = False  # row-level security policies (PostgreSQL)
+    dependencies: bool = False  # what depends on an object is readable
+    related_functions: bool = False  # functions a table's triggers call
     account_hosts: bool = False  # an account is 'name'@'host'
 
     def supports(self, name: str) -> bool:
@@ -211,6 +220,45 @@ class MetadataProvider:
             table=ref.table,
             category=ref.category,
             detail=ref.detail,
+        )
+
+    @classmethod
+    def property_sections(cls) -> tuple[str, ...]:
+        """The sections a table's Properties view can show on this
+        engine, in display order (CORE-04).
+
+        Only capability-gated ones are decided here: the rest are
+        assembled from the plain Connector interface, so every adapter
+        has them. A section this engine has no concept of is left out
+        of the list and the view never draws the heading.
+
+        A classmethod like `capabilities()`, because it is decided by
+        the flags alone: the UI can lay the toggle out before it has a
+        connection.
+        """
+        caps = cls.CAPABILITIES
+        gated = {
+            "constraints": caps.constraints,
+            "partitions": caps.partitions,
+            "rules": caps.rules,
+            "policies": caps.policies,
+            "dependencies": caps.dependencies,
+            "functions": caps.related_functions,
+        }
+        return tuple(
+            slug
+            for slug, _label in objects.PROPERTY_SECTIONS
+            if gated.get(slug, True)
+        )
+
+    def table_properties(self, ref: NodeRef) -> objects.ObjectInfo:
+        """The descriptor behind a table tab's Properties side: the
+        sections this engine supports, filled for `ref`."""
+        return objects.table_properties(
+            self.connector,
+            ref.name,
+            self.property_sections(),
+            kind=ref.kind or "table",
         )
 
     def get_ddl(self, ref: NodeRef) -> str:

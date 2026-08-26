@@ -12,6 +12,7 @@ from sqlide.backend.db.base import (
     ColumnInfo,
     Connector,
     ConnectorError,
+    ConstraintInfo,
     FilterCondition,
     FunctionInfo,
     IndexInfo,
@@ -19,6 +20,7 @@ from sqlide.backend.db.base import (
     ResultSet,
     SortSpec,
     TableInfo,
+    TableStats,
     TriggerInfo,
     TypeSpec,
     build_filter_clauses,
@@ -215,6 +217,61 @@ class SqliteConnector(Connector):
             )
             for _cid, name, ctype, notnull, _default, pk in rows
         ]
+
+    # Table properties (CORE-04). SQLite keeps no constraint catalog,
+    # so the constraints are read back off the PRAGMAs: the primary key
+    # from the column list, unique constraints from the indexes SQLite
+    # created for them, foreign keys from foreign_key_list. CHECK
+    # constraints live only in the CREATE text, which the properties
+    # view shows in full anyway.
+
+    def table_stats(self, table: str) -> TableStats:
+        _, rows, _ = self._run(
+            "SELECT type FROM sqlite_master WHERE name = ?", (table,)
+        )
+        kind = rows[0][0] if rows else ""
+        stats = TableStats(kind=kind)
+        if kind != "table":
+            return stats
+        _, counted, _ = self._run(
+            f"SELECT COUNT(*) FROM {self.quote_ident(table)}"
+        )
+        return TableStats(
+            kind=kind, rows=str(counted[0][0]) if counted else ""
+        )
+
+    def list_constraints(self, table: str) -> list[ConstraintInfo]:
+        quoted = self.quote_ident(table)
+        found = []
+        keys = [c.name for c in self.list_columns(table) if c.is_pk]
+        if keys:
+            found.append(ConstraintInfo(
+                name="(primary key)", kind="PRIMARY KEY", table=table,
+                columns=", ".join(keys),
+            ))
+        _, indexes, _ = self._run(f"PRAGMA index_list({quoted})")
+        for _seq, name, unique, origin, *_rest in indexes:
+            if not unique or origin == "pk":
+                continue
+            _, columns, _ = self._run(
+                f"PRAGMA index_info({self.quote_ident(name)})"
+            )
+            found.append(ConstraintInfo(
+                name=name, kind="UNIQUE", table=table,
+                # PRAGMA index_info rows are (seqno, cid, name).
+                columns=", ".join(str(c[2]) for c in columns),
+            ))
+        _, keys_out, _ = self._run(f"PRAGMA foreign_key_list({quoted})")
+        for _id, _seq, ref_table, column, ref_column, *_rest in keys_out:
+            found.append(ConstraintInfo(
+                name=f"{column} → {ref_table}", kind="FOREIGN KEY",
+                table=table, columns=column,
+                definition=(
+                    f"REFERENCES {ref_table}"
+                    f"({ref_column or 'rowid'})"
+                ),
+            ))
+        return found
 
     def list_relations(self) -> list[RelationInfo]:
         relations = []

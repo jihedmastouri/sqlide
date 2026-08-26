@@ -78,6 +78,12 @@ def create_provider(kind: str, connector: Connector) -> MetadataProvider:
     return provider_class(kind)(connector)
 
 
+def property_sections(kind: str) -> tuple[str, ...]:
+    """The table-properties sections `kind` offers, in display order,
+    answerable without a connection (CORE-04)."""
+    return provider_class(kind).property_sections()
+
+
 def capabilities(kind: str) -> Capabilities:
     """What `kind` can do, answerable without a connection."""
     return provider_class(kind).CAPABILITIES

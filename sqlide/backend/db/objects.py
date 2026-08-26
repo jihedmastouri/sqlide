@@ -498,3 +498,167 @@ _BUILDERS = {
     "function": _function,
     "event": _event,
 }
+
+
+# Table properties (CORE-04): the same descriptor shape, but assembled
+# section by section from a list the metadata provider chose, so an
+# engine without policies or partitions never sees those headings.
+
+#: Section slug -> heading, in the order the properties view shows
+#: them. `general` is the summary block, `ddl` the definition editor;
+#: everything between is a detail table.
+PROPERTY_SECTIONS = (
+    ("general", "General"),
+    ("columns", "Columns"),
+    ("constraints", "Constraints"),
+    ("foreign_keys", "Foreign keys"),
+    ("references", "References"),
+    ("indexes", "Indexes"),
+    ("triggers", "Triggers"),
+    ("partitions", "Partitions"),
+    ("rules", "Rules"),
+    ("policies", "Policies"),
+    ("dependencies", "Dependencies"),
+    ("functions", "Functions"),
+    ("ddl", "Definition"),
+)
+
+PROPERTY_SECTION_LABELS = dict(PROPERTY_SECTIONS)
+
+
+def table_properties(
+    connector: Connector,
+    name: str,
+    sections: tuple[str, ...] | list[str],
+    *,
+    kind: str = "table",
+    path: str = "",
+) -> ObjectInfo:
+    """Everything about one table, for the table tab's Properties side.
+
+    `sections` is what the engine supports (metadata.property_sections);
+    a section not in it is left out entirely, while a section that is
+    in it but currently empty renders its "(none)" note — "this engine
+    has no policies" and "this table has no policies yet" are different
+    answers and the view says which one it is.
+    """
+    wanted = [slug for slug, _label in PROPERTY_SECTIONS if slug in sections]
+    columns = _safe(lambda: connector.list_columns(name), [])
+    tables: list[DetailTable] = []
+    summary: list[tuple[str, str]] = []
+    ddl = ""
+    for slug in wanted:
+        if slug == "general":
+            summary = _general_summary(connector, name, columns)
+        elif slug == "ddl":
+            ddl = _ddl(connector, name)
+        else:
+            tables.append(_property_table(connector, name, slug, columns))
+    return ObjectInfo(
+        kind=kind, name=name, type_label=_label(kind), path=path,
+        summary=summary, tables=tables, ddl=ddl,
+    )
+
+
+def _general_summary(connector, name, columns) -> list[tuple[str, str]]:
+    stats = _safe(lambda: connector.table_stats(name), None)
+    keys = [c.name for c in columns if c.is_pk]
+    summary = [("Columns", str(len(columns))),
+               ("Primary key", ", ".join(keys) or "—")]
+    for label, value in (
+        ("Kind", getattr(stats, "kind", "")),
+        ("Owner", getattr(stats, "owner", "")),
+        ("Storage engine", getattr(stats, "engine", "")),
+        ("Size", getattr(stats, "size", "")),
+        ("Rows", getattr(stats, "rows", "")),
+        ("Comment", getattr(stats, "comment", "")),
+    ):
+        if value:
+            summary.append((label, str(value)))
+    return summary
+
+
+def _property_table(connector, name, slug, columns) -> DetailTable:
+    title = PROPERTY_SECTION_LABELS.get(slug, slug.capitalize())
+    if slug == "columns":
+        return DetailTable(
+            title=title,
+            columns=["Name", "Type", "Nullable", "Key"],
+            rows=[
+                (c.name, c.type, "yes" if c.nullable else "no",
+                 "PK" if c.is_pk else "")
+                for c in columns
+            ],
+            links=[ObjectRef("column", c.name, name) for c in columns],
+            empty_note="(no columns)",
+        )
+    if slug == "constraints":
+        found = _safe(lambda: connector.list_constraints(name), [])
+        return DetailTable(
+            title=title,
+            columns=["Name", "Kind", "Columns", "Definition"],
+            rows=[(c.name, c.kind, c.columns, c.definition) for c in found],
+            links=[None] * len(found),
+            empty_note="(no constraints)",
+        )
+    if slug == "foreign_keys":
+        found = [
+            r for r in _safe(connector.list_relations, []) if r.table == name
+        ]
+        return DetailTable(
+            title=title,
+            columns=["Column", "References"],
+            rows=[(r.column, f"{r.ref_table}.{r.ref_column}") for r in found],
+            links=[ObjectRef("table", r.ref_table) for r in found],
+            empty_note="(no foreign keys)",
+        )
+    if slug == "references":
+        found = _safe(lambda: connector.list_references(name), [])
+        return DetailTable(
+            title=title,
+            columns=["Table", "Column", "References"],
+            rows=[(r.table, r.column, f"{name}.{r.ref_column}") for r in found],
+            links=[ObjectRef("table", r.table) for r in found],
+            empty_note="(nothing references this table)",
+        )
+    if slug == "indexes":
+        found = [
+            i for i in _safe(connector.list_indexes, []) if i.table == name
+        ]
+        return DetailTable(
+            title=title,
+            columns=["Name", "Definition"],
+            rows=[(i.name, i.ddl or "(no definition available)")
+                  for i in found],
+            links=[ObjectRef("index", i.name, i.table) for i in found],
+            empty_note="(no indexes)",
+        )
+    if slug == "triggers":
+        found = [
+            t for t in _safe(connector.list_triggers, []) if t.table == name
+        ]
+        return DetailTable(
+            title=title,
+            columns=["Name", "Definition"],
+            rows=[(t.name, t.ddl or "(no definition available)")
+                  for t in found],
+            links=[ObjectRef("trigger", t.name, t.table) for t in found],
+            empty_note="(no triggers)",
+        )
+    lister = {
+        "partitions": "list_partitions",
+        "rules": "list_rules",
+        "policies": "list_policies",
+        "dependencies": "list_dependencies",
+        "functions": "list_table_functions",
+    }[slug]
+    found = _safe(lambda: getattr(connector, lister)(name), [])
+    return DetailTable(
+        title=title,
+        columns=["Name", "Detail", "Definition"],
+        rows=[(o.name, o.detail, o.definition) for o in found],
+        links=[
+            ObjectRef(o.kind, o.name) if o.kind else None for o in found
+        ],
+        empty_note=f"(no {title.lower()})",
+    )

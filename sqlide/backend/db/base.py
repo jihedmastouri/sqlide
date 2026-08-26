@@ -65,12 +65,15 @@ class PrivilegeInfo:
     `scope` is where the privilege applies, already human-readable
     ("server", "database sales", "table sales.orders", "role member of
     analysts"); `privilege` is the right itself (SELECT, CREATEDB);
-    `grantable` says the account may pass it on (WITH GRANT OPTION).
+    `grantable` says the account may pass it on (WITH GRANT OPTION);
+    `grantor` is the account that handed it over where the catalog
+    records one, empty where it does not.
     """
 
     scope: str
     privilege: str
     grantable: bool = False
+    grantor: str = ""
 
 
 @dataclass(frozen=True)

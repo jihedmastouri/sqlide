@@ -57,6 +57,7 @@ class MetadataProvider:
     def table_properties(self, ref) -> ObjectInfo    # …and its descriptor
     def get_ddl(self, ref) -> str
     def list_grants(self, ref) -> list[PrivilegeInfo]
+    def object_grants(self, ref) -> list[GrantEntry]  # who holds what here
     def list_principals(self) -> list[UserInfo]
     def permission_set(self, user, ref) -> PermissionSet   # the editor
     def permission_statements(self, user, current, desired) -> list[str]

@@ -27,6 +27,10 @@ Three rules the checkboxes keep:
   in one transaction where the engine has one (PostgreSQL). **Revert**
   throws the pile away.
 
+A row of an object's Permissions section (CORE-11) opens this screen
+too, on the principal that row names and already scoped to the object
+it was read from — the same editor, entered from the other end.
+
 Engines with no privilege system never get here: SQLite leaves the
 `permission_editor` capability off and the users tab hides the button.
 """
@@ -82,12 +86,19 @@ class PermissionEditor(Gtk.Box):
         user: UserInfo,
         ensure_connector: Callable[[ConnectionProfile], Connector],
         show_error: Callable[[str], None],
+        *,
+        scope: NodeRef | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.profile = profile
         self.user = user
         self._ensure = ensure_connector
         self._show_error = show_error
+        # The object to open on, when the editor was reached from that
+        # object's Permissions section (CORE-11) instead of from the
+        # account list: the right-hand grid starts on it rather than on
+        # "Pick an object".
+        self._scope = scope
         self._provider: MetadataProvider | None = None
         # Pending edits, per object: the set that was loaded, and the
         # privileges the user has moved since. Kept by node key so a
@@ -180,7 +191,7 @@ class PermissionEditor(Gtk.Box):
                 node.store.append(_Node(child))
             node.loaded = True
             self._list.get_model().set_selected(0)
-            self._show(node)
+            self._show(_Node(self._scope) if self._scope else node)
 
         run_async(work, done, lambda exc: self._show_error(str(exc)))
 

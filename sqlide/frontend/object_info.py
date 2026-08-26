@@ -18,6 +18,7 @@ stays with the definition tab and the table designer.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Callable
 
 from gi.repository import Adw, Gio, GLib, GObject, Graphene, Gtk, Pango
@@ -281,14 +282,24 @@ class ObjectInfoTab(Gtk.Box):
         ref = self.ref
 
         def work() -> objects.ObjectInfo:
-            return objects.describe(
-                self._ensure(self.profile),
-                ref.kind,
-                ref.name,
-                table=ref.table,
-                category=ref.category,
-                path=self.path,
+            # Through the provider rather than db/objects directly, so
+            # an object that carries grants gets its Permissions
+            # section here as well as in a table's Properties view
+            # (CORE-11). The provider is the one that knows whether
+            # this engine has a grant model at all.
+            connector = self._ensure(self.profile)
+            provider = registry.create_provider(self.profile.kind, connector)
+            info = provider.describe(
+                NodeRef(
+                    kind=ref.kind,
+                    name=ref.name,
+                    table=ref.table,
+                    category=ref.category,
+                )
             )
+            if self.path and not info.path:
+                return replace(info, path=self.path)
+            return info
 
         run_async(work, self._render, self._failed)
 

@@ -192,6 +192,10 @@ def test_postgres_reads_principals_and_object_grants(postgres) -> None:
     assert [u.name for u in provider.list_principals()]
     grants = provider.list_grants(NodeRef("table", "users"))
     assert any(g.privilege == "SELECT" for g in grants)
+    # The inverse view: the same grants, keyed by who holds them.
+    holders = provider.object_grants(NodeRef("table", "users"))
+    assert any(g.privilege == "SELECT" and g.principal for g in holders)
+    assert all(g.source for g in holders)
     # An index has no ACL of its own; asking is not an error.
     assert provider.list_grants(NodeRef("index", "users_pkey")) == []
 
@@ -252,6 +256,9 @@ def test_property_sections_follow_capabilities() -> None:
     # SQLite has none of the three.
     for slug in ("partitions", "policies", "rules", "dependencies"):
         assert slug not in sqlite
+    # Permissions follow the grant model (CORE-11): a file has none.
+    assert "permissions" in postgres and "permissions" in mysql
+    assert "permissions" not in sqlite
     # Order is the display order, whatever the subset.
     order = [slug for slug, _label in objects.PROPERTY_SECTIONS]
     for sections in (postgres, mysql, sqlite):

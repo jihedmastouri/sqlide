@@ -494,7 +494,7 @@ class PostgresConnector(Connector):
         if kind not in ("table", "view"):
             return []
         _, rows, _ = self._run(
-            "SELECT grantee, privilege_type, is_grantable, table_schema "
+            "SELECT grantee, privilege_type, is_grantable, grantor "
             "FROM information_schema.table_privileges "
             "WHERE table_name = %s "
             f"AND table_schema IN ({_USER_SCHEMAS}) "
@@ -506,8 +506,9 @@ class PostgresConnector(Connector):
                 scope=f"role {grantee}",
                 privilege=privilege,
                 grantable=grantable in (True, "YES"),
+                grantor=grantor or "",
             )
-            for grantee, privilege, grantable, _schema in rows
+            for grantee, privilege, grantable, grantor in rows
         ]
 
     def list_tables_in(self, schema: str) -> list[TableInfo]:

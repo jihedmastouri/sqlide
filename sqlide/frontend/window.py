@@ -87,6 +87,7 @@ from sqlide.backend import identity, schemas
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import objects, registry
 from sqlide.backend.db.base import Connector, ConnectorError, FilterCondition
+from sqlide.backend.db.metadata import NodeRef
 from sqlide.backend import settings as settings_backend
 from sqlide.backend.workspaces import HistoryEntry, Workspace
 from sqlide.frontend.cli_console import CliConsole
@@ -2435,6 +2436,9 @@ class MainWindow(Adw.ApplicationWindow):
         the same object again focuses the tab that is already showing
         it rather than stacking copies of one read-only screen.
         """
+        if ref.kind == "principal":
+            self.open_principal_permissions(profile, ref)
+            return
         key = tab_key(profile, ref)
         if self._focus_tab(key):
             return
@@ -2454,13 +2458,30 @@ class MainWindow(Adw.ApplicationWindow):
             f"{label.capitalize()} {ref.name} on {profile.name}",
         )
 
-    def open_users(self, profile: ConnectionProfile) -> None:
+    def open_principal_permissions(
+        self, profile: ConnectionProfile, ref: objects.ObjectRef
+    ) -> None:
+        """A row of an object's Permissions section (CORE-11): the
+        permission editor for the principal it names, opened on the
+        object the row was read from.
+
+        The users tab is where the editor lives, so this reuses it —
+        one screen for grants, entered from either end."""
+        tab = self.open_users(profile)
+        if tab is None:
+            return
+        tab.open_permissions_for(
+            ref.name,
+            NodeRef(kind=ref.category or "table", name=ref.table),
+        )
+
+    def open_users(self, profile: ConnectionProfile) -> UsersTab | None:
         """The connection's accounts and their privileges. Deduplicated
         per connection: accounts are server-wide, so a second tab on
         the same server would show the same list."""
         key = ("users", profile.name)
         if self._focus_tab(key):
-            return
+            return self._tab_for(key)
         tab = UsersTab(
             profile,
             self.ensure_connector,
@@ -2473,6 +2494,7 @@ class MainWindow(Adw.ApplicationWindow):
             f"{profile.name} ▸ users",
             f"Users and permissions on {profile.name}",
         )
+        return tab
 
     def open_backups(self) -> None:
         """The backup manager. One per window: jobs, destinations and

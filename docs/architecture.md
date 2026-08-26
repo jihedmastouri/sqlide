@@ -107,6 +107,7 @@ sqlide/
 │   ├── workspaces.py      # Workspace/TabState + per-workspace file store
 │   ├── settings.py        # global settings store (settings.toml)
 │   ├── saved.py           # saved snippets/queries
+│   ├── notes.py           # free-form notes (notes.toml)
 │   ├── secrets.py         # connection passwords: system keyring or plain text
 │   ├── backup.py          # zip/restore of the config directory itself
 │   ├── backups/           # database backups: jobs, dumps, destinations
@@ -139,6 +140,7 @@ sqlide/
     ├── backups_tab.py       # backup manager: jobs, schedules, run history
     ├── backup_destinations.py  # destination list + per-kind editor
     ├── backup_restore.py    # pick artifact -> pick target -> confirm -> run
+    ├── notes_panel.py       # side panel Notes page + Markdown editor
     ├── data_grid.py         # ResultGrid + TableTab (Data | Properties)
     ├── query_console.py
     ├── sql_editor.py        # GtkSourceView 5 with TextView fallback

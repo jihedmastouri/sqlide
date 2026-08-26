@@ -32,6 +32,7 @@ The first of these that applies wins:
 ```
 <config>/
 ├── settings.toml            # app and UI preferences
+├── notes.toml               # free-form notes (side panel -> Notes)
 ├── snippets.json            # saved SQL snippets (content, not config)
 ├── saved_queries.json       # saved queries      (content, not config)
 ├── backups.json             # backup jobs, destinations and run history
@@ -65,6 +66,9 @@ Two things are deliberately not TOML:
   (see [Import and Export](transfer)). It is not a config format here.
 
 ## Editing while the app runs
+
+`notes.toml` is watched too: a note added or edited on disk shows up in
+the side panel's Notes page without a restart.
 
 `settings.toml` is watched: save it and the running app re-reads it and
 applies the change — theme, font size, row cap, shortcuts and all.
@@ -140,6 +144,41 @@ max_result_rows = 5000
 
 [keymap]
 "win.run-query" = "<Control>Return"
+```
+
+## `notes.toml`
+
+The notes shown in the side panel's **Notes** page: free-form Markdown
+attached to a connection, a table, or nothing in particular. One
+`[[note]]` table each, so a note is a few lines to diff and a file
+worth committing.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | Stable id, generated when the note is written. Leave it alone; a missing one gets a fresh id on load. |
+| `title` | string | The row's title. An empty one becomes `"Untitled"`. |
+| `body` | string | The note itself, in **Markdown** — headings, bold/italic, lists, fenced code blocks. The editor's toolbar only inserts those markers; nothing renders the body, so what you write is what the file holds. |
+| `scope` | `"global"` \| `"connection"` \| `"table"` | What the note is about. An unknown scope is reported and read as `"global"`. |
+| `connection` | string | The connection profile's name, for `"connection"` and `"table"` notes. |
+| `table` | string | The table (or `schema.table`), for `"table"` notes. |
+| `created`, `updated` | ISO-8601 string | Written by the app; `updated` orders the list, newest first. |
+
+A note whose connection is not in the workspace any more is **kept and
+badged "orphaned"** — never dropped — so deleting a connection, or
+opening the config on a machine that has fewer of them, cannot lose
+what you wrote.
+
+```toml
+# ~/.config/sqlide/notes.toml
+[[note]]
+id = "0f3c…"
+title = "Retention"
+body = "## orders\n\nRows older than 90 days are archived nightly."
+scope = "table"
+connection = "analytics-primary"
+table = "public.orders"
+created = "2026-08-26T10:04:00"
+updated = "2026-08-26T10:04:00"
 ```
 
 ## `workspaces/<id>/workspace.toml`

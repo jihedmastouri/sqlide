@@ -4,10 +4,11 @@ An Adw.ViewStack behind an Adw.ViewSwitcher in the header bar. Which
 pages are offered depends on the active tab (the window reports it
 through set_context):
 
-- query console ("console"): Info, Snippets, Queries, History, Aggregate
-- table data tab ("table"):  Info, History, Aggregate, Filters
-- other result grids ("grid"): Info, History, Aggregate
-- everything else ("other"): Info, History
+- query console ("console"): Info, Snippets, Queries, Notes, History,
+  Aggregate
+- table data tab ("table"):  Info, Notes, History, Aggregate, Filters
+- other result grids ("grid"): Info, Notes, History, Aggregate
+- everything else ("other"): Info, Notes, History
 
 Pages:
 - Info: details of the active tab — the DDL of the active table or
@@ -25,6 +26,11 @@ Pages:
   selection changes — so opening the panel is enough to read it — and
   show_aggregate() (the grid's Aggregate menu item) additionally
   brings the page to the front.
+- Notes: free-form Markdown notes (backend/notes.py, notes.toml)
+  scoped to a connection, a table or nothing. The window hands it the
+  active tab's object and the workspace's connection names through
+  set_note_target, which is what a new note defaults to and what the
+  orphan badge is decided against.
 - Filters: the workspace's saved filter sets for the active table
   (keyed connection.database.table). Activating one applies it; the
   + button saves the table's current filter under a name. The window
@@ -43,14 +49,22 @@ from sqlide.backend.saved import queries as queries_store
 from sqlide.backend.saved import snippets as snippets_store
 from sqlide.backend.workspaces import HistoryEntry
 from sqlide.frontend.history_panel import HistoryPanel
+from sqlide.frontend.notes_panel import NotesPage
 from sqlide.frontend.sql_editor import SqlEditor
 from sqlide.frontend.util import describe
 
 _CONTEXT_PAGES = {
-    "console": ("info", "snippets", "queries", "history", "aggregate"),
-    "table": ("info", "history", "aggregate", "filters"),
-    "grid": ("info", "history", "aggregate"),
-    "other": ("info", "history"),
+    "console": (
+        "info",
+        "snippets",
+        "queries",
+        "notes",
+        "history",
+        "aggregate",
+    ),
+    "table": ("info", "notes", "history", "aggregate", "filters"),
+    "grid": ("info", "notes", "history", "aggregate"),
+    "other": ("info", "notes", "history"),
 }
 
 
@@ -326,6 +340,7 @@ class SidePanel(Gtk.Box):
             get_sql=get_console_sql,
             on_error=on_error,
         )
+        self._notes = NotesPage()
         self._filters = _FiltersPage(
             on_apply=on_apply_filter,
             on_save=on_save_filter,
@@ -364,6 +379,12 @@ class SidePanel(Gtk.Box):
                 "Queries",
                 "emblem-documents-symbolic",
                 self._queries,
+            ),
+            (
+                "notes",
+                "Notes",
+                "view-paged-symbolic",
+                self._notes,
             ),
             (
                 "history",
@@ -443,6 +464,18 @@ class SidePanel(Gtk.Box):
         self._info_title.set_visible(title)
         self._info_details.set_visible(details)
         self._ddl_view.set_visible(ddl)
+
+    # Notes
+
+    def set_note_target(
+        self,
+        connection: str,
+        table: str,
+        connections: list[str] | None = None,
+    ) -> None:
+        """The object a new note defaults to (the active tab's), and
+        the connections that still exist, for the orphan badge."""
+        self._notes.set_target(connection, table, connections)
 
     # Filters
 

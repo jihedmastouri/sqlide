@@ -24,6 +24,10 @@ So the UI asks a provider instead:
 * `get_ddl(ref)` — the object's CREATE statement, where there is one.
 * `list_grants(ref)` / `list_principals()` — accounts and what they may
   do; empty everywhere the `grants`/`roles` capabilities are off.
+* `permission_set(user, ref)` / `permission_statements(...)` /
+  `apply_permissions(...)` — the permission editor (CORE-10): what one
+  principal holds on one object, the GRANT/REVOKE that would change it,
+  and running those. Off wherever `permission_editor` is off (SQLite).
 * `capabilities()` — the feature flags, so a screen an engine cannot
   fill is hidden rather than shown broken.
 
@@ -93,6 +97,8 @@ class Capabilities:
     dependencies: bool = False  # what depends on an object is readable
     related_functions: bool = False  # functions a table's triggers call
     account_hosts: bool = False  # an account is 'name'@'host'
+    permission_editor: bool = False  # grants are editable object by object
+    transactional_grants: bool = False  # GRANT/REVOKE roll back together
 
     def supports(self, name: str) -> bool:
         """One flag by name, False for a flag this version has never
@@ -150,6 +156,44 @@ CATEGORIES = (
     ("triggers", "Triggers", "trigger"),
     ("events", "Events", "event"),
 )
+
+
+@dataclass(frozen=True)
+class PrivilegeState:
+    """One checkbox of the permission editor.
+
+    `granted` is whether the principal holds the privilege at all,
+    `grantable` whether it may pass it on (WITH GRANT OPTION), and
+    `inherited_from` names the role it comes through — empty for a
+    direct grant, which is the only kind the editor lets you change.
+    """
+
+    privilege: str
+    granted: bool = False
+    grantable: bool = False
+    inherited_from: str = ""
+
+    @property
+    def editable(self) -> bool:
+        return not self.inherited_from
+
+
+@dataclass(frozen=True)
+class PermissionSet:
+    """What one principal holds on one object: the node, the dialect's
+    own text for it after ON, and a state per privilege the engine
+    allows there. An object that carries no grants answers with an
+    empty target and no entries."""
+
+    ref: NodeRef
+    target: str
+    entries: tuple[PrivilegeState, ...] = ()
+
+    def state(self, privilege: str) -> PrivilegeState | None:
+        for entry in self.entries:
+            if entry.privilege == privilege:
+                return entry
+        return None
 
 
 def _safe(call, default):
@@ -296,6 +340,227 @@ class MetadataProvider:
         return _safe(
             lambda: self.connector.list_object_grants(ref.kind, ref.name), []
         )
+
+    # The permission editor (CORE-10)
+
+    #: Object kind -> the privileges that kind can carry on this
+    #: engine, in the order the editor shows them. A kind that is
+    #: missing has no grantable privileges here and the editor draws
+    #: no checkboxes for it.
+    OBJECT_PRIVILEGES: dict[str, tuple[str, ...]] = {}
+
+    def privileges_for(self, ref: NodeRef) -> tuple[str, ...]:
+        """The privilege list the editor offers on `ref` — engine- and
+        kind-correct, empty where this node carries no grants of its
+        own (a category folder, an index, a trigger)."""
+        if not self.CAPABILITIES.permission_editor:
+            return ()
+        if not self.grant_target(ref):
+            return ()
+        return self.OBJECT_PRIVILEGES.get(ref.kind, ())
+
+    def grant_target(self, ref: NodeRef) -> str:
+        """`ref` as the dialect writes it after ON, empty for a node
+        GRANT cannot name. Dialect text, so each engine overrides."""
+        return ""
+
+    def privilege_suffix(self, ref: NodeRef) -> str:
+        """What each privilege carries in the statement — the column
+        parenthetical of a column-level grant, empty everywhere else."""
+        return ""
+
+    def object_scope(self, ref: NodeRef) -> str:
+        """The `PrivilegeInfo.scope` a grant on `ref` is reported
+        under, so a principal's privilege list can be indexed by
+        object. The adapters agree on this spelling ("server",
+        "database sales", "schema public", "table public.orders",
+        "column public.orders.total"); the level names differ per
+        engine, which is why the engines can override.
+        """
+        if ref.kind == "connection":
+            return "server"
+        if ref.kind == "database":
+            return f"database {ref.name}"
+        if ref.kind == "schema":
+            return f"schema {ref.name}"
+        container = ref.schema or ref.database
+        if ref.kind in ("table", "view"):
+            return f"table {container}.{ref.name}"
+        if ref.kind == "column":
+            return f"column {container}.{ref.table}.{ref.name}"
+        if ref.kind in ("function", "procedure"):
+            return f"function {container}.{ref.name}"
+        return ""
+
+    def role_memberships(self, user: UserInfo) -> list[str]:
+        """The roles `user` is a member of — the ones whose grants it
+        also holds. Empty where the engine has no role inheritance."""
+        if not self.CAPABILITIES.roles:
+            return []
+        names = []
+        for privilege in _safe(
+            lambda: self.connector.list_privileges(user), []
+        ):
+            if privilege.scope == "role membership":
+                names.append(privilege.privilege.removeprefix("member of "))
+        return names
+
+    def permission_set(
+        self, user: UserInfo, ref: NodeRef
+    ) -> PermissionSet:
+        """What `user` holds on `ref`, one entry per privilege the
+        engine allows there.
+
+        A privilege the account was granted directly is editable; one
+        it only has through a role it belongs to is reported with the
+        role that carries it and left alone — revoking it here would
+        either fail or take it from everyone else in that role, and
+        neither is what the checkbox appears to promise.
+        """
+        names = self.privileges_for(ref)
+        target = self.grant_target(ref)
+        if not names or not target:
+            return PermissionSet(ref=ref, target="", entries=())
+        scope = self.object_scope(ref)
+        direct = self._grants_at(user, scope)
+        inherited: dict[str, tuple[PrivilegeInfo, str]] = {}
+        for role in self.role_memberships(user):
+            for name, privilege in self._grants_at(
+                UserInfo(name=role), scope
+            ).items():
+                inherited.setdefault(name, (privilege, role))
+        entries = []
+        for name in names:
+            held = direct.get(name)
+            if held is not None:
+                entries.append(
+                    PrivilegeState(
+                        privilege=name,
+                        granted=True,
+                        grantable=held.grantable,
+                    )
+                )
+                continue
+            via = inherited.get(name)
+            entries.append(
+                PrivilegeState(
+                    privilege=name,
+                    granted=via is not None,
+                    grantable=bool(via and via[0].grantable),
+                    inherited_from=via[1] if via else "",
+                )
+            )
+        return PermissionSet(ref=ref, target=target, entries=tuple(entries))
+
+    def permission_statements(
+        self,
+        user: UserInfo,
+        current: PermissionSet,
+        desired: dict[str, tuple[bool, bool]],
+    ) -> list[str]:
+        """The GRANT/REVOKE turning `current` into `desired`.
+
+        `desired` maps a privilege to (granted, grantable); a privilege
+        it does not mention is left as it is, and so is one that is
+        only inherited — the editor never offers to edit those, and a
+        caller that asks anyway is ignored rather than obeyed.
+
+        Privileges are checked against the list this engine allows on
+        that object, because they land in the statement as text.
+        """
+        if not current.target:
+            return []
+        allowed = self.privileges_for(current.ref)
+        account = self.connector.account_ident(user)
+        suffix = self.privilege_suffix(current.ref)
+        add: list[str] = []
+        add_grantable: list[str] = []
+        drop_option: list[str] = []
+        remove: list[str] = []
+        for entry in current.entries:
+            want = desired.get(entry.privilege)
+            if want is None or entry.inherited_from:
+                continue
+            granted, grantable = bool(want[0]), bool(want[1])
+            if granted == entry.granted and grantable == entry.grantable:
+                continue
+            if entry.privilege not in allowed:
+                raise ConnectorError(
+                    f"{entry.privilege} cannot be granted on "
+                    f"{current.target}"
+                )
+            if not granted:
+                remove.append(entry.privilege)
+            elif grantable:
+                add_grantable.append(entry.privilege)
+            elif entry.granted and entry.grantable:
+                drop_option.append(entry.privilege)
+            else:
+                add.append(entry.privilege)
+
+        def listed(privileges: list[str]) -> str:
+            return ", ".join(p + suffix for p in privileges)
+
+        statements = []
+        for privileges, option in ((add, False), (add_grantable, True)):
+            if privileges:
+                statements.append(
+                    f"GRANT {listed(privileges)} ON {current.target} "
+                    f"TO {account}"
+                    + (" WITH GRANT OPTION" if option else "")
+                )
+        if drop_option:
+            statements.append(
+                f"REVOKE GRANT OPTION FOR {listed(drop_option)} "
+                f"ON {current.target} FROM {account}"
+            )
+        if remove:
+            statements.append(
+                f"REVOKE {listed(remove)} ON {current.target} "
+                f"FROM {account}"
+            )
+        return statements
+
+    def apply_permissions(self, statements: list[str]) -> None:
+        """Run the editor's statements.
+
+        In one transaction where the engine keeps DDL transactional
+        (PostgreSQL): a half-applied permission change is a security
+        state nobody chose. MySQL commits each GRANT as it runs, so
+        there the flag is off and the error says which statement was
+        the last to succeed by naming the one that failed.
+        """
+        if not statements:
+            return
+        transactional = self.CAPABILITIES.transactional_grants
+        if transactional:
+            self.connector.execute("BEGIN")
+        for sql in statements:
+            try:
+                self.connector.execute(sql)
+            except ConnectorError as exc:
+                if transactional:
+                    _safe(lambda: self.connector.execute("ROLLBACK"), None)
+                raise ConnectorError(f"{exc}\n\nFailed on: {sql}") from exc
+        if transactional:
+            self.connector.execute("COMMIT")
+
+    def _grants_at(
+        self, user: UserInfo, scope: str
+    ) -> dict[str, PrivilegeInfo]:
+        """One account's grants at one scope, by privilege name. The
+        strongest entry wins: two rows for the same privilege differ
+        only in whether it may be passed on."""
+        found: dict[str, PrivilegeInfo] = {}
+        for privilege in _safe(
+            lambda: self.connector.list_privileges(user), []
+        ):
+            if privilege.scope != scope:
+                continue
+            name = privilege.privilege.upper()
+            if name not in found or privilege.grantable:
+                found[name] = privilege
+        return found
 
     # Shared implementation
 

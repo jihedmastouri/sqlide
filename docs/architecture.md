@@ -58,6 +58,9 @@ class MetadataProvider:
     def get_ddl(self, ref) -> str
     def list_grants(self, ref) -> list[PrivilegeInfo]
     def list_principals(self) -> list[UserInfo]
+    def permission_set(self, user, ref) -> PermissionSet   # the editor
+    def permission_statements(self, user, current, desired) -> list[str]
+    def apply_permissions(self, statements) -> None
 ```
 
 One implementation per engine, in that engine's folder
@@ -65,8 +68,13 @@ One implementation per engine, in that engine's folder
 schema → object`, MySQL `connection → database → object`, SQLite
 `connection → object`; JDBC falls back to the generic provider. Each
 declares a `Capabilities` — schemas, materialized views, procedures,
-events, grants, roles, extensions, partitions, pragmas — so a screen an
-engine cannot fill is hidden instead of shown broken.
+events, grants, roles, extensions, partitions, pragmas, permission
+editor — so a screen an engine cannot fill is hidden instead of shown
+broken. The permission editor is the fullest example: the provider says
+which privileges an object kind can carry and how GRANT names it, so
+`frontend/permission_editor.py` draws checkboxes for PostgreSQL and
+MySQL alike without knowing either dialect, and SQLite never shows the
+screen at all.
 
 Those modules import nothing but `db.base`, which is what lets
 `registry.capabilities(kind)` and `registry.hierarchy(kind)` answer
@@ -137,6 +145,7 @@ sqlide/
     ├── tree_search.py       # sidebar search: matching, scopes, highlights
     ├── object_info.py       # read-only info view for any tree node
     ├── users_tab.py         # accounts + privileges (review-then-run DDL)
+    ├── permission_editor.py  # one principal: object tree + privilege grid
     ├── backups_tab.py       # backup manager: jobs, schedules, run history
     ├── backup_destinations.py  # destination list + per-kind editor
     ├── backup_restore.py    # pick artifact -> pick target -> confirm -> run

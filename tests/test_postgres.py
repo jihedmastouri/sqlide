@@ -604,3 +604,75 @@ def test_grant_rejects_an_unknown_privilege(postgres):
     _, db = postgres
     with pytest.raises(ConnectorError):
         db.grant_sql(UserInfo(name="app"), ["SUPERUSER"], 'DATABASE "sqlide"')
+
+
+def test_permission_editor_round_trip(postgres):
+    """The permission editor's loop, end to end on a real server: read
+    what a role holds, tick a box, run the statement, read it back —
+    and the same again to take it away (CORE-10)."""
+    from sqlide.backend.db.metadata import NodeRef
+    from sqlide.backend.db.postgres.metadata import PostgresMetadata
+
+    _, db = postgres
+    provider = PostgresMetadata(db)
+    db.execute('DROP ROLE IF EXISTS "sqlide_perm_test"')
+    db.execute('CREATE ROLE "sqlide_perm_test"')
+    user = UserInfo(name="sqlide_perm_test")
+    ref = NodeRef("table", "orders", schema="public")
+    try:
+        before = provider.permission_set(user, ref)
+        assert before.target == 'TABLE "public"."orders"'
+        assert not before.state("SELECT").granted
+
+        statements = provider.permission_statements(
+            user, before, {"SELECT": (True, True)}
+        )
+        assert statements == [
+            'GRANT SELECT ON TABLE "public"."orders" '
+            'TO "sqlide_perm_test" WITH GRANT OPTION'
+        ]
+        provider.apply_permissions(statements)
+
+        after = provider.permission_set(user, ref)
+        assert after.state("SELECT").granted
+        assert after.state("SELECT").grantable
+        assert after.state("SELECT").editable
+
+        provider.apply_permissions(
+            provider.permission_statements(
+                user, after, {"SELECT": (False, False)}
+            )
+        )
+        assert not provider.permission_set(user, ref).state("SELECT").granted
+    finally:
+        db.execute(
+            'REVOKE ALL ON TABLE "public"."orders" FROM "sqlide_perm_test"'
+        )
+        db.execute('DROP ROLE IF EXISTS "sqlide_perm_test"')
+
+
+def test_a_failing_permission_batch_applies_nothing(postgres):
+    """The transaction the editor leans on: a batch whose last
+    statement is bad leaves the good ones unapplied too."""
+    from sqlide.backend.db.base import ConnectorError as _Error
+    from sqlide.backend.db.metadata import NodeRef
+    from sqlide.backend.db.postgres.metadata import PostgresMetadata
+
+    _, db = postgres
+    provider = PostgresMetadata(db)
+    db.execute('DROP ROLE IF EXISTS "sqlide_perm_test"')
+    db.execute('CREATE ROLE "sqlide_perm_test"')
+    user = UserInfo(name="sqlide_perm_test")
+    ref = NodeRef("table", "orders", schema="public")
+    try:
+        with pytest.raises(_Error) as failure:
+            provider.apply_permissions([
+                'GRANT SELECT ON TABLE "public"."orders" '
+                'TO "sqlide_perm_test"',
+                'GRANT SELECT ON TABLE "public"."no_such_table" '
+                'TO "sqlide_perm_test"',
+            ])
+        assert "no_such_table" in str(failure.value)
+        assert not provider.permission_set(user, ref).state("SELECT").granted
+    finally:
+        db.execute('DROP ROLE IF EXISTS "sqlide_perm_test"')

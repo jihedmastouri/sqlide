@@ -10,7 +10,13 @@ role memberships), and the buttons that act on it. The list is a way
 in, not a column to keep looking at, so it steps aside once you are
 reading one account.
 
-Nothing here changes an account on its own. New User…, Set Password…,
+Permissions… is the exception to the paragraph below, and its own
+screen: the permission editor (frontend/permission_editor.py) edits
+grants object by object and runs its statements itself, after showing
+every one of them in a Save dialog. It is offered only where the engine
+declares the `permission_editor` capability.
+
+Nothing else here changes an account on its own. New User…, Set Password…,
 Grant…, Revoke… and Drop… each build the dialect's statement and open
 it in a query console for the user to read and Run. Account changes
 are the one kind of DDL whose blast radius isn't visible from the
@@ -33,6 +39,7 @@ from sqlide.backend.db import registry
 from sqlide.backend.db.base import Connector, GrantScope, UserInfo
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend.data_grid import ResultGrid
+from sqlide.frontend.permission_editor import PermissionEditor
 from sqlide.frontend.util import describe, run_async
 
 
@@ -131,11 +138,18 @@ class UsersTab(Gtk.Box):
         subtitle.add_css_class("dim-label")
         actions.append(subtitle)
         for label, callback in (
+            ("Permissions…", lambda: self._open_permissions(user)),
             ("Grant…", lambda: self._grant_dialog(user, revoke=False)),
             ("Revoke…", lambda: self._grant_dialog(user, revoke=True)),
             ("Set Password…", lambda: self._set_password(user)),
             ("Drop…", lambda: self._drop_user(user)),
         ):
+            if label == "Permissions…" and not registry.capabilities(
+                self.profile.kind
+            ).permission_editor:
+                # An engine whose grants are not editable object by
+                # object never offers the editor (db/metadata.py).
+                continue
             button = Gtk.Button(label=label)
             button.connect("clicked", lambda _b, cb=callback: cb())
             if label == "Drop…":
@@ -171,6 +185,22 @@ class UsersTab(Gtk.Box):
             )
 
         run_async(work, done, lambda exc: self._show_error(str(exc)))
+
+    def _open_permissions(self, user: UserInfo) -> None:
+        """Push the permission editor for this account: the object tree
+        on the left, what the account holds on the selected object on
+        the right (CORE-10). It is the one screen here that runs its own
+        statements — every change is reviewed in its Save dialog first,
+        which is the same read-it-before-it-runs contract the other
+        buttons keep by way of a console."""
+        self._nav.push(
+            Adw.NavigationPage(
+                child=PermissionEditor(
+                    self.profile, user, self._ensure, self._show_error
+                ),
+                title=f"Permissions — {_account_label(user)}",
+            )
+        )
 
     # Actions — each builds a statement and opens it for review
 

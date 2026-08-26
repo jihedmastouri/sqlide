@@ -35,7 +35,60 @@ class PostgresMetadata(MetadataProvider):
         policies=True,
         dependencies=True,
         related_functions=True,
+        permission_editor=True,
+        # DDL is transactional here, GRANT included: the editor's
+        # statements either all land or none of them do.
+        transactional_grants=True,
     )
+
+    #: What PostgreSQL lets you grant, per object kind. A database
+    #: takes CONNECT/CREATE/TEMPORARY, a schema USAGE/CREATE, a
+    #: relation the seven table privileges, a routine EXECUTE, and a
+    #: column the four privileges that can name one.
+    OBJECT_PRIVILEGES = {
+        "database": ("CONNECT", "CREATE", "TEMPORARY"),
+        "schema": ("USAGE", "CREATE"),
+        "table": (
+            "SELECT", "INSERT", "UPDATE", "DELETE",
+            "TRUNCATE", "REFERENCES", "TRIGGER",
+        ),
+        "view": (
+            "SELECT", "INSERT", "UPDATE", "DELETE",
+            "TRUNCATE", "REFERENCES", "TRIGGER",
+        ),
+        "function": ("EXECUTE",),
+        "procedure": ("EXECUTE",),
+    }
+    # Columns are left out on purpose: information_schema.column_privileges
+    # also reports the columns a *table*-level grant covers, so a column
+    # checkbox here could not tell "granted on this column" from "granted
+    # on the table", and unticking one would build a REVOKE that does not
+    # do what the box says. Column grants stay in the Grant… dialog.
+
+    def grant_target(self, ref: NodeRef) -> str:
+        """The object as GRANT names it. The connection row is not one:
+        cluster-wide rights are role attributes (SUPERUSER, CREATEDB),
+        set with ALTER ROLE rather than granted on a target."""
+        quote = self.connector.quote_ident
+        if ref.kind == "database":
+            return f"DATABASE {quote(ref.name)}"
+        if ref.kind == "schema":
+            return f"SCHEMA {quote(ref.name)}"
+        schema = ref.schema or self._safe_schema()
+        if ref.kind in ("table", "view"):
+            return f"TABLE {quote(schema)}.{quote(ref.name)}"
+        if ref.kind in ("function", "procedure"):
+            keyword = "FUNCTION" if ref.kind == "function" else "PROCEDURE"
+            return f"{keyword} {quote(schema)}.{quote(ref.name)}"
+        return ""
+
+    def _safe_schema(self) -> str:
+        """The schema a node that names none belongs to: the one the
+        search path resolves it in, as the sidebar found it."""
+        try:
+            return self.connector.current_schema() or "public"
+        except Exception:
+            return "public"
 
     def _current_database(self) -> str:
         return getattr(self.connector, "database", "") or ""

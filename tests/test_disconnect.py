@@ -70,6 +70,8 @@ def sidebar(gtk, sqlite_db):
         on_open_schema=unused,
         on_edit_connection=unused,
         on_disconnect=lambda p: disconnected.append(p.name),
+        on_close_tabs=unused,
+        count_tabs=lambda _name: 0,
         on_remove_connection=unused,
         on_add_connection=unused,
         show_error=unused,

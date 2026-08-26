@@ -220,6 +220,11 @@ class QueryConsole(Gtk.Box):
         )
 
         self._file_path: Path | None = None  # target of the Save button
+        # The text as it last stood on disk, so "has this editor
+        # unsaved work?" is a comparison rather than a guess. A console
+        # that was never saved starts at "": any SQL typed into it is
+        # unsaved work.
+        self._saved_text = ""
         open_button = Gtk.Button(icon_name="document-open-symbolic")
         open_button.add_css_class("flat")
         describe(open_button, "Open a file in the editor")
@@ -838,6 +843,32 @@ class QueryConsole(Gtk.Box):
         forces a disconnect with a query still running."""
         self._cancel()
 
+    def unsaved_work(self) -> str:
+        """What would be lost if this console were closed now, as a
+        phrase for the confirmation that lists it — "" when nothing
+        would be. SQL that has never been written to a file counts:
+        the editor is the only copy of it."""
+        text = self._editor.get_text()
+        if not text.strip() or text == self._saved_text:
+            return ""
+        if self._file_path is not None:
+            return f"unsaved changes to {self._file_path.name}"
+        return "unsaved query text"
+
+    def save_unsaved_work(self) -> None:
+        """Write the editor out before the tab goes. A console bound to
+        a file is written back to it; one that never had a file gets a
+        scratch .sql file, the same way Open in Text Editor makes one,
+        so "Save" never loses the SQL and never stops to ask."""
+        if not self.unsaved_work():
+            return
+        path = self._file_path
+        if path is None:
+            fd, name = tempfile.mkstemp(suffix=".sql", prefix="sqlide-")
+            os.close(fd)
+            path = Path(name)
+        self._write_file(path)
+
     def _enter_running(self) -> None:
         self._state = "running"
         for button in (
@@ -918,6 +949,7 @@ class QueryConsole(Gtk.Box):
             self._set_status(f"Could not open {path}: {exc}", error=True)
             return
         self._file_path = path
+        self._saved_text = self._editor.get_text()
         self._set_status(f"Opened {path}", error=False)
 
     def _save_file(self, *_args) -> None:
@@ -935,12 +967,14 @@ class QueryConsole(Gtk.Box):
         self._write_file(Path(file.get_path()))
 
     def _write_file(self, path: Path) -> None:
+        text = self._editor.get_text()
         try:
-            path.write_text(self._editor.get_text(), encoding="utf-8")
+            path.write_text(text, encoding="utf-8")
         except OSError as exc:
             self._set_status(f"Could not save {path}: {exc}", error=True)
             return
         self._file_path = path
+        self._saved_text = text
         self._set_status(f"Saved to {path}", error=False)
 
     def _open_in_text_editor(self, *_args) -> None:

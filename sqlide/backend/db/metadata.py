@@ -24,6 +24,9 @@ So the UI asks a provider instead:
 * `get_ddl(ref)` — the object's CREATE statement, where there is one.
 * `list_grants(ref)` / `list_principals()` — accounts and what they may
   do; empty everywhere the `grants`/`roles` capabilities are off.
+* `object_grants(ref)` — the inverse: who may do what to one object,
+  direct and inherited, for the Permissions section of its properties
+  (CORE-11).
 * `permission_set(user, ref)` / `permission_statements(...)` /
   `apply_permissions(...)` — the permission editor (CORE-10): what one
   principal holds on one object, the GRANT/REVOKE that would change it,
@@ -54,7 +57,7 @@ catalog call goes through `_safe` and answers with an empty list.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 
 from sqlide.backend.db import objects
 from sqlide.backend.db.base import (
@@ -145,6 +148,38 @@ class NodeRef:
         )
 
 
+@dataclass(frozen=True)
+class GrantEntry:
+    """One line of an object's Permissions section (CORE-11).
+
+    The inverse of `PrivilegeInfo`: that one starts from an account and
+    says where its rights apply, this one starts from an object and
+    says who holds rights on it.
+
+    `via` is the role the grant arrives through, empty for a grant made
+    to `principal` itself — the direct/inherited distinction, kept as
+    the role's name so the view can say which role it came from rather
+    than only that it was not direct. `public` marks the grant every
+    account holds (PostgreSQL's PUBLIC), which is shown as its own line
+    rather than expanded over every account on the server.
+    """
+
+    principal: str
+    privilege: str
+    via: str = ""
+    grantor: str = ""
+    grantable: bool = False
+    public: bool = False
+
+    @property
+    def source(self) -> str:
+        """"Direct" or the role it is inherited through, as the
+        Permissions section prints it."""
+        if self.public:
+            return "everyone"
+        return f"via {self.via}" if self.via else "direct"
+
+
 #: Category folder -> (label, the object kind its rows hold). The
 #: providers pick their subset; the order here is the order shown.
 CATEGORIES = (
@@ -194,6 +229,62 @@ class PermissionSet:
             if entry.privilege == privilege:
                 return entry
         return None
+
+
+#: How the adapters spell a grantee in `PrivilegeInfo.scope`: the level
+#: word, then the account. Stripped back to the account here so a row
+#: can name the principal on its own.
+_PRINCIPAL_PREFIXES = ("role ", "user ", "grantee ")
+
+
+def _principal_of(scope: str) -> str:
+    """The account named by an object grant's scope ("role analyst" ->
+    "analyst"). A scope that names no account answers empty."""
+    text = (scope or "").strip()
+    for prefix in _PRINCIPAL_PREFIXES:
+        if text.lower().startswith(prefix):
+            return text[len(prefix):].strip()
+    return text
+
+
+def _grant_table(
+    entries: list[GrantEntry], ref: NodeRef
+) -> objects.DetailTable:
+    """The Permissions section: one row per principal and privilege,
+    each linking through to that principal in the permission editor,
+    already scoped to this object (CORE-11).
+
+    A grant to PUBLIC links nowhere — it belongs to no account, so
+    there is no principal for the editor to open on.
+    """
+    rows = []
+    links: list[objects.ObjectRef | None] = []
+    for entry in entries:
+        rows.append((
+            "PUBLIC" if entry.public else entry.principal,
+            entry.privilege,
+            entry.source,
+            entry.grantor or "—",
+            "yes" if entry.grantable else "",
+        ))
+        links.append(
+            None
+            if entry.public
+            else objects.ObjectRef(
+                kind="principal",
+                name=entry.principal,
+                table=ref.name,
+                category=ref.kind,
+            )
+        )
+    return objects.DetailTable(
+        title=objects.PROPERTY_SECTION_LABELS["permissions"],
+        columns=["Principal", "Privilege", "Source", "Grantor", "Grant option"],
+        rows=rows,
+        links=links,
+        empty_note="(nobody holds a privilege here)",
+        slug="permissions",
+    )
 
 
 def _safe(call, default):
@@ -256,8 +347,10 @@ class MetadataProvider:
         return []
 
     def describe(self, ref: NodeRef) -> objects.ObjectInfo:
-        """The read-only descriptor the info view renders (CORE-01)."""
-        return objects.describe(
+        """The read-only descriptor the info view renders (CORE-01),
+        with the Permissions section appended where this engine and
+        this kind of object have one (CORE-11)."""
+        info = objects.describe(
             self.connector,
             ref.kind,
             ref.name,
@@ -265,6 +358,7 @@ class MetadataProvider:
             category=ref.category,
             detail=ref.detail,
         )
+        return self._with_permissions(info, ref)
 
     @classmethod
     def property_sections(cls) -> tuple[str, ...]:
@@ -288,6 +382,7 @@ class MetadataProvider:
             "policies": caps.policies,
             "dependencies": caps.dependencies,
             "functions": caps.related_functions,
+            "permissions": caps.grants,
         }
         return tuple(
             slug
@@ -298,12 +393,13 @@ class MetadataProvider:
     def table_properties(self, ref: NodeRef) -> objects.ObjectInfo:
         """The descriptor behind a table tab's Properties side: the
         sections this engine supports, filled for `ref`."""
-        return objects.table_properties(
+        info = objects.table_properties(
             self.connector,
             ref.name,
             self.property_sections(),
             kind=ref.kind or "table",
         )
+        return self._with_permissions(info, ref)
 
     def get_ddl(self, ref: NodeRef) -> str:
         """The object's CREATE statement, empty where the engine has
@@ -340,6 +436,99 @@ class MetadataProvider:
         return _safe(
             lambda: self.connector.list_object_grants(ref.kind, ref.name), []
         )
+
+    # Who may do what to one object (CORE-11)
+
+    #: The kinds that carry grants of their own, and so get a
+    #: Permissions section. An index belongs to its table and a trigger
+    #: to the table it fires on: neither has an ACL to show.
+    GRANTABLE_KINDS = ("table", "view", "function", "procedure")
+
+    def object_grants(self, ref: NodeRef) -> list[GrantEntry]:
+        """Every principal that holds a privilege on `ref` — the
+        inverse of `list_grants` on an account.
+
+        Grants recorded against a role are also held by everyone who is
+        a member of it, so those are reported a second time against the
+        member, naming the role they arrive through; the checkbox that
+        edits them is the role's, not the member's (CORE-10). A grant
+        to PUBLIC is one line saying so rather than one line per
+        account.
+
+        Empty wherever the `grants` capability is off, and for the
+        kinds that carry no ACL of their own.
+        """
+        if not self.CAPABILITIES.grants or not ref.name:
+            return []
+        if ref.kind not in self.GRANTABLE_KINDS:
+            return []
+        recorded = _safe(
+            lambda: self.connector.list_object_grants(ref.kind, ref.name), []
+        )
+        entries: list[GrantEntry] = []
+        holders: dict[str, list[PrivilegeInfo]] = {}
+        for privilege in recorded:
+            name = _principal_of(privilege.scope)
+            if not name:
+                continue
+            public = name.upper() == "PUBLIC"
+            entries.append(
+                GrantEntry(
+                    principal=name,
+                    privilege=privilege.privilege,
+                    grantor=privilege.grantor,
+                    grantable=privilege.grantable,
+                    public=public,
+                )
+            )
+            if not public:
+                holders.setdefault(name, []).append(privilege)
+        entries += self._inherited_grants(holders)
+        return sorted(
+            entries,
+            key=lambda e: (
+                e.public, e.principal.lower(), e.via, e.privilege
+            ),
+        )
+
+    def _inherited_grants(
+        self, holders: dict[str, list[PrivilegeInfo]]
+    ) -> list[GrantEntry]:
+        """The same grants again, once per account that inherits them
+        through one of the roles they were made to."""
+        if not holders or not self.CAPABILITIES.roles:
+            return []
+        entries = []
+        for account in self.list_principals():
+            label = account.name
+            for role in self.role_memberships(account):
+                if role == label or role not in holders:
+                    continue
+                for privilege in holders[role]:
+                    entries.append(
+                        GrantEntry(
+                            principal=label,
+                            privilege=privilege.privilege,
+                            via=role,
+                            grantor=privilege.grantor,
+                            grantable=privilege.grantable,
+                        )
+                    )
+        return entries
+
+    def _with_permissions(
+        self, info: objects.ObjectInfo, ref: NodeRef
+    ) -> objects.ObjectInfo:
+        """`info` plus its Permissions section, where the engine has a
+        grant model and this object kind carries grants. Everywhere
+        else the descriptor is returned untouched — a section this
+        engine cannot fill is never drawn (CORE-04)."""
+        if "permissions" not in self.property_sections():
+            return info
+        if ref.kind not in self.GRANTABLE_KINDS:
+            return info
+        table = _grant_table(self.object_grants(ref), ref)
+        return replace(info, tables=[*info.tables, table])
 
     # The permission editor (CORE-10)
 

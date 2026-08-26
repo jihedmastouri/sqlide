@@ -37,6 +37,7 @@ from gi.repository import Adw, Gtk
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import registry
 from sqlide.backend.db.base import Connector, GrantScope, UserInfo
+from sqlide.backend.db.metadata import NodeRef
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend.data_grid import ResultGrid
 from sqlide.frontend.permission_editor import PermissionEditor
@@ -57,6 +58,11 @@ class UsersTab(Gtk.Box):
         self._show_error = show_error
         self._on_open_sql = on_open_sql
         self._users: list[UserInfo] = []
+        # A principal (and the object to open it on) asked for before
+        # the account list arrived — a link out of an object's
+        # Permissions section (CORE-11). Held until the list is in,
+        # because reload() pops every page above the list.
+        self._wanted: tuple[str, NodeRef | None] | None = None
         self._seq = 0  # discards privilege loads for a since-closed page
 
         self._list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
@@ -114,6 +120,7 @@ class UsersTab(Gtk.Box):
                 self._list.append(
                     Adw.ActionRow(title="No accounts reported")
                 )
+            self._open_wanted()
 
         run_async(work, done, lambda exc: self._show_error(str(exc)))
 
@@ -186,7 +193,39 @@ class UsersTab(Gtk.Box):
 
         run_async(work, done, lambda exc: self._show_error(str(exc)))
 
-    def _open_permissions(self, user: UserInfo) -> None:
+    def open_permissions_for(
+        self, principal: str, scope: NodeRef | None = None
+    ) -> None:
+        """Open the permission editor on one named principal, scoped to
+        `scope` — how a row of an object's Permissions section arrives
+        here (CORE-11).
+
+        The name comes from a catalog grant, so it is matched against
+        the accounts the server reports rather than trusted as one: a
+        MySQL grantee reads 'app'@'%', a PostgreSQL grantee is a bare
+        role name, and either may name an account that no longer
+        exists.
+        """
+        self._wanted = (principal, scope)
+        if self._users:
+            self._open_wanted()
+
+    def _open_wanted(self) -> None:
+        wanted, self._wanted = self._wanted, None
+        if wanted is None:
+            return
+        principal, scope = wanted
+        user = _match_account(self._users, principal)
+        if user is None:
+            self._show_error(
+                f"{principal} is not an account on this server any more"
+            )
+            return
+        self._open_permissions(user, scope)
+
+    def _open_permissions(
+        self, user: UserInfo, scope: NodeRef | None = None
+    ) -> None:
         """Push the permission editor for this account: the object tree
         on the left, what the account holds on the selected object on
         the right (CORE-10). It is the one screen here that runs its own
@@ -196,7 +235,11 @@ class UsersTab(Gtk.Box):
         self._nav.push(
             Adw.NavigationPage(
                 child=PermissionEditor(
-                    self.profile, user, self._ensure, self._show_error
+                    self.profile,
+                    user,
+                    self._ensure,
+                    self._show_error,
+                    scope=scope,
                 ),
                 title=f"Permissions — {_account_label(user)}",
             )
@@ -337,6 +380,23 @@ class UsersTab(Gtk.Box):
             "Build Statement",
             build,
         )
+
+
+def _match_account(users: list[UserInfo], principal: str) -> UserInfo | None:
+    """The account a grant's grantee names, or None.
+
+    A grantee is spelled the way its own dialect spells an account, so
+    "'app'@'%'", "app@%" and "app" all have to find the same row.
+    """
+    wanted = principal.strip().replace("'", "")
+    for user in users:
+        if wanted in (_account_label(user), user.name):
+            return user
+    name, _, host = wanted.partition("@")
+    for user in users:
+        if user.name == name and (not host or host in ("%", user.host)):
+            return user
+    return None
 
 
 def _account_kind(user: UserInfo) -> str:

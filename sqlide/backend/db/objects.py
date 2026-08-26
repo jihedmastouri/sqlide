@@ -524,10 +524,17 @@ PROPERTY_SECTIONS = (
     ("policies", "Policies"),
     ("dependencies", "Dependencies"),
     ("functions", "Functions"),
+    ("permissions", "Permissions"),
     ("ddl", "Definition"),
 )
 
 PROPERTY_SECTION_LABELS = dict(PROPERTY_SECTIONS)
+
+#: Sections the plain connector cannot fill: they need the metadata
+#: provider (who holds a grant is a question about accounts and role
+#: membership, not about the table). `table_properties` leaves them out
+#: and db/metadata.py appends them in display order (CORE-11).
+PROVIDER_SECTIONS = ("permissions",)
 
 #: Section slug -> the sidebar node kind its rows are, for the sections
 #: whose members are objects the tree already knows how to open
@@ -566,6 +573,8 @@ def table_properties(
             summary = _general_summary(connector, name, columns)
         elif slug == "ddl":
             ddl = _ddl(connector, name)
+        elif slug in PROVIDER_SECTIONS:
+            continue
         else:
             table = _property_table(connector, name, slug, columns)
             # Every section carries its slug, so a deep link from the

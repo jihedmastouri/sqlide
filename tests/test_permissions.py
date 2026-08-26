@@ -29,8 +29,19 @@ class FakeConnector:
     """Just enough connector for the permission layer: privileges by
     account name, plus a record of what was executed."""
 
-    def __init__(self, privileges=None, quote='"', fail_on=None) -> None:
+    def __init__(
+        self,
+        privileges=None,
+        quote='"',
+        fail_on=None,
+        object_grants=None,
+        users=None,
+    ) -> None:
         self.privileges = privileges or {}
+        self.object_grants = object_grants or {}
+        self.users = users or [
+            UserInfo(name=name) for name in sorted(self.privileges)
+        ]
         self._quote = quote
         self.executed: list[str] = []
         self.fail_on = fail_on
@@ -48,6 +59,21 @@ class FakeConnector:
 
     def list_privileges(self, user: UserInfo) -> list[PrivilegeInfo]:
         return list(self.privileges.get(user.name, []))
+
+    def __getattr__(self, name: str):
+        # The descriptor builders (db/objects.py) call the whole
+        # Connector listing surface. Anything this fake does not
+        # implement answers with an empty list, which is the same
+        # contract an adapter without that catalog keeps.
+        if name.startswith(("list_", "table_", "get_")):
+            return lambda *args, **kwargs: []
+        raise AttributeError(name)
+
+    def list_users(self) -> list[UserInfo]:
+        return list(self.users)
+
+    def list_object_grants(self, kind: str, name: str):
+        return list(self.object_grants.get((kind, name), []))
 
     def current_schema(self) -> str:
         return "public"
@@ -313,3 +339,93 @@ def test_nothing_pending_runs_nothing() -> None:
     provider = pg()
     provider.apply_permissions([])
     assert provider.connector.executed == []
+
+
+# Who holds what on one object (CORE-11)
+
+
+ORDERS = NodeRef("table", "orders", schema="public")
+
+
+def test_object_grants_name_the_principal_and_the_grantor() -> None:
+    provider = pg(object_grants={("table", "orders"): [
+        PrivilegeInfo("role app", "SELECT", grantor="postgres"),
+        PrivilegeInfo("role app", "UPDATE", grantable=True, grantor="owner"),
+    ]})
+    grants = provider.object_grants(ORDERS)
+    assert [(g.principal, g.privilege, g.source, g.grantor, g.grantable)
+            for g in grants] == [
+        ("app", "SELECT", "direct", "postgres", False),
+        ("app", "UPDATE", "direct", "owner", True),
+    ]
+
+
+def test_a_role_grant_is_reported_against_its_members_too() -> None:
+    """The inverse of the editor's rule: a member holds what the role
+    holds, and the row says which role it arrives through."""
+    provider = pg(
+        privileges={
+            "app": [PrivilegeInfo("role membership", "member of analysts")],
+            "analysts": [],
+        },
+        object_grants={("table", "orders"): [
+            PrivilegeInfo("role analysts", "SELECT"),
+        ]},
+    )
+    grants = provider.object_grants(ORDERS)
+    assert [(g.principal, g.via, g.source) for g in grants] == [
+        ("analysts", "", "direct"),
+        ("app", "analysts", "via analysts"),
+    ]
+
+
+def test_public_grants_are_one_explicit_row() -> None:
+    provider = pg(
+        privileges={"app": [], "analysts": []},
+        object_grants={("table", "orders"): [
+            PrivilegeInfo("role PUBLIC", "SELECT"),
+        ]},
+    )
+    grants = provider.object_grants(ORDERS)
+    assert len(grants) == 1
+    assert grants[0].public and grants[0].source == "everyone"
+
+
+def test_only_the_kinds_that_carry_an_acl_have_a_permissions_section() -> None:
+    provider = pg(object_grants={("index", "orders_pkey"): [
+        PrivilegeInfo("role app", "SELECT"),
+    ]})
+    assert provider.object_grants(NodeRef("index", "orders_pkey")) == []
+
+
+def test_sqlite_reports_no_object_grants() -> None:
+    provider = SqliteMetadata(FakeConnector())
+    assert provider.object_grants(NodeRef("table", "notes")) == []
+    assert "permissions" not in provider.property_sections()
+
+
+def test_the_permissions_section_links_into_the_editor() -> None:
+    """Each row opens that principal in the CORE-10 editor, scoped to
+    the object the section belongs to; a PUBLIC row opens nothing."""
+    provider = pg(object_grants={("table", "orders"): [
+        PrivilegeInfo("role app", "SELECT"),
+        PrivilegeInfo("role PUBLIC", "SELECT"),
+    ]})
+    info = provider.table_properties(ORDERS)
+    section = next(t for t in info.tables if t.slug == "permissions")
+    assert section.columns[:3] == ["Principal", "Privilege", "Source"]
+    assert [row[0] for row in section.rows] == ["app", "PUBLIC"]
+    link = section.link(0)
+    assert link.kind == "principal" and link.name == "app"
+    assert link.table == "orders" and link.category == "table"
+    assert section.link(1) is None
+
+
+def test_mysql_reports_no_grantor_but_still_names_the_grantee() -> None:
+    """MySQL's catalog has no GRANTOR column, so the column is empty
+    rather than invented."""
+    provider = my(object_grants={("table", "orders"): [
+        PrivilegeInfo("user 'app'@'%'", "SELECT"),
+    ]})
+    grants = provider.object_grants(NodeRef("table", "orders", database="sales"))
+    assert [(g.principal, g.grantor) for g in grants] == [("'app'@'%'", "")]

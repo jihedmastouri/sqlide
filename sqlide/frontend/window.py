@@ -5,6 +5,11 @@ only this workspace's connections; other workspaces are reached
 through its menu button (Workspaces…). This window owns its cache
 of open connectors. ensure_connector() is the blocking accessor handed
 to child widgets; they must only call it from run_async worker threads.
+Disconnect on a connection's sidebar menu closes one again (asking
+first if a query is still running): the tree row folds up and forgets
+its schema, while tabs on it stay open behind a banner offering
+Reconnect — the next call through ensure_connector would reopen the
+session anyway, so nothing in them breaks.
 
 Open tabs are part of the workspace: they are restored on open and
 saved back to the workspace file whenever they change and when the
@@ -76,6 +81,7 @@ from sqlide.backend.workspaces import HistoryEntry, Workspace
 from sqlide.frontend.cli_console import CliConsole
 from sqlide.frontend.connection_dialog import ConnectionDialog
 from sqlide.frontend.data_grid import ResultGrid, TableTab
+from sqlide.frontend import feedback
 from sqlide.frontend.definition_tab import DefinitionTab, FunctionTab
 from sqlide.frontend.indexes_tab import IndexesTab
 from sqlide.frontend import identity as identity_ui
@@ -265,6 +271,9 @@ class MainWindow(Adw.ApplicationWindow):
         self._store = self.get_application().workspace_store
         self._connectors: dict[str, Connector] = {}
         self._connectors_lock = threading.Lock()
+        # Tabs left standing on a connection the user disconnected,
+        # and the banner each one grew (feedback.set_disconnected).
+        self._disconnect_banners: dict[Gtk.Widget, Adw.Banner] = {}
         self._restoring = False
         self._last_connection = ""
         self._connection_names = Gtk.StringList.new(
@@ -312,6 +321,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_mcp_server=self.open_mcp_server,
             on_open_schema=self._open_schema,
             on_edit_connection=self._edit_connection,
+            on_disconnect=self._disconnect_connection,
             on_remove_connection=self._remove_connection,
             on_add_connection=self._add_connection,
             show_error=self.show_error,
@@ -1467,6 +1477,7 @@ class MainWindow(Adw.ApplicationWindow):
                 GLib.idle_add(
                     self._sidebar.set_connected, profile.name, True
                 )
+                GLib.idle_add(self._mark_tabs_disconnected, profile.name, False)
                 GLib.idle_add(self.refresh_status_bar)
             return connector
 
@@ -1748,8 +1759,114 @@ class MainWindow(Adw.ApplicationWindow):
         # The connection is gone: the sidebar dot and the status bar
         # must say so rather than keep showing it as open.
         self._sidebar.set_connected(name, False)
+        # Whatever banner the old session left is about a connection
+        # that no longer exists in this form; the caller re-adds one if
+        # the tabs are staying (see _do_disconnect).
+        self._mark_tabs_disconnected(name, False)
         self._transaction_since.pop(name, None)
         self.refresh_status_bar()
+
+    # Disconnecting (CORE-06)
+
+    def _running_queries(self, name: str) -> int:
+        """How many open consoles have a statement in flight on this
+        connection. Closing the connection under them would abort those
+        statements, so the user is asked first."""
+        return sum(
+            1
+            for child in self._all_tab_children()
+            if getattr(child, "is_running", False)
+            and _page_connection(child) == name
+        )
+
+    def _disconnect_connection(self, profile: ConnectionProfile) -> None:
+        """The connection menu's Disconnect: close the pooled
+        connection and let the tree fold back up."""
+        if not self.is_connected(profile.name):
+            return
+        running = self._running_queries(profile.name)
+        if not running:
+            self._do_disconnect(profile)
+            return
+        plural = "query is" if running == 1 else "queries are"
+        dialog = Adw.AlertDialog(
+            heading=f"Disconnect “{profile.name}”?",
+            body=f"{running} {plural} still running on this connection. "
+            "Disconnecting cancels the run and closes the session.",
+        )
+        dialog.add_response("cancel", "Keep Connected")
+        dialog.add_response("disconnect", "Disconnect Anyway")
+        dialog.set_response_appearance(
+            "disconnect", Adw.ResponseAppearance.DESTRUCTIVE
+        )
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect(
+            "response",
+            lambda _d, response, p=profile: (
+                self._do_disconnect(p) if response == "disconnect" else None
+            ),
+        )
+        dialog.present(self)
+
+    def _do_disconnect(self, profile: ConnectionProfile) -> None:
+        name = profile.name
+        for child in self._all_tab_children():
+            if _page_connection(child) != name:
+                continue
+            cancel = getattr(child, "cancel_run", None)
+            if cancel is not None and getattr(child, "is_running", False):
+                cancel()
+        self._drop_connector(name)
+        self._sidebar.collapse_connection(name)
+        self._mark_tabs_disconnected(name, True)
+        self.show_message(f"Disconnected from {name}")
+
+    def _reconnect_connection(self, profile: ConnectionProfile) -> None:
+        """A tab's Reconnect button: open the connection again and put
+        its tree back, without anything being reopened or restarted."""
+        self._status_bar.set_job(f"Connecting to {profile.name}…")
+
+        def done(_connector) -> None:
+            self._status_bar.set_job("")
+            self._mark_tabs_disconnected(profile.name, False)
+            self._sidebar.expand_profile(profile.name)
+            self.refresh_status_bar()
+
+        def failed(exc: Exception) -> None:
+            self._status_bar.set_job("")
+            self.show_error(str(exc))
+
+        run_async(lambda: self.ensure_connector(profile), done, failed)
+
+    def _mark_tabs_disconnected(self, name: str, disconnected: bool) -> None:
+        """Give (or take away) every tab on this connection its
+        disconnected banner. The tabs stay exactly as they are: nothing
+        is closed, nothing is cleared and nothing throws — the next
+        thing any of them asks the backend for reconnects."""
+        profile = self.workspace.find_connection(name)
+        title = (
+            f"Disconnected from “{name}”." if disconnected and profile else ""
+        )
+        for child in self._all_tab_children():
+            if _page_connection(child) != name:
+                continue
+            if not isinstance(child, Gtk.Box):
+                continue
+            feedback.set_disconnected(
+                child,
+                self._disconnect_banners,
+                title,
+                lambda p=profile: self._reconnect_connection(p),
+            )
+
+    def _all_tab_children(self) -> list[Gtk.Widget]:
+        """Every open tab's content widget, across panes and pop-outs."""
+        children = []
+        for pane in self._all_panes():
+            for i in range(pane.view.get_n_pages()):
+                children.append(pane.view.get_nth_page(i).get_child())
+        return children
 
     def _edit_connection(self, profile: ConnectionProfile) -> None:
         ConnectionDialog(

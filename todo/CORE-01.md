@@ -1,6 +1,6 @@
 ## CORE-01 — Object info view: every sidebar node opens something
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** —
 - **Blocks:** CORE-04, PG-02, MY-01, SQ-01
 
@@ -32,15 +32,15 @@ from whatever the catalog query returned, never a blank screen or an error.
 
 ### Acceptance criteria
 
-- [ ] Single-click selects a node; double-click (or Enter) opens its info view.
-- [ ] Every node type present in the PG, MySQL and SQLite trees resolves to a
+- [x] Single-click selects a node; double-click (or Enter) opens its info view.
+- [x] Every node type present in the PG, MySQL and SQLite trees resolves to a
       view — verified by walking the whole tree on a sample DB per engine.
-- [ ] Group/folder nodes (e.g. "Indexes") open a list of their children with the
+- [x] Group/folder nodes (e.g. "Indexes") open a list of their children with the
       most relevant columns, and rows in that list open the child's info view.
-- [ ] Opening the same object twice focuses the existing tab instead of opening a
+- [x] Opening the same object twice focuses the existing tab instead of opening a
       duplicate.
-- [ ] DDL is copyable and matches what the server reports.
-- [ ] An object type with no specific descriptor renders the generic fallback.
+- [x] DDL is copyable and matches what the server reports.
+- [x] An object type with no specific descriptor renders the generic fallback.
 
 ### Out of scope
 

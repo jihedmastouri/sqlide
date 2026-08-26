@@ -36,11 +36,18 @@ expander arrow is hidden. A connection row also carries a + button:
 left-clicking it opens the same "New ▸" list as the context menu —
 tables, views, indexes, triggers and, where the dialect has them,
 functions, procedures and events — so creating an object never
-depends on knowing that the row has a right-click menu. Activating a table/view opens a data tab;
-activating a connection or category toggles it; clicking the caret on
-a table/view expands its columns without opening a tab. Activating a
-function or trigger (or its Edit Definition context item) opens its
-definition in an editable tab. Right-clicking a table or view opens View Data /
+depends on knowing that the row has a right-click menu.
+
+A single click selects a row; a double click (or Enter) opens it, and every kind opens something: a
+table/view opens a data tab, a function opens its definition in an
+editable tab, and everything else — categories, columns, indexes,
+triggers, events, and any kind added later — opens the read-only
+object info view (frontend/object_info.py, "Object Info" on every
+context menu). A container row expands as well as opening, so
+double-clicking a connection still reveals what is under it; clicking
+the caret expands without opening anything.
+
+Right-clicking a table or view opens View Data /
 Query Console / Table Definition; right-clicking a connection offers
 a new query console (new consoles otherwise come from the header-bar
 button), the connection's relation graph, an MCP Server tab
@@ -80,6 +87,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
 from sqlide.backend import identity
 from sqlide.backend.connections import ConnectionProfile
+from sqlide.backend.db import objects
 from sqlide.backend.db.base import Connector
 from sqlide.frontend import identity as identity_ui
 from sqlide.frontend.util import describe, run_async
@@ -172,6 +180,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self,
         ensure_connector: Callable[[ConnectionProfile], Connector],
         on_open_table: Callable[[ConnectionProfile, str], None],
+        on_open_object: Callable[..., None],  # (profile, ObjectRef, path)
         on_new_query: Callable[..., None],  # (profile, sql="")
         on_open_cli: Callable[[ConnectionProfile], None],
         on_open_definition: Callable[[ConnectionProfile, str], None],
@@ -194,6 +203,7 @@ class Sidebar(Gtk.ScrolledWindow):
         super().__init__(vexpand=True)
         self._ensure = ensure_connector
         self._on_open_table = on_open_table
+        self._on_open_object = on_open_object
         self._on_new_query = on_new_query
         self._on_open_cli = on_open_cli
         self._on_open_definition = on_open_definition
@@ -233,7 +243,6 @@ class Sidebar(Gtk.ScrolledWindow):
         )
         self._view.add_css_class("navigation-sidebar")
         self._view.add_css_class("schema-tree")
-        self._view.set_single_click_activate(True)
         self._view.connect("activate", self._on_activate)
 
         add_connection = Gtk.Button(
@@ -255,6 +264,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self._menu_node: Node | None = None
         actions = Gio.SimpleActionGroup()
         for name, callback in (
+            ("object-info", self._menu_object_info),
             ("view-data", self._menu_view_data),
             ("query-console", self._menu_query_console),
             ("cli-console", self._menu_cli_console),
@@ -627,6 +637,10 @@ class Sidebar(Gtk.ScrolledWindow):
                     store.append(Node(
                         "column", column.name,
                         detail=column.type, is_pk=column.is_pk,
+                        # Carried so the column row can open its own
+                        # info view: a column is only identifiable
+                        # together with the table it belongs to.
+                        profile=node.profile, table=node.label,
                     ))
                 if not columns:
                     store.append(Node("note", "(no columns)"))
@@ -784,6 +798,7 @@ class Sidebar(Gtk.ScrolledWindow):
         if node.kind in ("table", "view"):
             menu = Gio.Menu()
             menu.append("View Data", "schema.view-data")
+            menu.append("Object Info", "schema.object-info")
             menu.append("Query Console", "schema.query-console")
             menu.append("Table Definition", "schema.definition")
             menu.append("Query Builder", "schema.query-builder")
@@ -793,6 +808,7 @@ class Sidebar(Gtk.ScrolledWindow):
             return menu
         if node.kind == "category":
             menu = Gio.Menu()
+            menu.append("Object Info", "schema.object-info")
             menu.append("Refresh", "schema.refresh")
             if node.category in ("tables", "views") and root is not None:
                 menu.append_submenu(
@@ -803,6 +819,7 @@ class Sidebar(Gtk.ScrolledWindow):
             return menu
         if node.kind in ("connection", "database"):
             menu = Gio.Menu()
+            menu.append("Object Info", "schema.object-info")
             menu.append("New Query Console", "schema.query-console")
             menu.append("New CLI Client", "schema.cli-console")
             menu.append("Relation Graph", "schema.relation-graph")
@@ -823,6 +840,7 @@ class Sidebar(Gtk.ScrolledWindow):
             return menu
         if node.kind == "function" and node.profile is not None:
             menu = Gio.Menu()
+            menu.append("Object Info", "schema.object-info")
             menu.append("Edit Definition", "schema.edit-function")
             menu.append("Refresh", "schema.refresh")
             # SQLite lists its triggers under Functions; they drop from
@@ -832,6 +850,7 @@ class Sidebar(Gtk.ScrolledWindow):
             return menu
         if node.kind == "trigger" and node.profile is not None:
             menu = Gio.Menu()
+            menu.append("Object Info", "schema.object-info")
             menu.append("Edit Definition", "schema.edit-function")
             menu.append("Refresh", "schema.refresh")
             if can_drop:
@@ -839,9 +858,17 @@ class Sidebar(Gtk.ScrolledWindow):
             return menu
         if node.kind in ("index", "event"):
             menu = Gio.Menu()
+            menu.append("Object Info", "schema.object-info")
             menu.append("Refresh", "schema.refresh")
             if can_drop:
                 menu.append("Drop…", "schema.drop-object")
+            return menu
+        if node.kind != "note" and node.profile is not None:
+            # Anything else the tree grows — a kind this menu has never
+            # heard of — still opens its info view.
+            menu = Gio.Menu()
+            menu.append("Object Info", "schema.object-info")
+            menu.append("Refresh", "schema.refresh")
             return menu
         return None
 
@@ -911,6 +938,10 @@ class Sidebar(Gtk.ScrolledWindow):
         self._popover.set_menu_model(menu)
         self._popover.set_pointing_to(rect)
         self._popover.popup()
+
+    def _menu_object_info(self, *_args) -> None:
+        if self._menu_node is not None:
+            self.open_object_info(self._menu_node)
 
     def _menu_view_data(self, *_args) -> None:
         node = self._menu_node
@@ -1057,14 +1088,42 @@ class Sidebar(Gtk.ScrolledWindow):
             row.set_expanded(not row.get_expanded())
 
     def _on_activate(self, _view, position: int) -> None:
+        """Double-click or Enter on a row. Every kind opens something:
+        a table or view opens its data, a function opens its editable
+        definition, and everything else — categories, columns,
+        indexes, triggers, events, and any kind added later — opens the
+        read-only info view (frontend/object_info.py). An expandable
+        row also expands, so double-clicking a connection still shows
+        what is inside it."""
         row = self._view.get_model().get_item(position)
         node = row.get_item()
+        if node.kind in ("connection", "database", "category") and (
+            not row.get_expanded()
+        ):
+            row.set_expanded(True)
+        if node.kind == "note":  # "Loading…", "(none)": not an object
+            return
         if node.kind in ("table", "view"):
             self._on_open_table(node.profile, node.label)
-        elif node.kind in ("function", "trigger") and node.profile is not None:
+        elif node.kind == "function" and node.profile is not None:
             self._on_open_function(node.profile, node.label)
-        elif node.kind in ("connection", "database", "category"):
-            row.set_expanded(not row.get_expanded())
+        else:
+            self.open_object_info(node)
+
+    def open_object_info(self, node: Node) -> None:
+        """The info view for one tree row, with the path it sits at."""
+        if node.profile is None or node.kind == "note":
+            return
+        self._on_open_object(
+            node.profile,
+            objects.ObjectRef(
+                kind=node.kind,
+                name=node.label,
+                table=node.table,
+                category=node.category,
+            ),
+            _node_path(node),
+        )
 
 
 #: Separator between a connection's name and the database a derived
@@ -1179,6 +1238,19 @@ def _connection_summary(node: Node) -> str:
         )
         summary += f"\n{count} object(s)"
     return summary
+
+
+def _node_path(node: Node) -> str:
+    """Where a row sits, read back up its parents: "prod ▸ billing
+    ▸ Indexes ▸ idx_orders_user". Only rows loaded through a
+    parent have one (roots keep None), so a connection row is just its
+    own name."""
+    parts = [node.label]
+    current = node.parent
+    while current is not None:
+        parts.append(current.label)
+        current = current.parent
+    return " ▸ ".join(reversed(parts))
 
 
 def _clamp_lines(text: str, max_lines: int) -> str:

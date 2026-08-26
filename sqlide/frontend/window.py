@@ -70,7 +70,7 @@ from sqlide.frontend.util import (
 
 from sqlide.backend import identity, schemas
 from sqlide.backend.connections import ConnectionProfile
-from sqlide.backend.db import registry
+from sqlide.backend.db import objects, registry
 from sqlide.backend.db.base import Connector, ConnectorError, FilterCondition
 from sqlide.backend.workspaces import HistoryEntry, Workspace
 from sqlide.frontend.cli_console import CliConsole
@@ -82,6 +82,7 @@ from sqlide.frontend import identity as identity_ui
 from sqlide.frontend.drop_dialog import present_drop_dialog
 from sqlide.frontend.backups_tab import BackupsTab
 from sqlide.frontend.mcp_tab import McpServerTab
+from sqlide.frontend.object_info import ObjectInfoTab, tab_key
 from sqlide.frontend.query_builder import QueryBuilderTab
 from sqlide.frontend.query_console import QueryConsole
 from sqlide.frontend.relation_graph import RelationGraphTab
@@ -283,6 +284,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._sidebar = Sidebar(
             ensure_connector=self.ensure_connector,
             on_open_table=self.open_table,
+            on_open_object=self.open_object,
             on_new_query=self.new_query,
             on_open_cli=self.open_cli,
             on_open_definition=self.open_definition,
@@ -1400,6 +1402,14 @@ class MainWindow(Adw.ApplicationWindow):
                 elif tab.kind == "users":
                     if profile is not None:
                         self.open_users(profile)
+                elif tab.kind == "object":
+                    if profile is not None:
+                        self.open_object(profile, objects.ObjectRef(
+                            kind=tab.object_kind,
+                            name=tab.table,
+                            table=tab.object_owner,
+                            category=tab.object_category,
+                        ))
                 elif tab.kind == "querybuilder":
                     if profile is not None:
                         self.open_query_builder(profile, tab.table)
@@ -1909,6 +1919,38 @@ class MainWindow(Adw.ApplicationWindow):
             key,
             f"{profile.name} ▸ indexes",
             f"Indexes on {profile.name}",
+        )
+
+    def open_object(
+        self,
+        profile: ConnectionProfile,
+        ref: objects.ObjectRef,
+        path: str = "",
+    ) -> None:
+        """The read-only info view for one catalog object — any node of
+        the sidebar tree, and any row of a group listing inside one.
+
+        Deduplicated on (connection, kind, name, owning table): opening
+        the same object again focuses the tab that is already showing
+        it rather than stacking copies of one read-only screen.
+        """
+        key = tab_key(profile, ref)
+        if self._focus_tab(key):
+            return
+        tab = ObjectInfoTab(
+            profile,
+            ref,
+            self.ensure_connector,
+            self.show_error,
+            self.open_object,
+            path=path,
+        )
+        label = objects.TYPE_LABELS.get(ref.kind, "object").lower()
+        self._append_tab(
+            tab,
+            key,
+            f"{ref.name} · {label}",
+            f"{label.capitalize()} {ref.name} on {profile.name}",
         )
 
     def open_users(self, profile: ConnectionProfile) -> None:

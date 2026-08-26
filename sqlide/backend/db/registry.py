@@ -89,6 +89,12 @@ def capabilities(kind: str) -> Capabilities:
     return provider_class(kind).CAPABILITIES
 
 
+def principal_columns(kind: str) -> tuple[str, ...]:
+    """The accounts-overview columns `kind` fills (CORE-12), empty for
+    an engine with no accounts — answerable without a connection."""
+    return provider_class(kind).principal_columns()
+
+
 def hierarchy(kind: str) -> tuple[str, ...]:
     """The levels `kind` nests, outermost first."""
     return provider_class(kind).HIERARCHY

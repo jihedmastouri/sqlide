@@ -198,6 +198,12 @@ def test_postgres_reads_principals_and_object_grants(postgres) -> None:
     assert all(g.source for g in holders)
     # An index has no ACL of its own; asking is not an error.
     assert provider.list_grants(NodeRef("index", "users_pkey")) == []
+    # The overview (CORE-12): one cell per declared column, per account.
+    columns, rows = provider.principal_table()
+    assert "Superuser" in columns and rows
+    assert all(len(cells) == len(columns) for _user, cells in rows)
+    by_name = {user.name: dict(zip(columns, cells)) for user, cells in rows}
+    assert by_name["sqlide"]["Login"] == "yes"
 
 
 def test_mysql_tree_walks(mysql) -> None:
@@ -224,6 +230,12 @@ def test_mysql_reads_principals_and_object_grants(mysql) -> None:
     grants = provider.list_grants(NodeRef("table", "users"))
     assert isinstance(grants, list)  # the demo account may hold none
     assert provider.list_grants(NodeRef("trigger", "whatever")) == []
+    columns, rows = provider.principal_table()
+    assert "Host" in columns and rows
+    assert all(len(cells) == len(columns) for _user, cells in rows)
+    # Every account mysql.user reports has a host and an auth plugin.
+    hosts = [dict(zip(columns, cells))["Host"] for _user, cells in rows]
+    assert all(hosts)
 
 
 # Table properties (CORE-04): the sections an engine offers, and what

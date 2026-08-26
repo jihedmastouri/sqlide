@@ -339,28 +339,69 @@ class MysqlConnector(Connector):
         # showing that beats an empty list that reads as "no accounts".
         try:
             _, rows, _ = self._run(
-                "SELECT user, host, account_locked FROM mysql.user "
-                "ORDER BY user, host"
+                "SELECT user, host, account_locked, plugin, "
+                "password_expired, password_last_changed "
+                "FROM mysql.user ORDER BY user, host"
             )
         except ConnectorError:
             try:
                 _, rows, _ = self._run(
-                    "SELECT user, host, 'N' FROM mysql.user "
-                    "ORDER BY user, host"
+                    "SELECT user, host, 'N', '', 'N', NULL "
+                    "FROM mysql.user ORDER BY user, host"
                 )
             except ConnectorError:
                 _, rows, _ = self._run(
                     "SELECT SUBSTRING_INDEX(CURRENT_USER(), '@', 1), "
-                    "SUBSTRING_INDEX(CURRENT_USER(), '@', -1), 'N'"
+                    "SUBSTRING_INDEX(CURRENT_USER(), '@', -1), "
+                    "'N', '', 'N', NULL"
                 )
-        return [
-            UserInfo(
-                name=name,
-                host=host,
-                detail="locked" if (locked or "N") == "Y" else "",
+        roles, memberships = self._role_edges()
+        users = []
+        for name, host, locked, plugin, expired, changed in rows:
+            is_locked = (locked or "N") == "Y"
+            is_expired = (expired or "N") == "Y"
+            account = f"{name}@{host}"
+            users.append(
+                UserInfo(
+                    name=name,
+                    host=host,
+                    detail="locked" if is_locked else "",
+                    # MySQL 8 keeps roles in mysql.user like any other
+                    # account; what makes one a role is that something
+                    # was granted it (mysql.role_edges).
+                    kind="role" if account in roles else "user",
+                    can_login=not is_locked,
+                    locked=is_locked,
+                    plugin=plugin or "",
+                    password_expiry=(
+                        "expired"
+                        if is_expired
+                        else ("" if changed is None else str(changed)[:19])
+                    ),
+                    member_of=tuple(memberships.get(account, ())),
+                )
             )
-            for name, host, locked in rows
-        ]
+        return users
+
+    def _role_edges(self) -> tuple[set[str], dict[str, list[str]]]:
+        """The accounts that are used as roles, and which roles each
+        account holds. mysql.role_edges arrived in 8.0 and is
+        administrator-readable, so a server or a login without it
+        costs these two columns and nothing else."""
+        try:
+            _, rows, _ = self._run(
+                "SELECT from_user, from_host, to_user, to_host "
+                "FROM mysql.role_edges"
+            )
+        except ConnectorError:
+            return set(), {}
+        roles: set[str] = set()
+        memberships: dict[str, list[str]] = {}
+        for from_user, from_host, to_user, to_host in rows:
+            role = f"{from_user}@{from_host}"
+            roles.add(role)
+            memberships.setdefault(f"{to_user}@{to_host}", []).append(role)
+        return roles, memberships
 
     def list_privileges(self, user: UserInfo) -> list[PrivilegeInfo]:
         # The information_schema privilege views name their grantee in

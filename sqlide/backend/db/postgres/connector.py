@@ -384,11 +384,16 @@ class PostgresConnector(Connector):
         """
         _, rows, _ = self._run(
             "SELECT rolname, rolcanlogin, rolsuper, rolcreatedb, "
-            "rolcreaterole, rolreplication FROM pg_roles "
+            "rolcreaterole, rolreplication, rolvaliduntil, rolconnlimit "
+            "FROM pg_roles "
             "WHERE rolname NOT LIKE 'pg\\_%' ORDER BY rolname"
         )
+        memberships = self._role_memberships()
         users = []
-        for name, login, super_, createdb, createrole, replication in rows:
+        for (
+            name, login, super_, createdb, createrole, replication,
+            valid_until, connlimit,
+        ) in rows:
             flags = [
                 label
                 for flag, label in (
@@ -405,9 +410,43 @@ class PostgresConnector(Connector):
                     name=name,
                     detail=", ".join(flags),
                     can_login=bool(login),
+                    # A role that cannot log in is what PostgreSQL
+                    # calls a group: the only difference between the
+                    # two is the LOGIN attribute.
+                    kind="user" if login else "group",
+                    superuser=bool(super_),
+                    create_db=bool(createdb),
+                    create_role=bool(createrole),
+                    member_of=tuple(memberships.get(name, ())),
+                    valid_until=(
+                        "" if valid_until is None else str(valid_until)[:19]
+                    ),
+                    connection_limit=(
+                        "" if connlimit is None else str(connlimit)
+                    ),
                 )
             )
         return users
+
+    def _role_memberships(self) -> dict[str, list[str]]:
+        """Which roles each role is a member of. Its own query rather
+        than a join on the listing: a cluster that will not let this
+        connection read pg_auth_members should still get its account
+        list, one column short."""
+        try:
+            _, rows, _ = self._run(
+                "SELECT m.rolname, g.rolname FROM pg_auth_members am "
+                "JOIN pg_roles m ON m.oid = am.member "
+                "JOIN pg_roles g ON g.oid = am.roleid "
+                "WHERE g.rolname NOT LIKE 'pg\\_%' "
+                "ORDER BY m.rolname, g.rolname"
+            )
+        except ConnectorError:
+            return {}
+        memberships: dict[str, list[str]] = {}
+        for member, group in rows:
+            memberships.setdefault(member, []).append(group)
+        return memberships
 
     def list_privileges(self, user: UserInfo) -> list[PrivilegeInfo]:
         """Role attributes, memberships, and the ACL entries granted to

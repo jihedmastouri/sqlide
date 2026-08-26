@@ -23,6 +23,13 @@ from sqlide.backend.db.metadata import (
 
 class MysqlMetadata(MetadataProvider):
     HIERARCHY = ("connection", "database", "object")
+    #: An account here is 'name'@'host', so the host is a column of its
+    #: own; the rest is what mysql.user records. Roles (8.0) are
+    #: accounts too, and appear in the same table with type "role".
+    PRINCIPAL_COLUMNS = (
+        "Name", "Host", "Type", "Login", "Locked", "Plugin",
+        "Password expiry", "Member of",
+    )
     CAPABILITIES = Capabilities(
         databases=True,
         procedures=True,

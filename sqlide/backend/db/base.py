@@ -267,6 +267,17 @@ class Connector(ABC):
         """
         return []
 
+    def list_tables_in(self, schema: str) -> list[TableInfo]:
+        """Tables and views of one schema, sorted by name.
+
+        Concrete default (not abstract): where a schema is not a level
+        of its own — SQLite, MySQL, JDBC — there is only one list to
+        give and the argument is redundant. Adapters with schemas
+        override it, and the metadata provider (db/metadata.py) uses
+        it to fill a schema node.
+        """
+        return self.list_tables()
+
     def list_schemas(self) -> list[str]:
         """Schemas inside the connected database, sorted by name, for
         the console's schema switcher.
@@ -351,6 +362,22 @@ class Connector(ABC):
         """Everything `user` is allowed to do, as the catalog reports
         it — server-wide rights, per-database and per-table grants, and
         role memberships where the dialect has them."""
+        return []
+
+    def list_object_grants(self, kind: str, name: str) -> list[PrivilegeInfo]:
+        """Every privilege recorded on one object, with the account it
+        was granted to named in `scope` ("role analyst", "user
+        'app'@'%'"). The mirror image of list_privileges(), which
+        starts from an account instead.
+
+        `name` comes from the catalog, but it goes into the query as a
+        parameter all the same — a catalog is not a promise about what
+        an object is called (see docs/architecture.md).
+
+        Concrete default (not abstract): an adapter with no privilege
+        system — SQLite — reports none and declares the `grants`
+        capability off (db/metadata.py).
+        """
         return []
 
     def grant_scopes(self) -> list[GrantScope]:

@@ -238,3 +238,12 @@ entry.cli-entry {
 .font-stepper-value {
   font-weight: bold;
 }
+
+/* The properties section a sidebar deep link asked for (CORE-05):
+   scrolled into view and marked, so "Indexes" is visibly the answer
+   to what was clicked rather than one heading among ten. */
+.section-target {
+  border-left: 3px solid @accent_color;
+  padding-left: 9px;
+  margin-left: -12px;
+}

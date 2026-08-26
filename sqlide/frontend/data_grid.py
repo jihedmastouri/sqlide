@@ -1691,6 +1691,22 @@ class TableTab(Gtk.Box):
         self._stack.set_visible_child_name("properties")
         self._properties.ensure_loaded()
 
+    def show_properties(self, section: str = "") -> None:
+        """Switch this tab to Properties, optionally on one section.
+
+        This is where a sidebar deep link lands (CORE-05): *Tables →
+        orders → Indexes* opens (or reuses) the orders tab, flips it to
+        Properties and scrolls to Indexes. The grid keeps everything it
+        had, exactly as the toggle would leave it.
+        """
+        self._properties_toggle.set_active(True)
+        # The toggle's handler does the switch; do it here too so a
+        # deep link into a tab already showing Properties still works.
+        self._stack.set_visible_child_name("properties")
+        self._properties.ensure_loaded()
+        if section:
+            self._properties.select_section(section)
+
     def status_context(self) -> str:
         """This tab's line in the window's status bar: what is loaded
         and how much of it."""

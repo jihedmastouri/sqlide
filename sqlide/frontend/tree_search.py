@@ -37,9 +37,10 @@ SCOPE_KEYS: tuple[str, ...] = tuple(key for key, _label, _kinds in SCOPES)
 
 _KINDS_BY_SCOPE = {key: kinds for key, _label, kinds in SCOPES}
 
-# Never a search hit of its own: placeholders and grouping rows carry
-# no object behind them.
-_UNSEARCHABLE = ("note", "category")
+# Never a search hit of its own: placeholders and grouping rows —
+# categories, and the property sections under a table — carry no object
+# behind them.
+_UNSEARCHABLE = ("note", "category", "section")
 
 
 def scope_label(scopes: frozenset[str]) -> str:

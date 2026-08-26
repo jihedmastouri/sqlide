@@ -298,6 +298,7 @@ class MainWindow(Adw.ApplicationWindow):
             ensure_connector=self.ensure_connector,
             on_open_table=self.open_table,
             on_open_object=self.open_object,
+            on_open_section=self.open_table_section,
             on_new_query=self.new_query,
             on_open_cli=self.open_cli,
             on_open_definition=self.open_definition,
@@ -1837,6 +1838,15 @@ class MainWindow(Adw.ApplicationWindow):
                 return True
         return False
 
+    def _tab_for(self, key: tuple) -> Gtk.Widget | None:
+        """The open tab with this key, in any pane or pop-out."""
+        for pane in self._all_panes():
+            for i in range(pane.view.get_n_pages()):
+                child = pane.view.get_nth_page(i).get_child()
+                if getattr(child, "tab_key", None) == key:
+                    return child
+        return None
+
     def _append_tab(
         self,
         tab: Gtk.Widget,
@@ -1882,10 +1892,16 @@ class MainWindow(Adw.ApplicationWindow):
         self._active_pane.view.transfer_page(page, window.pane.view, 0)
         return page
 
-    def open_table(self, profile: ConnectionProfile, table: str) -> None:
+    def open_table(
+        self, profile: ConnectionProfile, table: str
+    ) -> TableTab | None:
+        """Open (or focus) the tab showing one table's data, and return
+        it — deep links (CORE-05) then switch it to a section."""
         key = ("table", profile.name, table)
-        if self._focus_tab(key):
-            return
+        existing = self._tab_for(key)
+        if existing is not None:
+            self._focus_tab(key)
+            return existing
         tab = TableTab(
             profile,
             table,
@@ -1905,6 +1921,20 @@ class MainWindow(Adw.ApplicationWindow):
         tab.on_ran = lambda sql, ok: self._query_ran(
             page.get_title(), sql, profile.name, ok
         )
+        return tab
+
+    def open_table_section(
+        self, profile: ConnectionProfile, table: str, section: str
+    ) -> None:
+        """A sidebar row under a table — Indexes, Constraints, Columns
+        — opens that table's Properties view on that section (CORE-05).
+
+        The table tab is reused where it is already open, so the deep
+        link never costs a second copy of the grid.
+        """
+        tab = self.open_table(profile, table)
+        if tab is not None:
+            tab.show_properties(section)
 
     def open_definition(self, profile: ConnectionProfile, table: str) -> None:
         key = ("definition", profile.name, table)

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from gi.repository import Adw, Gio, GObject, Gtk, Pango
+from gi.repository import Adw, Gio, GLib, GObject, Graphene, Gtk, Pango
 
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import objects, registry
@@ -81,6 +81,12 @@ class InfoBody(Gtk.ScrolledWindow):
         super().__init__(vexpand=True)
         self._on_open_link = on_open_link
         self._summary_title = summary_title
+        # slug -> the group widget it was drawn as, so a deep link can
+        # scroll to a named section (CORE-05); `_wanted` remembers a
+        # link that arrived while the catalog read was still running.
+        self._sections: dict[str, Gtk.Widget] = {}
+        self._wanted = ""
+        self._selected: Gtk.Widget | None = None
         self.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self._box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
@@ -97,6 +103,8 @@ class InfoBody(Gtk.ScrolledWindow):
     ) -> None:
         while child := self._box.get_first_child():
             self._box.remove(child)
+        self._sections.clear()
+        self._selected = None
         if header is not None:
             self._box.append(header)
         if info.note:
@@ -104,13 +112,57 @@ class InfoBody(Gtk.ScrolledWindow):
             note.add_css_class("dim-label")
             self._box.append(note)
         if info.summary:
-            self._box.append(
-                _summary_group(info.summary, self._summary_title)
-            )
+            group = _summary_group(info.summary, self._summary_title)
+            self._sections["general"] = group
+            self._box.append(group)
         for table in info.tables:
-            self._box.append(self._detail_group(table))
+            group = self._detail_group(table)
+            if table.slug:
+                self._sections[table.slug] = group
+            self._box.append(group)
         if info.ddl:
-            self._box.append(self._ddl_group(info.ddl))
+            group = self._ddl_group(info.ddl)
+            self._sections["ddl"] = group
+            self._box.append(group)
+        if self._wanted:
+            self.select_section(self._wanted)
+
+    def select_section(self, slug: str) -> None:
+        """Scroll one section into view and mark it as the one that was
+        asked for (CORE-05).
+
+        Called before the descriptor has been read as well as after, so
+        an unknown slug is remembered rather than dropped: the next
+        render applies it.
+        """
+        self._wanted = slug
+        group = self._sections.get(slug)
+        if group is None:
+            return
+        self._wanted = ""
+        if self._selected is not None:
+            self._selected.remove_css_class("section-target")
+        self._selected = group
+        group.add_css_class("section-target")
+        # The group may not be allocated yet on the frame it was
+        # appended in; scrolling on idle gives it its position first.
+        GLib.idle_add(self._scroll_to, group)
+
+    def _scroll_to(self, group: Gtk.Widget) -> bool:
+        if group.get_parent() is not self._box:  # re-rendered meanwhile
+            return False
+        ok, position = group.compute_point(
+            self._box, Graphene.Point().init(0, 0)
+        )
+        if not ok:
+            return False
+        adjustment = self.get_vadjustment()
+        top = max(0.0, position.y + self._box.get_margin_top() - 12)
+        adjustment.set_value(
+            min(top, max(0.0, adjustment.get_upper()
+                         - adjustment.get_page_size()))
+        )
+        return False
 
     def show_message(self, text: str) -> None:
         """A one-line body — "loading…", or why there is nothing."""
@@ -398,6 +450,11 @@ class TablePropertiesView(Gtk.Box):
     def _failed(self, exc: Exception) -> None:
         self._body.show_message(str(exc))
         self._show_error(str(exc))
+
+    def select_section(self, slug: str) -> None:
+        """Show one named section (CORE-05): the sidebar's Indexes row
+        under a table lands here, on this table's Indexes."""
+        self._body.select_section(slug)
 
     def _open_link(self, ref: objects.ObjectRef) -> None:
         if self._on_open_object is not None:

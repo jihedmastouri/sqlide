@@ -228,6 +228,7 @@ class Sidebar(Gtk.ScrolledWindow):
         on_manage_users: Callable[[ConnectionProfile], None],
         on_open_schema: Callable[[ConnectionProfile], None],
         on_edit_connection: Callable[[ConnectionProfile], None],
+        on_disconnect: Callable[[ConnectionProfile], None],
         on_remove_connection: Callable[[ConnectionProfile], None],
         on_add_connection: Callable[[], None],
         show_error: Callable[[str], None],
@@ -250,6 +251,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_manage_users = on_manage_users
         self._on_open_schema = on_open_schema
         self._on_edit_connection = on_edit_connection
+        self._on_disconnect = on_disconnect
         self._on_remove_connection = on_remove_connection
         self._show_error = show_error
         # Currently bound status dot per connection name, so
@@ -299,7 +301,7 @@ class Sidebar(Gtk.ScrolledWindow):
 
         # Context menu (right-click on a table/view or connection row).
         self._menu_node: Node | None = None
-        actions = Gio.SimpleActionGroup()
+        self._actions = actions = Gio.SimpleActionGroup()
         for name, callback in (
             ("object-info", self._menu_object_info),
             ("view-data", self._menu_view_data),
@@ -317,6 +319,7 @@ class Sidebar(Gtk.ScrolledWindow):
             ("manage-users", self._menu_manage_users),
             ("open-schema", self._menu_open_schema),
             ("edit-connection", self._menu_edit_connection),
+            ("disconnect", self._menu_disconnect),
             ("remove-connection", self._menu_remove_connection),
         ):
             action = Gio.SimpleAction.new(name, None)
@@ -1001,6 +1004,9 @@ class Sidebar(Gtk.ScrolledWindow):
                 # database row is a view onto the same server.
                 menu.append("Users & Permissions…", "schema.manage-users")
                 menu.append("Edit…", "schema.edit-connection")
+                # Always listed, so the menu keeps its shape; only live
+                # while the connection actually has something open.
+                menu.append("Disconnect", "schema.disconnect")
                 menu.append("Remove…", "schema.remove-connection")
             return menu
         if node.kind == "function" and node.profile is not None:
@@ -1048,7 +1054,7 @@ class Sidebar(Gtk.ScrolledWindow):
         if menu is None:
             return
         gesture.set_state(Gtk.EventSequenceState.CLAIMED)
-        self._menu_node = node
+        self.set_menu_node(node)
         self._popover.set_menu_model(menu)
         ok, bounds = gesture.get_widget().compute_bounds(self._view)
         rect = Gdk.Rectangle()
@@ -1194,6 +1200,40 @@ class Sidebar(Gtk.ScrolledWindow):
         node = self._menu_node
         if node is not None and node.profile is not None:
             self._on_open_schema(node.profile)
+
+    def set_menu_node(self, node: Node) -> None:
+        """Point the menu actions at the row that was right-clicked,
+        and re-derive the enabled ones from its state: Disconnect only
+        means anything while the connection is open."""
+        self._menu_node = node
+        disconnect = self._actions.lookup_action("disconnect")
+        if disconnect is not None:
+            disconnect.set_enabled(
+                node.kind == "connection" and bool(node.connected)
+            )
+
+    def collapse_connection(self, name: str) -> None:
+        """Fold a connection row back up and forget the schema it
+        cached: what the tree showed came from a session that is now
+        closed, and expanding again reconnects and refetches it."""
+        for i in range(self._roots.get_n_items()):
+            node = self._roots.get_item(i)
+            if node.label != name:
+                continue
+            node.loaded = False
+            node.loading = False
+            node.ddl_kinds = ()
+            if node.store is not None:
+                node.store.remove_all()
+            row = self._tree.get_child_row(i)
+            if row is not None:
+                row.set_expanded(False)
+            return
+
+    def _menu_disconnect(self, *_args) -> None:
+        node = self._menu_node
+        if node is not None and node.profile is not None:
+            self._on_disconnect(node.profile)
 
     def _menu_edit_connection(self, *_args) -> None:
         node = self._menu_node

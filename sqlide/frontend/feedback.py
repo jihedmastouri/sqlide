@@ -127,3 +127,34 @@ def message_page(text: str) -> Gtk.Widget:
     )
     label.add_css_class("dim-label")
     return label
+
+
+def set_disconnected(
+    tab: Gtk.Box,
+    banners: dict[Gtk.Widget, Adw.Banner],
+    title: str,
+    on_reconnect: Callable[[], None],
+) -> None:
+    """A tab whose connection was closed under it: a banner at the top
+    of the tab saying so, with the way back on it.
+
+    The tab itself is left alone — its rows, its SQL and its scroll
+    position are all still there, and nothing in it throws, because
+    every backend call goes through ensure_connector and would simply
+    reconnect. `banners` is the caller's registry of the banners it has
+    added, keyed by tab, so the same call clears one (title "") without
+    the tab needing to know it ever had one.
+    """
+    banner = banners.get(tab)
+    if not title:
+        if banner is not None:
+            tab.remove(banner)
+            del banners[tab]
+        return
+    if banner is None:
+        banner = condition_banner(
+            title, button_label="Reconnect", on_click=on_reconnect
+        )
+        tab.prepend(banner)
+        banners[tab] = banner
+    set_condition(banner, title)

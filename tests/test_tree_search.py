@@ -106,6 +106,7 @@ def sidebar():
         on_manage_users=unused,
         on_open_schema=unused,
         on_edit_connection=unused,
+        on_disconnect=unused,
         on_remove_connection=unused,
         on_add_connection=unused,
         show_error=unused,

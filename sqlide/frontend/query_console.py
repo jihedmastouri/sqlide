@@ -827,6 +827,17 @@ class QueryConsole(Gtk.Box):
     # buttons and the "is a run in flight" answer are derived from one
     # place instead of being re-set at four call sites.
 
+    @property
+    def is_running(self) -> bool:
+        """Is a statement in flight on this console? Read by the window
+        before it closes a connection under a tab."""
+        return self._state != "idle"
+
+    def cancel_run(self) -> None:
+        """Public Cancel: the button's, and the window's when the user
+        forces a disconnect with a query still running."""
+        self._cancel()
+
     def _enter_running(self) -> None:
         self._state = "running"
         for button in (

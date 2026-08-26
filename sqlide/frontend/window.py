@@ -106,7 +106,7 @@ from sqlide.frontend.query_console import QueryConsole
 from sqlide.frontend.relation_graph import RelationGraphTab
 from sqlide.frontend.side_panel import SidePanel
 from sqlide.frontend import tree_search
-from sqlide.frontend.sidebar import Sidebar
+from sqlide.frontend.sidebar import Sidebar, schema_profile
 from sqlide.frontend.status_bar import StatusBar
 from sqlide.frontend.table_designer import TableDesignerTab
 from sqlide.frontend.monitor_tab import MonitorTab
@@ -132,6 +132,19 @@ _SIDE_PANEL_MIN_WIDTH = 260
 # refiltering the tree: long enough that a fast typist rebuilds it once,
 # short enough to feel immediate.
 _SEARCH_DEBOUNCE_MS = 180
+
+
+def _qualified(profile: ConnectionProfile, name: str) -> str:
+    """`name` as this connection addresses it.
+
+    A profile that pins a schema (PG-01) is a profile whose objects
+    live in that schema, and `orders` alone does not say which of the
+    `orders` tables in the database a tab is showing — so the title and
+    the tooltip carry the schema. Where nothing is pinned — MySQL,
+    SQLite, or a PostgreSQL connection left on the server's own search
+    path — the name is unchanged and no phantom prefix appears.
+    """
+    return f"{profile.schema}.{name}" if profile.schema else name
 
 
 def _page_connection(child: Gtk.Widget | None) -> str:
@@ -2250,8 +2263,9 @@ class MainWindow(Adw.ApplicationWindow):
         page = self._append_tab(
             tab,
             key,
-            f"{profile.name} ▸ {table}",
-            f"{table} on {profile.name} ({profile.kind})",
+            f"{profile.name} ▸ {_qualified(profile, table)}",
+            f"{_qualified(profile, table)} on {profile.name} "
+            f"({profile.kind})",
         )
         # Bound after the page exists so grid loads (select, filter,
         # sort, paging) land in history under the tab's panel name.
@@ -2283,8 +2297,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._append_tab(
             tab,
             key,
-            f"{table} · definition",
-            f"Definition of {table} on {profile.name}",
+            f"{_qualified(profile, table)} · definition",
+            f"Definition of {_qualified(profile, table)} on {profile.name}",
         )
 
     def open_function(self, profile: ConnectionProfile, name: str) -> None:
@@ -2297,8 +2311,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._append_tab(
             tab,
             key,
-            f"{name} · function",
-            f"Definition of {name} on {profile.name}",
+            f"{_qualified(profile, name)} · function",
+            f"Definition of {_qualified(profile, name)} on {profile.name}",
         )
 
     def _new_query_builder(self, *_args) -> None:
@@ -2448,6 +2462,13 @@ class MainWindow(Adw.ApplicationWindow):
         if ref.kind == "principal":
             self.open_principal_permissions(profile, ref)
             return
+        if ref.schema and ref.schema != profile.schema:
+            # A link out of the schema being viewed — a foreign key
+            # into another one (PG-01). Following it on this connection
+            # would resolve the bare name against the search path and
+            # land on the wrong object, or on none, so the tab opens
+            # through a connection pinned to the schema the link names.
+            profile = schema_profile(profile, ref.schema)
         key = tab_key(profile, ref)
         if self._focus_tab(key):
             return

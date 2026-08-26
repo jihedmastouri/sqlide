@@ -633,6 +633,81 @@ class PostgresConnector(Connector):
         _, rows, _ = self._run("SELECT current_schema()")
         return (rows[0][0] or "") if rows else ""
 
+    def search_path(self) -> str:
+        """The effective search path, as the server resolves it right
+        now: `current_schemas(true)` rather than the raw `search_path`
+        setting, so `"$user"` is already expanded to the schema it
+        actually found (or dropped, where there is none) and the
+        implicit pg_catalog is shown for what it is.
+
+        The console prints this next to its schema picker: "the schema
+        an unqualified name lands in" is not a guess anyone should have
+        to make (PG-01).
+        """
+        _, rows, _ = self._run(
+            "SELECT array_to_string(current_schemas(true), ', ')"
+        )
+        return (rows[0][0] or "") if rows else ""
+
+    def set_search_path(self, schema: str) -> None:
+        """Put `schema` at the front of the search path for the rest of
+        this session, so unqualified names — in the console, in the
+        catalog queries here, in generated DDL — resolve there.
+
+        An empty `schema` restores the server's default rather than
+        setting an empty path, which would leave the session unable to
+        resolve any bare name at all.
+        """
+        if not schema:
+            self.execute("SET search_path TO DEFAULT")
+            self.schema = ""
+            return
+        _, rows, _ = self._run(
+            "SELECT 1 FROM pg_namespace WHERE nspname = %s", (schema,)
+        )
+        if not rows:
+            raise ConnectorError(
+                f"No schema named {schema!r} in database {self.database!r}"
+            )
+        self.execute(f"SET search_path TO {self.quote_ident(schema)}")
+        self.schema = schema
+
+    def list_references(self, table: str) -> list[RelationInfo]:
+        """Foreign keys pointing *at* `table`, from anywhere in the
+        database.
+
+        Not the inherited implementation, which filters list_relations()
+        and so only ever sees the schemas on the search path: a table is
+        just as depended-on by a schema nobody put on the path, and
+        "nothing references this table" would be a wrong answer rather
+        than an empty one (PG-01).
+        """
+        _, rows, _ = self._run(
+            "SELECT sn.nspname, s.relname, sa.attname, "
+            "tn.nspname, t.relname, ta.attname "
+            "FROM pg_constraint c "
+            "JOIN pg_class t ON t.oid = c.confrelid "
+            "JOIN pg_namespace tn ON tn.oid = t.relnamespace "
+            "JOIN pg_class s ON s.oid = c.conrelid "
+            "JOIN pg_namespace sn ON sn.oid = s.relnamespace "
+            "JOIN unnest(c.conkey, c.confkey) AS k(src, ref) ON true "
+            "JOIN pg_attribute sa "
+            "ON sa.attrelid = c.conrelid AND sa.attnum = k.src "
+            "JOIN pg_attribute ta "
+            "ON ta.attrelid = c.confrelid AND ta.attnum = k.ref "
+            "WHERE c.contype = 'f' AND c.confrelid = to_regclass(%s) "
+            "ORDER BY sn.nspname, s.relname, sa.attname",
+            (self._relation_ref(table),),
+        )
+        return [
+            RelationInfo(
+                table=name, column=column,
+                ref_table=ref_name, ref_column=ref_column or "",
+                schema=schema or "", ref_schema=ref_schema or "",
+            )
+            for schema, name, column, ref_schema, ref_name, ref_column in rows
+        ]
+
     def list_tables(self) -> list[TableInfo]:
         # relkind: r ordinary table, p partitioned table, v view,
         # m materialized view, f foreign table.
@@ -703,8 +778,18 @@ class PostgresConnector(Connector):
         return [FunctionInfo(name=name) for (name,) in rows]
 
     def list_relations(self) -> list[RelationInfo]:
+        """Every foreign key on the search path, both ends named with
+        the schema they live in (PG-01).
+
+        A key may point out of its own schema — `sales.orders` into
+        `crm.customers` — and a row that says only "customers" is a row
+        that cannot be followed: there may be a `customers` in three
+        schemas. The schemas travel with the relation and the view
+        qualifies the ones that cross (RelationInfo.target).
+        """
         _, rows, _ = self._run(
-            "SELECT tc.table_name, kcu.column_name, "
+            "SELECT tc.table_schema, tc.table_name, kcu.column_name, "
+            "ccu.table_schema AS ref_schema, "
             "ccu.table_name AS ref_table, ccu.column_name AS ref_column "
             "FROM information_schema.table_constraints tc "
             "JOIN information_schema.key_column_usage kcu "
@@ -715,14 +800,16 @@ class PostgresConnector(Connector):
             "AND ccu.constraint_schema = tc.constraint_schema "
             "WHERE tc.constraint_type = 'FOREIGN KEY' "
             f"AND tc.table_schema IN ({_USER_SCHEMAS}) "
-            "ORDER BY tc.table_name, kcu.column_name"
+            "ORDER BY tc.table_schema, tc.table_name, kcu.column_name"
         )
         return [
             RelationInfo(
                 table=table, column=column,
                 ref_table=ref_table, ref_column=ref_column or "",
+                schema=schema or "", ref_schema=ref_schema or "",
             )
-            for table, column, ref_table, ref_column in rows
+            for schema, table, column, ref_schema, ref_table, ref_column
+            in rows
         ]
 
     # Table properties (CORE-04). Every lookup goes through

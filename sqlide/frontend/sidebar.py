@@ -24,6 +24,21 @@ profile copy named "connection · database", which is also what a query
 console's database dropdown builds, so the two share a connector); the
 current database's row reuses the connection's own profile.
 
+Where the engine has schemas as a level of their own — PostgreSQL, and
+whatever else declares the `schemas` capability (PG-01) — one more
+level appears between the two, and the categories hang off a schema:
+
+    connection → database → schema → Tables / Views / … → object
+
+The level is the provider's answer, not a name check: MySQL calls a
+schema a database and SQLite has neither, so on those the tree keeps
+exactly the shape above and no phantom level appears. A schema row
+loads through its own derived profile too (schema_profile — a copy
+named "connection · database · schema" with `schema` pinned, which is
+what the console's schema dropdown builds), so the connection behind
+it has that schema on its search path and every listing under the row
+is that schema's, resolved rather than guessed.
+
 Accounts stay out of the tree: they are not schema objects, and a
 category of them under every connection buries the tables people came
 for. "Users & Permissions…" on the connection menu opens them in a tab
@@ -111,7 +126,8 @@ from sqlide.frontend import tree_search
 from sqlide.frontend.util import describe, run_async
 
 _EXPANDABLE = (
-    "connection", "database", "category", "table", "view", "section",
+    "connection", "database", "schema", "category", "table", "view",
+    "section",
 )
 
 # Leading icon per row kind; kinds not listed (category, column, note)
@@ -119,6 +135,7 @@ _EXPANDABLE = (
 _KIND_ICONS = {
     "connection": "network-server-symbolic",
     "database": "drive-multidisk-symbolic",
+    "schema": "folder-symbolic",
     "table": "view-grid-symbolic",
     "view": "view-reveal-symbolic",
     "function": "system-run-symbolic",
@@ -701,27 +718,47 @@ class Sidebar(Gtk.ScrolledWindow):
         store.remove_all()
         store.append(Node("note", "Loading…"))
 
-        if node.kind in ("connection", "database"):
+        if node.kind in ("connection", "database", "schema"):
             # On a server that hosts several databases the connection
             # row lists them and stops there: its children are
             # databases, and the object categories belong to each of
             # those (see the module docstring). Where list_databases()
             # comes back empty — SQLite, JDBC — one connection is one
             # database and the categories sit at the root instead.
+            #
+            # A database row on an engine with schemas stops one level
+            # short too, for the same reason: its objects belong to a
+            # schema, not to the database (PG-01). A schema row is
+            # where the categories finally hang, so it never lists
+            # either.
             root = node.kind == "connection"
+            wants_schemas = node.kind != "schema" and _has_schemas(node.profile)
 
             def work():
                 connector = self._ensure(node.profile)
                 databases = connector.list_databases() if root else []
+                schemas = (
+                    connector.list_schemas()
+                    if wants_schemas and not databases
+                    else []
+                )
+                current_schema = (
+                    connector.current_schema() if schemas else ""
+                )
                 return (
-                    [] if databases else connector.list_tables(),
+                    [] if databases or schemas else connector.list_tables(),
                     connector.ddl_kinds(),
                     connector.supports_drop,
                     databases,
+                    schemas,
+                    current_schema,
                 )
 
             def fill(loaded):
-                objects, kinds, supports_drop, databases = loaded
+                (
+                    objects, kinds, supports_drop,
+                    databases, schemas, current_schema,
+                ) = loaded
                 node.ddl_kinds = kinds
                 node.supports_drop = supports_drop
                 if databases:
@@ -731,6 +768,21 @@ class Sidebar(Gtk.ScrolledWindow):
                             "database", name,
                             detail="current" if name == current else "",
                             profile=_database_profile(node.profile, name),
+                        ))
+                    return
+                if schemas:
+                    # The one bare names already resolve in comes first
+                    # and says so: it is the schema every unqualified
+                    # reference in a console on this row will hit.
+                    for name in sorted(
+                        schemas, key=lambda n: n != current_schema
+                    ):
+                        store.append(Node(
+                            "schema", name,
+                            detail=(
+                                "current" if name == current_schema else ""
+                            ),
+                            profile=schema_profile(node.profile, name),
                         ))
                     return
                 tables = [t for t in objects if t.kind != "view"]
@@ -1010,7 +1062,7 @@ class Sidebar(Gtk.ScrolledWindow):
             if node.category == "indexes" and node.profile is not None:
                 menu.append("View All…", "schema.view-indexes")
             return menu
-        if node.kind in ("connection", "database"):
+        if node.kind in ("connection", "database", "schema"):
             menu = Gio.Menu()
             menu.append("Object Info", "schema.object-info")
             menu.append("New Query Console", "schema.query-console")
@@ -1370,9 +1422,9 @@ class Sidebar(Gtk.ScrolledWindow):
         what is inside it."""
         row = self._view.get_model().get_item(position)
         node = row.get_item()
-        if node.kind in ("connection", "database", "category") and (
-            not row.get_expanded()
-        ):
+        if node.kind in (
+            "connection", "database", "schema", "category"
+        ) and not row.get_expanded():
             row.set_expanded(True)
         if node.kind == "note":  # "Loading…", "(none)": not an object
             return
@@ -1435,6 +1487,42 @@ def _database_profile(
         name=f"{profile.name}{_DATABASE_SEPARATOR}{database}",
         database=database,
         schema="",
+    )
+
+
+def _has_schemas(profile: ConnectionProfile | None) -> bool:
+    """Whether this engine puts schemas below the database — a
+    capability question the provider layer answers with no connection
+    open (CORE-02), so the tree knows how deep it goes before it asks
+    the server anything."""
+    if profile is None:
+        return False
+    try:
+        return registry.capabilities(profile.kind).schemas
+    except Exception:  # an adapter the registry doesn't know
+        return False
+
+
+def schema_profile(
+    profile: ConnectionProfile, schema: str
+) -> ConnectionProfile:
+    """`profile` pointed at one schema of the database it already
+    reaches (PG-01).
+
+    Pinning the schema on the profile — rather than qualifying every
+    name the tree sends down — puts that schema on the connection's
+    search path, so the adapter's existing catalog queries, its DDL and
+    the bare names in generated SQL all resolve in the schema the row
+    stands for. The name matches what the console's schema dropdown
+    builds, so a console opened on "prod · billing · staging" and this
+    row share a connector.
+    """
+    if schema == profile.schema:
+        return profile
+    return replace(
+        profile,
+        name=f"{profile.name}{_DATABASE_SEPARATOR}{schema}",
+        schema=schema,
     )
 
 

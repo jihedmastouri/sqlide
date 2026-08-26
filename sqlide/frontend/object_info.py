@@ -295,6 +295,11 @@ class ObjectInfoTab(Gtk.Box):
                     name=ref.name,
                     table=ref.table,
                     category=ref.category,
+                    # The connection is already pinned to the schema
+                    # (window.open_object), so this only decides how
+                    # the object is *named* back — qualified where the
+                    # engine has schemas (PG-01).
+                    schema=ref.schema or self.profile.schema,
                 )
             )
             if self.path and not info.path:

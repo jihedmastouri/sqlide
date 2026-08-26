@@ -61,6 +61,19 @@ class ObjectRef:
     name: str
     table: str = ""  # owning table, for the kinds that need one
     category: str = ""  # category rows only
+    #: The schema the object lives in, on the engines that have
+    #: schemas as a level (PG-01). Filled where a link crosses out of
+    #: the schema being viewed, so following it opens the right
+    #: `customers` and not whichever one the search path found first;
+    #: empty everywhere else, which reads as "wherever the current
+    #: context resolves it".
+    schema: str = ""
+
+    @property
+    def qualified(self) -> str:
+        """The name as it should be printed and titled: schema-first
+        where one is known, bare where none is."""
+        return f"{self.schema}.{self.name}" if self.schema else self.name
 
 
 @dataclass(frozen=True)
@@ -294,9 +307,7 @@ def _table(connector, kind, name, *, table, category, path):
     triggers = [
         t for t in _safe(connector.list_triggers, []) if t.table == name
     ]
-    relations = [
-        r for r in _safe(connector.list_relations, []) if r.table == name
-    ]
+    relations = _own_relations(connector, name)
     keys = [c.name for c in columns if c.is_pk]
     summary = [
         ("Columns", str(len(columns))),
@@ -334,14 +345,38 @@ def _table(connector, kind, name, *, table, category, path):
         tables.append(DetailTable(
             title="Foreign keys",
             columns=["Column", "References"],
-            rows=[(r.column, f"{r.ref_table}.{r.ref_column}")
+            rows=[(r.column, f"{r.target}.{r.ref_column}")
                   for r in relations],
-            links=[ObjectRef("table", r.ref_table) for r in relations],
+            links=[
+                ObjectRef(
+                    "table", r.ref_table,
+                    schema=r.ref_schema if r.cross_schema else "",
+                )
+                for r in relations
+            ],
         ))
     return ObjectInfo(
         kind=kind, name=name, type_label=_label(kind),
         summary=summary, tables=tables, ddl=_ddl(connector, name),
     )
+
+
+def _own_relations(connector, table: str, column: str = "") -> list:
+    """The foreign keys declared on `table` (optionally on one column).
+
+    On an engine with schemas the same table name can appear in more
+    than one schema on the search path, and only the one an unqualified
+    reference resolves to is the table being looked at — so where the
+    current schema has a match, the others are dropped rather than
+    listed together (PG-01).
+    """
+    found = [
+        r for r in _safe(connector.list_relations, [])
+        if r.table == table and (not column or r.column == column)
+    ]
+    schema = _safe(connector.current_schema, "")
+    here = [r for r in found if r.schema == schema] if schema else []
+    return here or found
 
 
 def _column(connector, kind, name, *, table, category, path):
@@ -356,10 +391,7 @@ def _column(connector, kind, name, *, table, category, path):
             connector, kind, name, path=path,
             detail=f"column of {owner}" if owner else "",
         )
-    referenced = [
-        r for r in _safe(connector.list_relations, [])
-        if r.table == owner and r.column == name
-    ]
+    referenced = _own_relations(connector, owner, name)
     summary = [
         ("Table", owner),
         ("Type", column.type),
@@ -369,7 +401,7 @@ def _column(connector, kind, name, *, table, category, path):
     if referenced:
         summary.append((
             "References",
-            ", ".join(f"{r.ref_table}.{r.ref_column}" for r in referenced),
+            ", ".join(f"{r.target}.{r.ref_column}" for r in referenced),
         ))
     return ObjectInfo(
         kind=kind, name=name, type_label=_label(kind), summary=summary,
@@ -628,14 +660,18 @@ def _property_table(connector, name, slug, columns) -> DetailTable:
             empty_note="(no constraints)",
         )
     if slug == "foreign_keys":
-        found = [
-            r for r in _safe(connector.list_relations, []) if r.table == name
-        ]
+        found = _own_relations(connector, name)
         return DetailTable(
             title=title,
             columns=["Column", "References"],
-            rows=[(r.column, f"{r.ref_table}.{r.ref_column}") for r in found],
-            links=[ObjectRef("table", r.ref_table) for r in found],
+            rows=[(r.column, f"{r.target}.{r.ref_column}") for r in found],
+            links=[
+                ObjectRef(
+                    "table", r.ref_table,
+                    schema=r.ref_schema if r.cross_schema else "",
+                )
+                for r in found
+            ],
             empty_note="(no foreign keys)",
         )
     if slug == "references":
@@ -643,8 +679,16 @@ def _property_table(connector, name, slug, columns) -> DetailTable:
         return DetailTable(
             title=title,
             columns=["Table", "Column", "References"],
-            rows=[(r.table, r.column, f"{name}.{r.ref_column}") for r in found],
-            links=[ObjectRef("table", r.table) for r in found],
+            rows=[
+                (r.source, r.column, f"{name}.{r.ref_column}") for r in found
+            ],
+            links=[
+                ObjectRef(
+                    "table", r.table,
+                    schema=r.schema if r.cross_schema else "",
+                )
+                for r in found
+            ],
             empty_note="(nothing references this table)",
         )
     if slug == "indexes":

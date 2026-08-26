@@ -15,7 +15,11 @@ Two more session-scoped dropdowns (not persisted in TabState):
 - Schema: for the adapters that put schemas *below* the database —
   PostgreSQL. Hidden for sqlite (no schemas) and for MySQL, where a
   schema and a database are the same object and the dropdown to its
-  left already switches it. Overrides `schema` on the same copy.
+  left already switches it. Overrides `schema` on the same copy, which
+  is what puts that schema on the connection's search path, and beside
+  it the effective path is printed — `path: staging, pg_catalog` —
+  read back off the connection rather than inferred from the pick, so
+  the line says where an unqualified name really lands (PG-01).
 
 Editor settings live behind the gear MenuButton at the right end of
 the toolbar: the editor font size (global, but reached from where you
@@ -64,7 +68,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from sqlide.backend import placeholders as sql_placeholders
 from sqlide.backend.connections import ConnectionProfile
@@ -181,6 +185,15 @@ class QueryConsole(Gtk.Box):
         self._schema_dropdown = Gtk.DropDown(visible=False)
         self._schema_dropdown.set_tooltip_text("Schema within the database")
         self._schema_seq = 0  # discards stale list_schemas results
+        # The effective search path, beside the picker: which schema an
+        # unqualified name lands in is not something to guess at, and
+        # the picker alone does not say — pg_catalog is always on the
+        # path and "$user" may or may not have resolved (PG-01).
+        self._search_path = Gtk.Label(visible=False, xalign=0)
+        self._search_path.add_css_class("dim-label")
+        self._search_path.set_ellipsize(Pango.EllipsizeMode.END)
+        self._search_path.set_max_width_chars(28)
+        self._path_seq = 0  # discards stale search_path results
         self._lsp_choices = [
             lsp_servers.AUTO,
             lsp_servers.NONE,
@@ -252,6 +265,7 @@ class QueryConsole(Gtk.Box):
         toolbar.append(self._dropdown)
         toolbar.append(self._db_dropdown)
         toolbar.append(self._schema_dropdown)
+        toolbar.append(self._search_path)
         toolbar.append(hint)
         toolbar.append(Gtk.Box(hexpand=True))
         toolbar.append(open_button)
@@ -455,6 +469,54 @@ class QueryConsole(Gtk.Box):
         self._lsp_provider.set_profile(self._active_profile())
         self.refresh_transaction_badge()
         self._reset_hover_cache()
+        self._refresh_search_path()
+
+    def search_path(self) -> str:
+        """What the console currently shows as its effective search
+        path, empty on an engine that has none."""
+        return self._search_path.get_text() if (
+            self._search_path.get_visible()
+        ) else ""
+
+    def _refresh_search_path(self) -> None:
+        """Ask the connection behind the current picks where an
+        unqualified name resolves, and print it.
+
+        The pick is applied by the profile the console runs on — a copy
+        with `schema` set, whose connection puts that schema on its
+        search path when it opens — so what is read back here is the
+        path the next statement will actually use, not the one the
+        dropdown implies.
+        """
+        self._path_seq += 1
+        seq = self._path_seq
+        profile = self._active_profile()
+        if profile is None or not registry.capabilities(profile.kind).schemas:
+            self._search_path.set_visible(False)
+            self._search_path.set_text("")
+            return
+
+        def work():
+            connector = self._ensure(profile)
+            # The pick is the profile's, and a connector reused from
+            # before the pick still has the old path on it, so it is
+            # set again rather than assumed.
+            if profile.schema:
+                connector.set_search_path(profile.schema)
+            return connector.search_path()
+
+        def done(path: str) -> None:
+            if seq != self._path_seq:
+                return
+            self._search_path.set_text(f"path: {path}" if path else "")
+            self._search_path.set_tooltip_text(
+                f"Unqualified names resolve in: {path}" if path else ""
+            )
+            self._search_path.set_visible(bool(path))
+
+        # A connection that will not open is the Run button's error to
+        # report; here it just costs the line.
+        run_async(work, done, lambda _exc: None)
 
     # Hover DDL
 
@@ -661,6 +723,7 @@ class QueryConsole(Gtk.Box):
             self._set_schemas(
                 schemas, select=self.selected_schema() or current
             )
+            self._refresh_search_path()
 
         # A connection that cannot be opened is the Run button's error
         # to report, not this dropdown's: it just stays hidden.
@@ -671,6 +734,8 @@ class QueryConsole(Gtk.Box):
         if select in names:
             self._schema_dropdown.set_selected(names.index(select))
         self._schema_dropdown.set_visible(bool(names))
+        if not names:
+            self._search_path.set_visible(False)
 
     def _on_key_pressed(self, _controller, keyval, _keycode, state) -> bool:
         # The toolbar's Run and file buttons, from the keyboard —

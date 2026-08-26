@@ -361,3 +361,60 @@ def test_mysql_table_properties(mysql) -> None:
     assert "Partitions" in titles
     # MySQL has neither, so neither heading is drawn.
     assert "Policies" not in titles and "Rules" not in titles
+
+
+# Naming: how much of an object's address is worth showing (PG-01).
+
+
+def test_node_ref_path_is_the_engine_shape() -> None:
+    """A node's address has exactly the levels its engine has: no
+    empty step stands in for a level the engine does not have."""
+    postgres = NodeRef("table", "orders", database="sales", schema="staging")
+    assert postgres.path == ("sales", "staging", "orders")
+    mysql = NodeRef("table", "orders", database="sales")
+    assert mysql.path == ("sales", "orders")
+    assert NodeRef("table", "notes").path == ("notes",)
+    assert NodeRef("database", "sales", database="sales").path == ("sales",)
+
+
+def test_sqlite_names_are_never_qualified(sqlite_db) -> None:
+    """No phantom schema level: SQLite has none, so a name the caller
+    hands over comes back exactly as it went in — even if the ref
+    somehow carries a schema."""
+    provider = registry.create_provider("sqlite", sqlite_db)
+    ref = NodeRef("table", "notes", schema="main")
+    assert provider.qualified_name(ref) == "notes"
+    assert provider.quoted_name(ref) == '"notes"'
+    assert provider.schema_of(ref) == ""
+    assert provider.describe(ref).name == "notes"
+
+
+def test_qualification_stops_where_the_object_is_not_named_by_a_schema(
+) -> None:
+    """Only the kinds addressed *through* a schema get one in front of
+    them: a schema names itself, and a column is named through the
+    table above it."""
+    from sqlide.backend.db.postgres.metadata import PostgresMetadata
+
+    provider = PostgresMetadata(connector=None)
+    assert provider.qualified_name(
+        NodeRef("table", "orders", schema="staging")
+    ) == "staging.orders"
+    assert provider.qualified_name(
+        NodeRef("view", "recent", schema="staging")
+    ) == "staging.recent"
+    for kind in ("database", "schema", "category", "column", "index"):
+        ref = NodeRef(kind, "thing", schema="staging", table="orders")
+        assert provider.schema_of(ref) == "", kind
+        assert provider.qualified_name(ref) == "thing"
+
+
+def test_mysql_qualifies_nothing_by_schema() -> None:
+    """In MySQL a schema *is* a database, so the schema level is off
+    and a name is never prefixed by one."""
+    from sqlide.backend.db.mysql.metadata import MysqlMetadata
+
+    provider = MysqlMetadata(connector=None)
+    ref = NodeRef("table", "orders", database="sales", schema="sales")
+    assert provider.qualified_name(ref) == "orders"
+    assert provider.schema_of(ref) == ""

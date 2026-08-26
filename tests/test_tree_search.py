@@ -92,6 +92,7 @@ def sidebar():
         ensure_connector=unused,
         on_open_table=unused,
         on_open_object=unused,
+        on_open_section=unused,
         on_new_query=unused,
         on_open_cli=unused,
         on_open_definition=unused,

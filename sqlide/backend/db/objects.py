@@ -23,7 +23,7 @@ thread (frontend/util.run_async), never from the GTK main loop.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from sqlide.backend.db.base import Connector, ConnectorError
 
@@ -76,6 +76,10 @@ class DetailTable:
     rows: list[tuple[str, ...]]
     links: list[ObjectRef | None] = field(default_factory=list)
     empty_note: str = "(none)"
+    #: The PROPERTY_SECTIONS slug this table is, where it is one, so a
+    #: deep link from the sidebar can find it again (CORE-05). Empty
+    #: for the detail tables of a plain info view.
+    slug: str = ""
 
     def link(self, index: int) -> ObjectRef | None:
         if 0 <= index < len(self.links):
@@ -525,6 +529,16 @@ PROPERTY_SECTIONS = (
 
 PROPERTY_SECTION_LABELS = dict(PROPERTY_SECTIONS)
 
+#: Section slug -> the sidebar node kind its rows are, for the sections
+#: whose members are objects the tree already knows how to open
+#: (CORE-05). A section not listed here has no children of its own in
+#: the tree: it is a leaf that deep-links into the Properties view.
+SECTION_CHILD_KINDS = {
+    "columns": "column",
+    "indexes": "index",
+    "triggers": "trigger",
+}
+
 
 def table_properties(
     connector: Connector,
@@ -553,7 +567,10 @@ def table_properties(
         elif slug == "ddl":
             ddl = _ddl(connector, name)
         else:
-            tables.append(_property_table(connector, name, slug, columns))
+            table = _property_table(connector, name, slug, columns)
+            # Every section carries its slug, so a deep link from the
+            # sidebar can scroll to the section it named (CORE-05).
+            tables.append(replace(table, slug=slug))
     return ObjectInfo(
         kind=kind, name=name, type_label=_label(kind), path=path,
         summary=summary, tables=tables, ddl=ddl,

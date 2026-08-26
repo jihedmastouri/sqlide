@@ -4,7 +4,7 @@ Gtk.TreeListModel + Gtk.ListView + Gtk.TreeExpander (the GTK4 idiom
 for lazy trees). Shape:
 
     connection → Tables / Views / Functions / Indexes / Triggers /
-    Events → object → columns
+    Events → object → property sections → columns / indexes / triggers
 
 The Indexes/Triggers/Events categories appear only when the adapter's
 ddl_kinds() advertises the kind (known after connect) and it supports
@@ -14,7 +14,7 @@ A MySQL or PostgreSQL connection reaches a whole server, not one
 database, so there the shape gains a level and the categories hang off
 a database instead:
 
-    connection → database → Tables / Views / … → object → columns
+    connection → database → Tables / Views / … → object → sections
 
 Every database the server has is listed, the connection's own first
 and marked "current"; tables never sit at the connection root, because
@@ -28,6 +28,14 @@ Accounts stay out of the tree: they are not schema objects, and a
 category of them under every connection buries the tables people came
 for. "Users & Permissions…" on the connection menu opens them in a tab
 instead (frontend/users_tab.py).
+
+Under a table sit its Properties sections (CORE-05) — Columns,
+Constraints, Foreign keys, Indexes, … — exactly the sections that
+engine's Properties view has (registry.property_sections, no
+connection needed). Opening one opens the table's tab on the
+Properties side, scrolled to that section; the three that hold objects
+of their own (Columns, Indexes, Triggers) also expand into them, and
+opening one of those rows opens that object's info view instead.
 
 Column rows show "name  type" with a PK marker and are informational.
 Rows lead with a per-kind icon (connections also get a connection
@@ -90,13 +98,15 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
 from sqlide.backend import identity
 from sqlide.backend.connections import ConnectionProfile
-from sqlide.backend.db import objects
+from sqlide.backend.db import objects, registry
 from sqlide.backend.db.base import Connector
 from sqlide.frontend import identity as identity_ui
 from sqlide.frontend import tree_search
 from sqlide.frontend.util import describe, run_async
 
-_EXPANDABLE = ("connection", "database", "category", "table", "view")
+_EXPANDABLE = (
+    "connection", "database", "category", "table", "view", "section",
+)
 
 # Leading icon per row kind; kinds not listed (category, column, note)
 # show no icon.
@@ -127,6 +137,14 @@ _NEW_LABELS = {
 # kinds: the three every dialect creates.
 _DEFAULT_NEW_KINDS = ("table", "view", "index")
 
+# A table's children are its Properties sections (CORE-05): the ones
+# whose members are objects expand into them, the rest are leaves that
+# only deep-link. Which sections exist at all is the engine's answer
+# (registry.property_sections), and "general"/"ddl" are the summary and
+# the definition, not lists — they are dropped here.
+_SECTION_CHILD_KINDS = objects.SECTION_CHILD_KINDS
+_NON_LIST_SECTIONS = ("general", "ddl")
+
 # Lazily loaded category → the object row kind it holds.
 _LAZY_CATEGORIES = {
     "functions": "function",
@@ -140,6 +158,7 @@ class Node(GObject.Object):
     """One tree row; kind decides expandability, look, and activation.
 
     kind: "connection" | "database" | "category" | "table" | "view"
+        | "section" (one Properties section of the table above it)
         | "function" | "index" | "trigger" | "event"
         | "column" | "note" (dim placeholder: loading/empty/error)
     """
@@ -152,6 +171,7 @@ class Node(GObject.Object):
         detail: str = "",
         profile: ConnectionProfile | None = None,
         category: str = "",  # category nodes: "tables"|"views"|"functions"|…
+        # section nodes: the PROPERTY_SECTIONS slug ("indexes", …)
         payload: list | None = None,  # tables/views categories: TableInfo list
         is_pk: bool = False,
         table: str = "",  # index/trigger rows: owning table (for DROP)
@@ -190,6 +210,9 @@ class Sidebar(Gtk.ScrolledWindow):
         ensure_connector: Callable[[ConnectionProfile], Connector],
         on_open_table: Callable[[ConnectionProfile, str], None],
         on_open_object: Callable[..., None],  # (profile, ObjectRef, path)
+        # (profile, table, section slug): a table's Properties view,
+        # opened on one section (CORE-05).
+        on_open_section: Callable[[ConnectionProfile, str, str], None],
         on_new_query: Callable[..., None],  # (profile, sql="")
         on_open_cli: Callable[[ConnectionProfile], None],
         on_open_definition: Callable[[ConnectionProfile, str], None],
@@ -213,6 +236,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self._ensure = ensure_connector
         self._on_open_table = on_open_table
         self._on_open_object = on_open_object
+        self._on_open_section = on_open_section
         self._on_new_query = on_new_query
         self._on_open_cli = on_open_cli
         self._on_open_definition = on_open_definition
@@ -279,6 +303,7 @@ class Sidebar(Gtk.ScrolledWindow):
         for name, callback in (
             ("object-info", self._menu_object_info),
             ("view-data", self._menu_view_data),
+            ("view-section", self._menu_view_section),
             ("query-console", self._menu_query_console),
             ("cli-console", self._menu_cli_console),
             ("definition", self._menu_definition),
@@ -555,6 +580,13 @@ class Sidebar(Gtk.ScrolledWindow):
         # here, just the cached store (see module docstring).
         if node.kind not in _EXPANDABLE:
             return None
+        if node.kind == "section" and (
+            node.category not in _SECTION_CHILD_KINDS
+        ):
+            # A section like Constraints or Policies has no rows of its
+            # own in the tree: it is a leaf that opens the Properties
+            # view on itself.
+            return None
         if node.store is None:
             node.store = Gio.ListStore(item_type=Node)
             if (
@@ -562,6 +594,8 @@ class Sidebar(Gtk.ScrolledWindow):
                 and node.category not in _LAZY_CATEGORIES
             ):
                 self._fill_category(node)
+            elif node.kind in ("table", "view"):
+                self._fill_sections(node)
         return node.store
 
     def _fill_category(self, node: Node) -> None:
@@ -572,6 +606,34 @@ class Sidebar(Gtk.ScrolledWindow):
             node.store.append(Node(kind, info.name, profile=node.profile))
         if not node.payload:
             node.store.append(Node("note", "(none)"))
+        _adopt(node)
+        node.loaded = True
+
+    def _fill_sections(self, node: Node) -> None:
+        """A table's children: the Properties sections this engine has
+        (CORE-05), so every row under a table maps to a section of the
+        table tab's Properties view — and the ones that hold objects
+        (Columns, Indexes, Triggers) still expand into them.
+
+        Which sections exist is a capability question the provider layer
+        already answers without a connection, so filling is
+        synchronous; the rows inside a section are fetched when it is
+        expanded.
+        """
+        kind = node.profile.kind if node.profile is not None else ""
+        try:
+            sections = registry.property_sections(kind)
+        except Exception:  # an adapter the registry doesn't know
+            sections = ()
+        for slug, label in objects.PROPERTY_SECTIONS:
+            if slug not in sections or slug in _NON_LIST_SECTIONS:
+                continue
+            node.store.append(Node(
+                "section", label,
+                profile=node.profile, category=slug, table=node.label,
+            ))
+        if not node.store.get_n_items():
+            node.store.append(Node("note", "(no properties)"))
         _adopt(node)
         node.loaded = True
 
@@ -591,6 +653,17 @@ class Sidebar(Gtk.ScrolledWindow):
             if node.store is None:
                 node.store = Gio.ListStore(item_type=Node)
             self._fill_category(node)
+            return
+        if node.kind in ("table", "view"):
+            # The sections are a capability answer, not a query.
+            if node.store is None:
+                node.store = Gio.ListStore(item_type=Node)
+            node.store.remove_all()
+            self._fill_sections(node)
+            return
+        if node.kind == "section" and (
+            node.category not in _SECTION_CHILD_KINDS
+        ):
             return
         if node.store is None:
             node.store = Gio.ListStore(item_type=Node)
@@ -686,22 +759,42 @@ class Sidebar(Gtk.ScrolledWindow):
                     ))
                 if not objects:
                     store.append(Node("note", "(none)"))
-        else:  # table | view
-            def work():
-                return self._ensure(node.profile).list_columns(node.label)
+        else:  # section: the objects of one Properties section
+            table = node.table
+            slug = node.category
 
-            def fill(columns):
-                for column in columns:
-                    store.append(Node(
-                        "column", column.name,
-                        detail=column.type, is_pk=column.is_pk,
-                        # Carried so the column row can open its own
-                        # info view: a column is only identifiable
-                        # together with the table it belongs to.
-                        profile=node.profile, table=node.label,
-                    ))
-                if not columns:
-                    store.append(Node("note", "(no columns)"))
+            def work():
+                connector = self._ensure(node.profile)
+                if slug == "columns":
+                    return connector.list_columns(table)
+                if slug == "indexes":
+                    return [
+                        index for index in connector.list_indexes()
+                        if index.table == table
+                    ]
+                return [
+                    trigger for trigger in connector.list_triggers()
+                    if trigger.table == table
+                ]
+
+            def fill(found):
+                for item in found:
+                    if slug == "columns":
+                        store.append(Node(
+                            "column", item.name,
+                            detail=item.type, is_pk=item.is_pk,
+                            # Carried so the column row can open its own
+                            # info view: a column is only identifiable
+                            # together with the table it belongs to.
+                            profile=node.profile, table=table,
+                        ))
+                    else:
+                        store.append(Node(
+                            _SECTION_CHILD_KINDS[slug], item.name,
+                            profile=node.profile, table=table,
+                        ))
+                if not found:
+                    store.append(Node("note", f"(no {slug})"))
 
         def done(result):
             node.loading = False
@@ -868,9 +961,15 @@ class Sidebar(Gtk.ScrolledWindow):
             menu.append("Query Console", "schema.query-console")
             menu.append("Table Definition", "schema.definition")
             menu.append("Query Builder", "schema.query-builder")
-            menu.append("Refresh Columns", "schema.refresh")
+            menu.append("Refresh", "schema.refresh")
             if can_drop:
                 menu.append("Drop…", "schema.drop-object")
+            return menu
+        if node.kind == "section":
+            menu = Gio.Menu()
+            menu.append("Open in Properties", "schema.view-section")
+            menu.append("View Data", "schema.view-data")
+            menu.append("Refresh", "schema.refresh")
             return menu
         if node.kind == "category":
             menu = Gio.Menu()
@@ -1011,8 +1110,19 @@ class Sidebar(Gtk.ScrolledWindow):
 
     def _menu_view_data(self, *_args) -> None:
         node = self._menu_node
-        if node is not None and node.kind in ("table", "view"):
+        if node is None or node.profile is None:
+            return
+        if node.kind in ("table", "view"):
             self._on_open_table(node.profile, node.label)
+        elif node.kind == "section" and node.table:
+            self._on_open_table(node.profile, node.table)
+
+    def _menu_view_section(self, *_args) -> None:
+        node = self._menu_node
+        if node is not None and node.kind == "section" and (
+            node.profile is not None
+        ):
+            self._on_open_section(node.profile, node.table, node.category)
 
     def _menu_query_console(self, *_args) -> None:
         node = self._menu_node
@@ -1169,7 +1279,16 @@ class Sidebar(Gtk.ScrolledWindow):
             row.set_expanded(True)
         if node.kind == "note":  # "Loading…", "(none)": not an object
             return
-        if node.kind in ("table", "view"):
+        if node.kind == "section" and node.profile is not None:
+            # A section row is the table's Properties view, opened on
+            # that section (CORE-05) — and it still expands, so the
+            # objects inside it stay one click away in the tree.
+            if node.category in _SECTION_CHILD_KINDS and (
+                not row.get_expanded()
+            ):
+                row.set_expanded(True)
+            self._on_open_section(node.profile, node.table, node.category)
+        elif node.kind in ("table", "view"):
             self._on_open_table(node.profile, node.label)
         elif node.kind == "function" and node.profile is not None:
             self._on_open_function(node.profile, node.label)

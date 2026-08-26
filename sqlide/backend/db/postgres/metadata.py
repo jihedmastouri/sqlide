@@ -30,6 +30,11 @@ class PostgresMetadata(MetadataProvider):
         roles=True,
         extensions=True,
         partitions=True,
+        constraints=True,
+        rules=True,
+        policies=True,
+        dependencies=True,
+        related_functions=True,
     )
 
     def _current_database(self) -> str:

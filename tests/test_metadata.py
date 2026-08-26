@@ -18,7 +18,7 @@ import sqlite3
 
 import pytest
 
-from sqlide.backend.db import registry
+from sqlide.backend.db import objects, registry
 from sqlide.backend.db.metadata import (
     CAPABILITY_FLAGS,
     Capabilities,
@@ -220,3 +220,125 @@ def test_mysql_reads_principals_and_object_grants(mysql) -> None:
     grants = provider.list_grants(NodeRef("table", "users"))
     assert isinstance(grants, list)  # the demo account may hold none
     assert provider.list_grants(NodeRef("trigger", "whatever")) == []
+
+
+# Table properties (CORE-04): the sections an engine offers, and what
+# they are filled with. The point of the section list is that it is
+# capability-driven — a heading an engine has no concept of is never
+# offered, so the view omits it instead of drawing it empty.
+
+
+def _sections(kind: str) -> tuple[str, ...]:
+    """The sections `kind` offers, read with nothing connected — the
+    list is capability-driven, so it is answerable before a connection
+    the same way the flags are."""
+    return registry.property_sections(kind)
+
+
+def test_property_sections_follow_capabilities() -> None:
+    postgres = _sections("postgres")
+    mysql = _sections("mysql")
+    sqlite = _sections("sqlite")
+    # Everywhere: the general block, the columns, the keys, the DDL.
+    for sections in (postgres, mysql, sqlite):
+        for slug in ("general", "columns", "foreign_keys", "references",
+                     "indexes", "triggers", "ddl"):
+            assert slug in sections
+    assert "policies" in postgres and "rules" in postgres
+    assert "dependencies" in postgres and "partitions" in postgres
+    # MySQL partitions tables but has no policies or rewrite rules.
+    assert "partitions" in mysql
+    assert "policies" not in mysql and "rules" not in mysql
+    # SQLite has none of the three.
+    for slug in ("partitions", "policies", "rules", "dependencies"):
+        assert slug not in sqlite
+    # Order is the display order, whatever the subset.
+    order = [slug for slug, _label in objects.PROPERTY_SECTIONS]
+    for sections in (postgres, mysql, sqlite):
+        assert list(sections) == [s for s in order if s in sections]
+
+
+def test_sqlite_table_properties(sqlite_db) -> None:
+    sqlite_db.execute(
+        "CREATE TABLE tags ("
+        " id INTEGER PRIMARY KEY,"
+        " label TEXT UNIQUE,"
+        " note_id INTEGER REFERENCES notes(id))"
+    )
+    provider = registry.create_provider("sqlite", sqlite_db)
+    info = provider.table_properties(NodeRef("table", "tags"))
+    titles = [t.title for t in info.tables]
+    assert titles == [
+        "Columns", "Constraints", "Foreign keys", "References",
+        "Indexes", "Triggers",
+    ]
+    assert ("Primary key", "id") in info.summary
+    constraints = next(t for t in info.tables if t.title == "Constraints")
+    kinds = {row[1] for row in constraints.rows}
+    assert {"PRIMARY KEY", "UNIQUE", "FOREIGN KEY"} <= kinds
+    assert "CREATE TABLE" in info.ddl.upper()
+
+
+def test_properties_rows_link_to_the_child_object(sqlite_db) -> None:
+    provider = registry.create_provider("sqlite", sqlite_db)
+    info = provider.table_properties(NodeRef("table", "notes"))
+    columns = next(t for t in info.tables if t.title == "Columns")
+    link = columns.link(0)
+    assert link is not None and link.kind == "column"
+    assert link.table == "notes"
+    # And that link opens: the info view is the same one CORE-01 built.
+    assert provider.describe(
+        NodeRef("column", link.name, table=link.table)
+    ).summary
+
+
+def test_supported_but_empty_sections_still_render(sqlite_db) -> None:
+    """"This engine has no policies" and "this table has none yet" are
+    different answers: the second keeps its heading and says so."""
+    provider = registry.create_provider("sqlite", sqlite_db)
+    info = provider.table_properties(NodeRef("table", "notes"))
+    triggers = next(t for t in info.tables if t.title == "Triggers")
+    assert triggers.rows == [] and triggers.empty_note
+
+
+def test_postgres_table_properties(postgres) -> None:
+    _version, connector = postgres
+    provider = registry.create_provider("postgres", connector)
+    info = provider.table_properties(NodeRef("table", "orders"))
+    summary = dict(info.summary)
+    assert summary["Owner"] and summary["Size"]
+    constraints = next(t for t in info.tables if t.title == "Constraints")
+    assert {row[1] for row in constraints.rows} >= {
+        "PRIMARY KEY", "FOREIGN KEY"
+    }
+    keys = next(t for t in info.tables if t.title == "Foreign keys")
+    assert ("user_id", "users.id") in keys.rows
+    # The view built on orders is what depends on it.
+    dependencies = next(t for t in info.tables if t.title == "Dependencies")
+    assert "big_orders" in [row[0] for row in dependencies.rows]
+    # Postgres-only sections are offered even when the table has none.
+    assert [t.title for t in info.tables].count("Policies") == 1
+
+
+def test_postgres_references_are_the_other_direction(postgres) -> None:
+    _version, connector = postgres
+    provider = registry.create_provider("postgres", connector)
+    info = provider.table_properties(NodeRef("table", "users"))
+    references = next(t for t in info.tables if t.title == "References")
+    assert ("orders", "user_id", "users.id") in references.rows
+
+
+def test_mysql_table_properties(mysql) -> None:
+    _version, connector = mysql
+    provider = registry.create_provider("mysql", connector)
+    info = provider.table_properties(NodeRef("table", "orders"))
+    summary = dict(info.summary)
+    assert summary["Storage engine"] and summary["Size"]
+    constraints = next(t for t in info.tables if t.title == "Constraints")
+    assert {row[1] for row in constraints.rows} >= {
+        "PRIMARY KEY", "FOREIGN KEY"
+    }
+    titles = [t.title for t in info.tables]
+    assert "Partitions" in titles
+    # MySQL has neither, so neither heading is drawn.
+    assert "Policies" not in titles and "Rules" not in titles

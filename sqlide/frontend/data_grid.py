@@ -52,6 +52,7 @@ from decimal import Decimal
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
 from sqlide.backend.connections import ConnectionProfile
+from sqlide.backend.db import objects
 from sqlide.backend.db.base import (
     CONJUNCTIONS,
     FILTER_OPERATORS,
@@ -64,6 +65,7 @@ from sqlide.backend.db.base import (
 from sqlide.backend.workspaces import TabState
 from sqlide.backend.settings import store as settings_store
 from sqlide.frontend import confirm, feedback, keymap
+from sqlide.frontend.object_info import TablePropertiesView
 from sqlide.frontend.util import describe, run_async
 
 PAGE_SIZE = 500
@@ -1502,7 +1504,17 @@ class UpdatePreviewDialog(Adw.Dialog):
 
 
 class TableTab(Gtk.Box):
-    """Content of one "table data" tab: paged grid + action bar.
+    """Content of one open table: a Data side and a Properties side.
+
+    Data is the paged grid plus its action bar. Properties is the same
+    read-only descriptor the info view renders (CORE-04), showing the
+    sections this engine has — columns, constraints, keys, indexes,
+    triggers, partitions, policies, the DDL — with every row opening
+    that child object's own info view.
+
+    The toggle at the top switches which is visible; both stay built,
+    so unsaved edits, filters and the grid's scroll position survive a
+    trip through Properties and back.
 
     Cell editing is locked until the pencil toggle is pressed. Edits are
     held locally (pending) and only hit the database after Save, which
@@ -1520,6 +1532,9 @@ class TableTab(Gtk.Box):
         ensure_connector: Callable[[ConnectionProfile], Connector],
         show_error: Callable[[str], None],
         on_aggregate: AggregateCallback | None = None,
+        on_open_object: Callable[
+            [ConnectionProfile, objects.ObjectRef], None
+        ] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.profile = profile
@@ -1551,17 +1566,28 @@ class TableTab(Gtk.Box):
         self.read_only = False
         self._row_range = "loading…"
 
+        # Data and Properties are two sides of one tab, held in a stack
+        # so switching between them keeps both alive: the grid's rows,
+        # its scroll position, its filters and any unsaved edits are
+        # still there when the user comes back from Properties.
+        self._stack = Gtk.Stack(vexpand=True)
+        self._stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.append(self._view_switch())
+        self.append(self._stack)
+        data = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self._stack.add_named(data, "data")
+
         # A table without a primary key stays read-only for as long as
         # it is open — a condition, so a banner (see feedback.py).
         self._banner = feedback.condition_banner()
-        self.append(self._banner)
+        data.append(self._banner)
 
         # Filter and sort are separate panels behind separate toggles;
         # both can be revealed at the same time.
         self._filter_revealer = Gtk.Revealer(child=self._build_filter_panel())
-        self.append(self._filter_revealer)
+        data.append(self._filter_revealer)
         self._sort_revealer = Gtk.Revealer(child=self._build_sort_panel())
-        self.append(self._sort_revealer)
+        data.append(self._sort_revealer)
 
         self._grid = ResultGrid(
             on_edit=self._commit_edit,
@@ -1570,7 +1596,7 @@ class TableTab(Gtk.Box):
             on_header_sort=self._on_header_sort,
             on_edge_reached=self._on_grid_edge_reached,
         )
-        self.append(self._grid)
+        data.append(self._grid)
         # Scrolling to the bottom of the current page fetches the next
         # PAGE_SIZE rows and appends them, so browsing a big table reads
         # as one continuous scroll instead of manual paging. _base_offset
@@ -1616,7 +1642,12 @@ class TableTab(Gtk.Box):
         bar.pack_end(self._sort_toggle)
         bar.pack_end(self._edit_toggle)
         bar.pack_end(self._save)
-        self.append(bar)
+        data.append(bar)
+
+        self._properties = TablePropertiesView(
+            profile, table, ensure_connector, show_error, on_open_object
+        )
+        self._stack.add_named(self._properties, "properties")
 
         self._prev.set_sensitive(False)
         self._next.set_sensitive(False)
@@ -1626,6 +1657,39 @@ class TableTab(Gtk.Box):
         return TabState(
             kind="table", connection=self.profile.name, table=self.table
         )
+
+    def _view_switch(self) -> Gtk.Widget:
+        """The Data | Properties toggle at the top of every table tab.
+
+        Two linked toggles rather than a menu: which side is showing is
+        part of the tab, and it should be readable without clicking
+        anything."""
+        row = Gtk.CenterBox(margin_top=6, margin_bottom=6)
+        linked = Gtk.Box(spacing=0)
+        linked.add_css_class("linked")
+        self._data_toggle = Gtk.ToggleButton(label="Data", active=True)
+        describe(self._data_toggle, "The table's rows")
+        self._properties_toggle = Gtk.ToggleButton(label="Properties")
+        describe(
+            self._properties_toggle,
+            "Everything else about the table: columns, keys, indexes, DDL",
+        )
+        self._properties_toggle.set_group(self._data_toggle)
+        self._data_toggle.connect("toggled", self._on_view_toggled)
+        linked.append(self._data_toggle)
+        linked.append(self._properties_toggle)
+        row.set_center_widget(linked)
+        return row
+
+    def _on_view_toggled(self, button: Gtk.ToggleButton) -> None:
+        # Grouped toggles fire the signal on the button that lost the
+        # state as well; reading the group's active member is what
+        # keeps one switch from being handled twice.
+        if button.get_active():
+            self._stack.set_visible_child_name("data")
+            return
+        self._stack.set_visible_child_name("properties")
+        self._properties.ensure_loaded()
 
     def status_context(self) -> str:
         """This tab's line in the window's status bar: what is loaded

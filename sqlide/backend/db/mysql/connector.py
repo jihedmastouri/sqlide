@@ -19,15 +19,18 @@ from sqlide.backend.db.base import (
     ColumnInfo,
     Connector,
     ConnectorError,
+    ConstraintInfo,
     FilterCondition,
     FunctionInfo,
     GrantScope,
     IndexInfo,
+    ObjectSummary,
     PrivilegeInfo,
     RelationInfo,
     ResultSet,
     SortSpec,
     TableInfo,
+    TableStats,
     TriggerInfo,
     TypeSpec,
     UserInfo,
@@ -496,6 +499,72 @@ class MysqlConnector(Connector):
         )
         return [FunctionInfo(name=name) for (name,) in rows]
 
+    # Table properties (CORE-04). information_schema answers all of
+    # these, and the table name always travels as a parameter.
+
+    def table_stats(self, table: str) -> TableStats:
+        _, rows, _ = self._run(
+            "SELECT table_type, engine, "
+            "data_length + index_length, table_rows, table_comment "
+            "FROM information_schema.tables "
+            "WHERE table_schema = DATABASE() AND table_name = %s",
+            (table,),
+        )
+        if not rows:
+            return TableStats()
+        table_type, engine, size, estimate, comment = rows[0]
+        return TableStats(
+            kind="view" if table_type == "VIEW" else "table",
+            engine=engine or "",
+            size=_pretty_size(size),
+            # A view has no rows of its own to estimate.
+            rows="" if estimate is None or table_type == "VIEW"
+                 else str(estimate),
+            comment=comment or "",
+        )
+
+    def list_constraints(self, table: str) -> list[ConstraintInfo]:
+        _, rows, _ = self._run(
+            "SELECT tc.constraint_name, tc.constraint_type, "
+            "GROUP_CONCAT(kcu.column_name "
+            " ORDER BY kcu.ordinal_position) "
+            "FROM information_schema.table_constraints tc "
+            "LEFT JOIN information_schema.key_column_usage kcu "
+            "ON kcu.constraint_schema = tc.constraint_schema "
+            "AND kcu.constraint_name = tc.constraint_name "
+            "AND kcu.table_name = tc.table_name "
+            "WHERE tc.table_schema = DATABASE() AND tc.table_name = %s "
+            "GROUP BY tc.constraint_name, tc.constraint_type "
+            "ORDER BY tc.constraint_type, tc.constraint_name",
+            (table,),
+        )
+        return [
+            ConstraintInfo(
+                name=name, kind=kind or "", table=table,
+                columns=columns or "",
+            )
+            for name, kind, columns in rows
+        ]
+
+    def list_partitions(self, table: str) -> list[ObjectSummary]:
+        _, rows, _ = self._run(
+            "SELECT partition_name, partition_method, "
+            "partition_expression, table_rows "
+            "FROM information_schema.partitions "
+            "WHERE table_schema = DATABASE() AND table_name = %s "
+            "AND partition_name IS NOT NULL "
+            "ORDER BY partition_ordinal_position",
+            (table,),
+        )
+        return [
+            ObjectSummary(
+                name=name,
+                detail=f"{method or ''} · {rows_estimate} rows".strip(" ·"),
+                definition=expression or "",
+            )
+            for name, method, expression, rows_estimate in rows
+        ]
+
     def list_relations(self) -> list[RelationInfo]:
         _, rows, _ = self._run(
             "SELECT table_name, column_name, "
@@ -824,3 +893,16 @@ def _message(exc: pymysql.Error) -> str:
     if len(exc.args) == 2 and isinstance(exc.args[1], str):
         return exc.args[1]
     return str(exc)
+
+
+def _pretty_size(size) -> str:
+    """Bytes as the catalog reports them, in the units a person reads."""
+    if size is None:
+        return ""
+    value = float(size)
+    for unit in ("bytes", "kB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{value:.0f} {unit}" if unit == "bytes" \
+                else f"{value:.1f} {unit}"
+        value /= 1024
+    return ""

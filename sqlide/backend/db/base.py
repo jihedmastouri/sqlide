@@ -127,6 +127,48 @@ class RelationInfo:
     ref_column: str
 
 
+@dataclass(frozen=True)
+class ConstraintInfo:
+    """One constraint on a table: primary key, unique, foreign key or
+    check. `definition` is the dialect's own rendering where it has
+    one, `columns` the participating columns as a comma-separated
+    list where the catalog can name them."""
+
+    name: str
+    kind: str  # "PRIMARY KEY", "UNIQUE", "FOREIGN KEY", "CHECK", …
+    table: str = ""
+    columns: str = ""
+    definition: str = ""
+
+
+@dataclass(frozen=True)
+class ObjectSummary:
+    """A row of one of the looser property sections — a partition, a
+    rule, a policy, a dependent object, a function a table's triggers
+    call. Deliberately shapeless: what these have in common is a name
+    and a line of explanation, and the kind tells the info view what
+    the row opens."""
+
+    name: str
+    kind: str = ""  # the object kind the row opens, "" for a note
+    detail: str = ""
+    definition: str = ""
+
+
+@dataclass(frozen=True)
+class TableStats:
+    """The general-information block of a table's properties. Every
+    field is optional: an engine that cannot answer one leaves it
+    empty and the row is left out rather than shown as unknown."""
+
+    kind: str = ""  # "table", "partitioned table", "view", …
+    owner: str = ""
+    size: str = ""
+    rows: str = ""  # an estimate, as the catalog reports it
+    comment: str = ""
+    engine: str = ""  # storage engine, where the dialect has them
+
+
 # Every object kind the create/drop DDL surface can talk about;
 # adapters advertise their subset through Connector.ddl_kinds().
 DDL_KINDS = (
@@ -335,6 +377,49 @@ class Connector(ABC):
         Concrete default (not abstract) so adapters without a
         foreign-key catalog need no override.
         """
+        return []
+
+    # Table properties (CORE-04). Everything here is optional: the
+    # base implementations answer "nothing to report", and a provider
+    # only offers the section to the UI when its engine's capability
+    # flag says the engine has that concept at all (db/metadata.py).
+    # That way a section is omitted where an engine has no such thing
+    # and empty where it has none of them right now.
+
+    def table_stats(self, table: str) -> TableStats:
+        """Owner, size, row estimate and comment for one table."""
+        return TableStats()
+
+    def list_constraints(self, table: str) -> list[ConstraintInfo]:
+        """The constraints declared on one table."""
+        return []
+
+    def list_references(self, table: str) -> list[RelationInfo]:
+        """Foreign keys *pointing at* this table — the mirror of the
+        table's own. Derived from list_relations() here, so every
+        adapter with a foreign-key catalog gets it for free."""
+        return [r for r in self.list_relations() if r.ref_table == table]
+
+    def list_partitions(self, table: str) -> list[ObjectSummary]:
+        """The partitions of a partitioned table."""
+        return []
+
+    def list_rules(self, table: str) -> list[ObjectSummary]:
+        """Rewrite rules on the table (PostgreSQL)."""
+        return []
+
+    def list_policies(self, table: str) -> list[ObjectSummary]:
+        """Row-level security policies on the table (PostgreSQL)."""
+        return []
+
+    def list_dependencies(self, table: str) -> list[ObjectSummary]:
+        """Objects that depend on this table — views built on it and
+        anything else the catalog records as depending on it."""
+        return []
+
+    def list_table_functions(self, table: str) -> list[ObjectSummary]:
+        """Functions related to the table: the ones its triggers call,
+        where the catalog can say."""
         return []
 
     # Accounts and privileges. Reading is a catalog query like any

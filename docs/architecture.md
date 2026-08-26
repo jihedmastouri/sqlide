@@ -53,6 +53,8 @@ class MetadataProvider:
     def capabilities(self) -> Capabilities   # feature flags
     def list_children(self, ref) -> list[NodeRef]
     def describe(self, ref) -> ObjectInfo    # the info view (db/objects.py)
+    def property_sections(self) -> tuple[str, ...]   # a table's Properties
+    def table_properties(self, ref) -> ObjectInfo    # …and its descriptor
     def get_ddl(self, ref) -> str
     def list_grants(self, ref) -> list[PrivilegeInfo]
     def list_principals(self) -> list[UserInfo]
@@ -137,7 +139,7 @@ sqlide/
     ├── backups_tab.py       # backup manager: jobs, schedules, run history
     ├── backup_destinations.py  # destination list + per-kind editor
     ├── backup_restore.py    # pick artifact -> pick target -> confirm -> run
-    ├── data_grid.py         # ResultGrid + TableTab
+    ├── data_grid.py         # ResultGrid + TableTab (Data | Properties)
     ├── query_console.py
     ├── sql_editor.py        # GtkSourceView 5 with TextView fallback
     └── completion.py        # completion popup + keyword provider

@@ -1892,6 +1892,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.ensure_connector,
             self.show_error,
             on_aggregate=self.show_aggregate,
+            on_open_object=self.open_object,
         )
         page = self._append_tab(
             tab,

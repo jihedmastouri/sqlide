@@ -1,7 +1,7 @@
 ---
 title: Connection Security
 description: Managing connections and where passwords are stored.
-order: 9
+order: 10
 ---
 
 ## Managing connections

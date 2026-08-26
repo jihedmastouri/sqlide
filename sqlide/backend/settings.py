@@ -37,6 +37,11 @@ Settings:
   agrees with the clock on screen), "utc", or "server" (ask for
   nothing and take whatever the server is configured for, which is
   what a bare psql/mysql session gets). See session_time_zone().
+- monitor_interval: how often the monitoring dashboard (CORE-15) polls
+  a server's live panels, in seconds, clamped to MIN_INTERVAL ..
+  MAX_INTERVAL. The dashboard's own spin control writes here, so the
+  interval you settle on is the one every later dashboard opens with;
+  storage keeps its own much slower timer. See backend/db/metrics.py.
 - lsp_enabled: master switch for completion language servers
 - lsp_defaults: connection kind -> what an "auto" console LSP choice
   resolves to ("auto" keeps the built-in resolution in
@@ -72,6 +77,7 @@ from pathlib import Path
 from typing import Callable
 
 from sqlide.backend import config, tomlwrite
+from sqlide.backend.db import metrics
 from sqlide.backend.sql_risk import CONFIRM_MODES, DEFAULT_CONFIRM_MODE
 
 THEMES = ("system", "light", "dark")
@@ -101,6 +107,7 @@ class Settings:
     confirm_destructive: str = DEFAULT_CONFIRM_MODE
     max_result_rows: int = DEFAULT_MAX_RESULT_ROWS
     time_zone: str = DEFAULT_TIME_ZONE
+    monitor_interval: int = metrics.DEFAULT_INTERVAL
     lsp_enabled: bool = True
     lsp_defaults: dict[str, str] = field(default_factory=dict)
     mcp_defaults: dict[str, str] = field(default_factory=dict)
@@ -167,6 +174,9 @@ class Settings:
                 "max_result_rows", DEFAULT_MAX_RESULT_ROWS
             ),
             time_zone=choice("time_zone", TIME_ZONES, DEFAULT_TIME_ZONE),
+            monitor_interval=metrics.clamp_interval(
+                number("monitor_interval", metrics.DEFAULT_INTERVAL)
+            ),
             lsp_enabled=flag("lsp_enabled", True),
             lsp_defaults=table("lsp_defaults"),
             mcp_defaults=table("mcp_defaults"),

@@ -104,7 +104,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
 
 from sqlide.backend import identity
 from sqlide.backend.connections import ConnectionProfile
-from sqlide.backend.db import objects, registry
+from sqlide.backend.db import metrics, objects, registry
 from sqlide.backend.db.base import Connector
 from sqlide.frontend import identity as identity_ui
 from sqlide.frontend import tree_search
@@ -237,6 +237,7 @@ class Sidebar(Gtk.ScrolledWindow):
         on_new_object: Callable[[ConnectionProfile, str], None],
         on_mcp_server: Callable[[ConnectionProfile], None],
         on_manage_users: Callable[[ConnectionProfile], None],
+        on_monitor: Callable[[ConnectionProfile], None],
         on_open_schema: Callable[[ConnectionProfile], None],
         on_edit_connection: Callable[[ConnectionProfile], None],
         on_disconnect: Callable[[ConnectionProfile], None],
@@ -269,6 +270,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_new_object = on_new_object
         self._on_mcp_server = on_mcp_server
         self._on_manage_users = on_manage_users
+        self._on_monitor = on_monitor
         self._on_open_schema = on_open_schema
         self._on_edit_connection = on_edit_connection
         self._on_disconnect = on_disconnect
@@ -339,6 +341,7 @@ class Sidebar(Gtk.ScrolledWindow):
             ("refresh", self._menu_refresh),
             ("mcp-server", self._menu_mcp_server),
             ("manage-users", self._menu_manage_users),
+            ("monitor", self._menu_monitor),
             ("open-schema", self._menu_open_schema),
             ("edit-connection", self._menu_edit_connection),
             ("disconnect", self._menu_disconnect),
@@ -1025,6 +1028,11 @@ class Sidebar(Gtk.ScrolledWindow):
                 # workspace's, so both stop at the connection row: a
                 # database row is a view onto the same server.
                 menu.append("Users & Permissions…", "schema.manage-users")
+                # Sessions, throughput and storage are the server's, so
+                # monitoring stops at the connection row too — and only
+                # for the engines that have a server to report on.
+                if metrics.supported(node.profile.kind if node.profile else ""):
+                    menu.append("Monitoring…", "schema.monitor")
                 menu.append("Edit…", "schema.edit-connection")
                 # Always listed, so the menu keeps its shape; only live
                 # while the connection actually has something open.
@@ -1227,6 +1235,11 @@ class Sidebar(Gtk.ScrolledWindow):
         node = self._menu_node
         if node is not None and node.profile is not None:
             self._on_manage_users(node.profile)
+
+    def _menu_monitor(self, *_args) -> None:
+        node = self._menu_node
+        if node is not None and node.profile is not None:
+            self._on_monitor(node.profile)
 
     def _menu_open_schema(self, *_args) -> None:
         node = self._menu_node

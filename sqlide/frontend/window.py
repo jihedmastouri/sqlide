@@ -85,7 +85,7 @@ from sqlide.frontend.util import (
 
 from sqlide.backend import identity, schemas
 from sqlide.backend.connections import ConnectionProfile
-from sqlide.backend.db import objects, registry
+from sqlide.backend.db import metrics, objects, registry
 from sqlide.backend.db.base import Connector, ConnectorError, FilterCondition
 from sqlide.backend.db.metadata import NodeRef
 from sqlide.backend import settings as settings_backend
@@ -109,6 +109,7 @@ from sqlide.frontend import tree_search
 from sqlide.frontend.sidebar import Sidebar
 from sqlide.frontend.status_bar import StatusBar
 from sqlide.frontend.table_designer import TableDesignerTab
+from sqlide.frontend.monitor_tab import MonitorTab
 from sqlide.frontend.users_tab import UsersTab
 from sqlide.frontend import transfer
 
@@ -362,6 +363,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_relation_graph=self.open_relation_graph,
             on_view_indexes=self.open_indexes,
             on_manage_users=self.open_users,
+            on_monitor=self.open_monitor,
             on_query_builder=self.open_query_builder,
             on_drop_object=self._drop_object,
             on_new_object=self._new_object,
@@ -1391,6 +1393,10 @@ class MainWindow(Adw.ApplicationWindow):
                 else:
                     self._confirm_console_close(view, page, name)
                     return True  # close_page_finish decides later
+        if isinstance(child, MonitorTab):
+            # Polling stops with the view: no timer, and no monitoring
+            # connection, outlives the tab that opened it.
+            child.shutdown()
         if isinstance(child, McpServerTab) and child.running:
             self._confirm_mcp_close(view, page, child)
             return True
@@ -1672,6 +1678,9 @@ class MainWindow(Adw.ApplicationWindow):
                 elif tab.kind == "users":
                     if profile is not None:
                         self.open_users(profile)
+                elif tab.kind == "monitor":
+                    if profile is not None:
+                        self.open_monitor(profile)
                 elif tab.kind == "object":
                     if profile is not None:
                         self.open_object(profile, objects.ObjectRef(
@@ -2495,6 +2504,29 @@ class MainWindow(Adw.ApplicationWindow):
             f"Users and permissions on {profile.name}",
         )
         return tab
+
+    def open_monitor(self, profile: ConnectionProfile) -> None:
+        """The connection's monitoring dashboard (CORE-15). One per
+        connection: the numbers are the server's, so a second tab would
+        be a second connection polling for the same answers.
+
+        Engines with no server to watch — SQLite is a file — have no
+        dashboard, and the sidebar does not offer the item."""
+        if not metrics.supported(profile.kind):
+            self.show_error(
+                f"{profile.kind} connections have no server metrics to show."
+            )
+            return
+        key = ("monitor", profile.name)
+        if self._focus_tab(key):
+            return
+        tab = MonitorTab(profile, self.show_error)
+        self._append_tab(
+            tab,
+            key,
+            f"{profile.name} ▸ monitor",
+            f"Sessions, throughput and storage on {profile.name}",
+        )
 
     def open_backups(self) -> None:
         """The backup manager. One per window: jobs, destinations and

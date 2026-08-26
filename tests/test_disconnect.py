@@ -67,6 +67,7 @@ def sidebar(gtk, sqlite_db):
         on_new_object=unused,
         on_mcp_server=unused,
         on_manage_users=unused,
+        on_monitor=unused,
         on_open_schema=unused,
         on_edit_connection=unused,
         on_disconnect=lambda p: disconnected.append(p.name),

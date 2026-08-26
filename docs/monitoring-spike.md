@@ -1,7 +1,7 @@
 ---
 title: Monitoring Spike
 description: What Postgres and MySQL will tell a plain client about themselves.
-order: 12
+order: 13
 ---
 
 This is the write-up of CORE-14: can sqlide show useful resource and

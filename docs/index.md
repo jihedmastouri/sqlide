@@ -33,6 +33,9 @@ database and run some SQL, that's the whole pitch.
   [Postgres Language Server](https://github.com/supabase-community/postgres-language-server)
   or [sqls](https://github.com/sqls-server/sqls), merged into the built-in
   keyword completion.
+- **Monitoring dashboard** — sessions, throughput, cache hit ratio, locks
+  and storage per connection, with cancel/kill where the account may,
+  and an explicit reason wherever a panel cannot be filled.
 - **MCP server** — expose a workspace's connections to an AI assistant
   over the [Model Context Protocol](https://modelcontextprotocol.io/),
   read-only by construction.

@@ -1,7 +1,7 @@
 ---
 title: Architecture
 description: How the backend and frontend are split, and where things live.
-order: 10
+order: 11
 ---
 
 Two top-level packages, strictly separated:
@@ -133,6 +133,8 @@ sqlide/
 │       ├── registry.py     # kind -> adapter, driver availability
 │       ├── objects.py      # per-node object descriptors (the info view)
 │       ├── metadata.py     # per-engine metadata providers (hierarchy, caps)
+│       ├── monitoring.py   # which monitoring sources a connection may read
+│       ├── metrics.py      # sampling those sources: counters, sessions, sizes
 │       ├── sqlite/
 │       ├── mysql/
 │       ├── postgres/
@@ -147,6 +149,7 @@ sqlide/
     ├── object_info.py       # read-only info view for any tree node
     ├── users_tab.py         # accounts + privileges (review-then-run DDL)
     ├── permission_editor.py  # one principal: object tree + privilege grid
+    ├── monitor_tab.py       # live dashboard: sessions, throughput, storage
     ├── backups_tab.py       # backup manager: jobs, schedules, run history
     ├── backup_destinations.py  # destination list + per-kind editor
     ├── backup_restore.py    # pick artifact -> pick target -> confirm -> run

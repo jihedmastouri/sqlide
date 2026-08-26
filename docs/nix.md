@@ -1,7 +1,7 @@
 ---
 title: Nix
 description: Building and developing sqlide with the flake.
-order: 11
+order: 12
 ---
 
 The repo ships a `flake.nix`. It is entirely optional — everything in

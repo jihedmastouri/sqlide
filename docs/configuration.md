@@ -120,6 +120,7 @@ key with a value outside its set is reported and falls back.
 | `confirm_destructive` | `"always"` \| `"non-dev"` \| `"never"` | `"non-dev"` | When a destructive statement asks first. `"non-dev"` runs development connections without a prompt. |
 | `max_result_rows` | integer ≥ 0 | `5000` | Row cap for a console or preview statement. `0` means no cap. |
 | `time_zone` | `"local"` \| `"utc"` \| `"server"` | `"local"` | Which zone a database session reports timestamps in. `"server"` takes whatever the server is set to. |
+| `sidebar_width` | integer | `280` | Width of the connections sidebar, in pixels. Clamped to 180–600; drag its inner edge to change it, double-click that edge to reset. |
 | `lsp_enabled` | boolean | `true` | Master switch for completion language servers. |
 | `last_workspace` | string | `""` | Id of the workspace to reopen on startup. Empty, or a workspace that no longer exists, opens the first on file. |
 

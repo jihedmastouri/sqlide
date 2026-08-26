@@ -50,6 +50,10 @@ Settings:
   launch lands in the workspace you were last in rather than on a
   picker. Empty (or naming a workspace that no longer exists) falls
   back to the first workspace on file.
+- sidebar_width: width in pixels of the window's connections sidebar,
+  so a drag survives a restart. Clamped to SIDEBAR_MIN_WIDTH ..
+  SIDEBAR_MAX_WIDTH on the way in and out, and double-clicking the
+  drag handle puts DEFAULT_SIDEBAR_WIDTH back.
 - keymap: user-edited keyboard shortcuts, action id -> accelerator
   string (Gtk.accelerator_parse() syntax; "" means "no binding"). Only
   actions the user rebound appear here — everything else falls back to
@@ -75,6 +79,18 @@ TIME_ZONES = ("local", "utc", "server")
 DEFAULT_TIME_ZONE = "local"
 DEFAULT_FONT_SIZE = 11
 DEFAULT_MAX_RESULT_ROWS = 5000
+# The connections sidebar: how wide it starts, and how far a drag of
+# its handle may take it either way.
+DEFAULT_SIDEBAR_WIDTH = 280
+SIDEBAR_MIN_WIDTH = 180
+SIDEBAR_MAX_WIDTH = 600
+
+
+def clamp_sidebar_width(width: int) -> int:
+    """A sidebar width held to its allowed range — the one place the
+    limits are applied, whether the number came from a drag or from a
+    hand-edited settings.toml."""
+    return max(SIDEBAR_MIN_WIDTH, min(SIDEBAR_MAX_WIDTH, int(width)))
 
 
 @dataclass
@@ -88,6 +104,7 @@ class Settings:
     lsp_enabled: bool = True
     lsp_defaults: dict[str, str] = field(default_factory=dict)
     mcp_defaults: dict[str, str] = field(default_factory=dict)
+    sidebar_width: int = DEFAULT_SIDEBAR_WIDTH
     last_workspace: str = ""
     keymap: dict[str, str] = field(default_factory=dict)
 
@@ -153,6 +170,9 @@ class Settings:
             lsp_enabled=flag("lsp_enabled", True),
             lsp_defaults=table("lsp_defaults"),
             mcp_defaults=table("mcp_defaults"),
+            sidebar_width=clamp_sidebar_width(
+                number("sidebar_width", DEFAULT_SIDEBAR_WIDTH)
+            ),
             last_workspace=text("last_workspace"),
             keymap=table("keymap"),
         )

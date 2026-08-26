@@ -70,7 +70,13 @@ individual index row is browse-to-drop only. Context menus
 are built per popup
 because their items depend on the connection's capabilities. Hovering
 a table/view shows its DDL in a tooltip (fetched lazily, cached on the
-node); hovering a connection shows a short summary.
+node); hovering a connection shows a short summary; hovering any other
+row whose name is long enough to run past a narrow sidebar shows the
+name in full.
+
+Labels are never ellipsized, so the tree keeps its natural width and
+the sidebar (a Gtk.ScrolledWindow) grows a horizontal scrollbar when
+that is wider than the panel, and a vertical one when it is taller.
 
 set_filter() switches the view to search mode: the same tree, pruned
 to the rows whose names match the query (subsequence match, matched
@@ -94,7 +100,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Callable
 
-from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
 
 from sqlide.backend import identity
 from sqlide.backend.connections import ConnectionProfile
@@ -152,6 +158,11 @@ _LAZY_CATEGORIES = {
     "triggers": "trigger",
     "events": "event",
 }
+
+
+# From how many characters a plain row's name earns a tooltip of its
+# own — about what fits in the sidebar at its default width.
+_LONG_LABEL = 28
 
 
 class Node(GObject.Object):
@@ -236,6 +247,13 @@ class Sidebar(Gtk.ScrolledWindow):
         show_error: Callable[[str], None],
     ) -> None:
         super().__init__(vexpand=True)
+        # Both scrollbars, on demand. Row labels are not ellipsized
+        # (a truncated "customer_order_line_items" tells you nothing),
+        # so a deep tree or a long name scrolls rather than being cut
+        # to fit whatever width the sidebar was dragged to. The
+        # ListView recycles rows, so only what is on screen is built
+        # however big the tree gets.
+        self.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self._ensure = ensure_connector
         self._on_open_table = on_open_table
         self._on_open_object = on_open_object
@@ -843,7 +861,6 @@ class Sidebar(Gtk.ScrolledWindow):
         icon = Gtk.Image()
         icon.set_visible(False)
         label = Gtk.Label(xalign=0, hexpand=True)
-        label.set_ellipsize(Pango.EllipsizeMode.END)
         pk = Gtk.Label(label="PK")
         pk.add_css_class("caption")
         pk.add_css_class("accent")
@@ -1284,7 +1301,7 @@ class Sidebar(Gtk.ScrolledWindow):
             tooltip.set_text(_connection_summary(node))
             return True
         if node.kind not in ("table", "view"):
-            return False
+            return _name_tooltip(node, tooltip)
         if node.ddl is None:
             # First hover: kick off the fetch and show a placeholder;
             # the widget re-queries the tooltip when the DDL arrives.
@@ -1292,7 +1309,7 @@ class Sidebar(Gtk.ScrolledWindow):
             tooltip.set_text("Loading DDL…")
             return True
         if not node.ddl:
-            return False
+            return _name_tooltip(node, tooltip)
         label = Gtk.Label(label=_clamp_lines(node.ddl, 30), xalign=0)
         label.add_css_class("monospace")
         tooltip.set_custom(label)
@@ -1493,6 +1510,20 @@ def _set_caret(caret: Gtk.Image, expanded: bool) -> None:
     caret.set_from_icon_name(
         "pan-down-symbolic" if expanded else "pan-end-symbolic"
     )
+
+
+def _name_tooltip(node: Node, tooltip: Gtk.Tooltip) -> bool:
+    """Fallback tooltip: the row's own name, for names long enough to
+    run past a sidebar dragged narrow. Nothing is ellipsized — the row
+    can always be scrolled to — but reading a name without reaching
+    for the scrollbar is worth a tooltip."""
+    text = node.label if not node.filtered or node.source is None else (
+        node.source.label
+    )
+    if len(text) < _LONG_LABEL:
+        return False
+    tooltip.set_text(text)
+    return True
 
 
 def _connection_summary(node: Node) -> str:

@@ -62,6 +62,8 @@ class MetadataProvider:
     def permission_set(self, user, ref) -> PermissionSet   # the editor
     def permission_statements(self, user, current, desired) -> list[str]
     def apply_permissions(self, statements) -> None
+    def qualified_name(self, ref) -> str       # "staging.orders" or "orders"
+    def quoted_name(self, ref) -> str          # the same, per-part quoted
 ```
 
 One implementation per engine, in that engine's folder
@@ -82,6 +84,16 @@ Those modules import nothing but `db.base`, which is what lets
 before a connection exists (or with the driver not installed):
 `frontend/query_console.py` asks it whether to offer a database
 switcher, and no UI module branches on the engine name.
+Where a level exists, everything that names an object uses it. The
+provider answers `qualified_name` / `quoted_name` for a `NodeRef` —
+schema-first on PostgreSQL, the bare name on MySQL and SQLite — so tab
+titles, breadcrumbs, headings and generated GRANT text agree without
+any of them branching on the engine, and a reserved or capitalised name
+is quoted one part at a time rather than as one string. The sidebar and
+the console reach a schema the same way: a profile copy with `schema`
+pinned (`frontend/sidebar.schema_profile`), whose connection puts that
+schema on its search path, so bare names in existing catalog queries
+and generated SQL resolve where the row says they do.
 `registry.create_provider(kind, connector)` binds one to an open
 connection. Everything a provider does is a catalog query, so it runs
 on a worker thread like the connector underneath it.

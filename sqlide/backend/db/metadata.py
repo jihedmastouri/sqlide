@@ -141,6 +141,25 @@ class NodeRef:
     category: str = ""
     detail: str = ""  # one-line note for the row (a type, a table)
 
+    #: The kinds that live *inside* a schema, and so are qualified by
+    #: one. A database or a schema names itself; a column and an index
+    #: are named through the table above them.
+    QUALIFIED_KINDS = ("table", "view", "function", "procedure")
+
+    @property
+    def path(self) -> tuple[str, ...]:
+        """The node's address, outermost first — the parts that are
+        actually filled. `database.schema.object` on PostgreSQL,
+        `database.object` on MySQL, `object` on SQLite (PG-01)."""
+        parts = [p for p in (self.database, self.schema) if p]
+        if self.kind == "database":
+            return (self.name,)
+        if self.kind == "schema":
+            return tuple(dict.fromkeys([*parts, self.name]))
+        if self.name:
+            parts.append(self.name)
+        return tuple(parts)
+
     def child(self, kind: str, name: str, **extra) -> NodeRef:
         """A child of this node, inheriting its database and schema."""
         return NodeRef(
@@ -404,6 +423,12 @@ class MetadataProvider:
             category=ref.category,
             detail=ref.detail,
         )
+        qualified = self.qualified_name(ref)
+        if qualified != info.name:
+            # The heading names the object the way the rest of the app
+            # does: `crm.customers`, not whichever `customers` the
+            # search path happened to find (PG-01).
+            info = replace(info, name=qualified)
         return self._with_permissions(info, ref)
 
     @classmethod
@@ -446,6 +471,52 @@ class MetadataProvider:
             kind=ref.kind or "table",
         )
         return self._with_permissions(info, ref)
+
+    # Naming (PG-01)
+
+    def qualified_name(self, ref: NodeRef) -> str:
+        """`ref` as a person should see it written: `schema.object` on
+        an engine where a schema is a level of its own, the bare name
+        everywhere else.
+
+        This is the one place that decides how much of an object's
+        address is worth showing, so a tab title, a breadcrumb and a
+        generated statement all agree. On MySQL and SQLite it answers
+        the plain name and no phantom level appears.
+        """
+        schema = self.schema_of(ref)
+        if not schema:
+            return ref.name
+        return f"{schema}.{ref.name}"
+
+    def quoted_name(self, ref: NodeRef) -> str:
+        """The same address, quoted for this dialect — what belongs in
+        generated SQL and DDL.
+
+        Each part is quoted separately, so a schema or an object whose
+        name is a reserved word, has capitals or contains a dot stays
+        one identifier per part instead of being re-read as a
+        qualification the caller never wrote.
+        """
+        quote = self.connector.quote_ident
+        if not ref.name:
+            return ""
+        schema = self.schema_of(ref)
+        if not schema:
+            return quote(ref.name)
+        return f"{quote(schema)}.{quote(ref.name)}"
+
+    def schema_of(self, ref: NodeRef) -> str:
+        """The schema `ref` should be qualified by, empty where it
+        should not be qualified at all: an engine without schemas, a
+        node that names no schema, and the kinds that are not addressed
+        through one (a database, a schema itself, a category folder, a
+        column named through its table)."""
+        if not self.CAPABILITIES.schemas or not ref.schema:
+            return ""
+        if ref.kind not in NodeRef.QUALIFIED_KINDS:
+            return ""
+        return ref.schema
 
     def get_ddl(self, ref: NodeRef) -> str:
         """The object's CREATE statement, empty where the engine has

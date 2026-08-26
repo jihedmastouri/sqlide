@@ -676,3 +676,151 @@ def test_a_failing_permission_batch_applies_nothing(postgres):
         assert not provider.permission_set(user, ref).state("SELECT").granted
     finally:
         db.execute('DROP ROLE IF EXISTS "sqlide_perm_test"')
+
+
+# Schema as a level of its own (PG-01).
+
+
+@pytest.fixture()
+def crm_schema(postgres):
+    """A second schema with a table that `public.orders` points at, so
+    the cross-schema cases have something real to cross into."""
+    _, db = postgres
+    db.execute('DROP SCHEMA IF EXISTS "sqlide_crm" CASCADE')
+    db.execute('CREATE SCHEMA "sqlide_crm"')
+    db.execute(
+        'CREATE TABLE "sqlide_crm"."accounts" ('
+        " id integer PRIMARY KEY, label text)"
+    )
+    db.execute(
+        'ALTER TABLE "public"."orders" ADD COLUMN account_id integer '
+        'REFERENCES "sqlide_crm"."accounts" (id)'
+    )
+    yield db
+    db.execute('ALTER TABLE "public"."orders" DROP COLUMN account_id')
+    db.execute('DROP SCHEMA IF EXISTS "sqlide_crm" CASCADE')
+
+
+def test_search_path_is_readable_and_switchable(postgres):
+    _, db = postgres
+    before = db.search_path()
+    assert "public" in before
+    db.execute('DROP SCHEMA IF EXISTS "sqlide_path" CASCADE')
+    db.execute('CREATE SCHEMA "sqlide_path"')
+    try:
+        db.set_search_path("sqlide_path")
+        path = db.search_path()
+        # The *effective* path, so the implicit pg_catalog is in it and
+        # the chosen schema is the only user schema left on it.
+        assert path.split(", ") == ["pg_catalog", "sqlide_path"]
+        assert db.current_schema() == "sqlide_path"
+    finally:
+        db.set_search_path("")
+        db.execute('DROP SCHEMA IF EXISTS "sqlide_path" CASCADE')
+    assert db.current_schema() == "public"
+
+
+def test_set_search_path_refuses_a_schema_that_is_not_there(postgres):
+    _, db = postgres
+    with pytest.raises(ConnectorError):
+        db.set_search_path("no_such_schema_here")
+
+
+def test_relations_carry_both_schemas(crm_schema):
+    db = crm_schema
+    crossing = [
+        r for r in db.list_relations()
+        if r.table == "orders" and r.column == "account_id"
+    ]
+    assert crossing, "the cross-schema foreign key was not reported"
+    relation = crossing[0]
+    assert relation.schema == "public"
+    assert relation.ref_schema == "sqlide_crm"
+    assert relation.cross_schema
+    # Qualified only where it crosses: a key inside the schema reads as
+    # it always did.
+    assert relation.target == "sqlide_crm.accounts"
+    same = next(
+        r for r in db.list_relations()
+        if r.table == "orders" and r.column == "user_id"
+    )
+    assert not same.cross_schema and same.target == "users"
+
+
+def test_inbound_references_are_found_across_schemas(crm_schema):
+    db = crm_schema
+    try:
+        # The referring table lives in a schema that is not on the path
+        # at all, and is still reported.
+        db.set_search_path("sqlide_crm")
+        inbound = db.list_references("accounts")
+    finally:
+        db.set_search_path("")
+    assert [(r.schema, r.table, r.column) for r in inbound] == [
+        ("public", "orders", "account_id")
+    ]
+    assert inbound[0].source == "public.orders"
+
+
+def test_foreign_key_section_qualifies_only_the_crossing_row(crm_schema):
+    from sqlide.backend.db import objects
+
+    db = crm_schema
+    info = objects.table_properties(db, "orders", ("general", "foreign_keys"))
+    section = next(t for t in info.tables if t.slug == "foreign_keys")
+    references = {row[0]: row[1] for row in section.rows}
+    assert references["account_id"] == "sqlide_crm.accounts.id"
+    assert references["user_id"] == "users.id"
+    # The crossing row links with the schema on it, so following it
+    # opens that `accounts` and not another.
+    crossing = section.rows.index(("account_id", "sqlide_crm.accounts.id"))
+    assert section.link(crossing).schema == "sqlide_crm"
+    same = section.rows.index(("user_id", "users.id"))
+    assert section.link(same).schema == ""
+
+
+def test_provider_qualifies_and_quotes_by_schema(crm_schema):
+    from sqlide.backend.db.metadata import NodeRef
+    from sqlide.backend.db.postgres.metadata import PostgresMetadata
+
+    provider = PostgresMetadata(crm_schema)
+    ref = NodeRef("table", "accounts", database="sqlide", schema="sqlide_crm")
+    assert provider.qualified_name(ref) == "sqlide_crm.accounts"
+    assert provider.quoted_name(ref) == '"sqlide_crm"."accounts"'
+    assert provider.grant_target(ref) == 'TABLE "sqlide_crm"."accounts"'
+    assert ref.path == ("sqlide", "sqlide_crm", "accounts")
+    # A schema names itself; it is not qualified by itself.
+    schema = NodeRef("schema", "sqlide_crm", database="sqlide",
+                     schema="sqlide_crm")
+    assert provider.qualified_name(schema) == "sqlide_crm"
+    assert schema.path == ("sqlide", "sqlide_crm")
+
+
+def test_reserved_and_capitalised_names_stay_one_identifier(postgres):
+    from sqlide.backend.db.metadata import NodeRef
+    from sqlide.backend.db.postgres.metadata import PostgresMetadata
+
+    _, db = postgres
+    provider = PostgresMetadata(db)
+    ref = NodeRef("table", "Order.2024", schema="select")
+    assert provider.quoted_name(ref) == '"select"."Order.2024"'
+    assert provider.grant_target(ref) == 'TABLE "select"."Order.2024"'
+
+
+def test_schema_node_lists_its_own_tables(crm_schema):
+    from sqlide.backend.db.metadata import NodeRef
+    from sqlide.backend.db.postgres.metadata import PostgresMetadata
+
+    provider = PostgresMetadata(crm_schema)
+    schemas = provider.list_children(NodeRef("database", "sqlide"))
+    crm = next(s for s in schemas if s.name == "sqlide_crm")
+    assert crm.kind == "schema" and crm.schema == "sqlide_crm"
+    tables = provider.list_children(
+        crm.child("category", "Tables", category="tables")
+    )
+    assert [t.name for t in tables] == ["accounts"]
+    # The schema travels down to the object, so the row can name itself
+    # in full.
+    assert tables[0].schema == "sqlide_crm"
+    assert provider.qualified_name(tables[0]) == "sqlide_crm.accounts"
+    assert provider.describe(tables[0]).name == "sqlide_crm.accounts"

@@ -143,12 +143,47 @@ class TypeSpec:
 
 @dataclass(frozen=True)
 class RelationInfo:
-    """One foreign-key column: table.column references ref_table.ref_column."""
+    """One foreign-key column: table.column references ref_table.ref_column.
+
+    `schema` and `ref_schema` are filled only by the engines that have
+    schemas as a level of their own (PostgreSQL, PG-01); everywhere
+    else they stay empty and the names read exactly as before. A
+    foreign key that leaves its own schema is the reason they exist:
+    `orders.customer_id -> customers.id` says nothing about *which*
+    `customers`, and `crm.customers.id` does.
+    """
 
     table: str
     column: str
     ref_table: str
     ref_column: str
+    schema: str = ""
+    ref_schema: str = ""
+
+    @property
+    def cross_schema(self) -> bool:
+        """Whether this key points outside the schema it is declared
+        in. False wherever the engine has no schema level to leave."""
+        return bool(self.ref_schema) and self.ref_schema != self.schema
+
+    @property
+    def target(self) -> str:
+        """The referenced table as a row should print it: qualified
+        when the key crosses a schema boundary, bare when it does
+        not — a schema prefix on every row is noise that hides the one
+        row where it matters."""
+        if self.cross_schema:
+            return f"{self.ref_schema}.{self.ref_table}"
+        return self.ref_table
+
+    @property
+    def source(self) -> str:
+        """The referring table, qualified on the same rule — for the
+        inbound view, where the interesting row is the one arriving
+        from another schema."""
+        if self.cross_schema:
+            return f"{self.schema}.{self.table}" if self.schema else self.table
+        return self.table
 
 
 @dataclass(frozen=True)
@@ -360,6 +395,26 @@ class Connector(ABC):
         """The schema unqualified object names resolve to. Empty when
         the adapter has no schemas (see list_schemas)."""
         return ""
+
+    def search_path(self) -> str:
+        """The schemas an unqualified name is looked up in, in order,
+        as one line for the console to show (PG-01).
+
+        Defaults to `current_schema()` — an engine with one schema
+        level and no search path of its own has a path of exactly one
+        entry — and to nothing at all where there are no schemas.
+        """
+        return self.current_schema()
+
+    def set_search_path(self, schema: str) -> None:
+        """Make `schema` the one unqualified names resolve in, for the
+        rest of this session.
+
+        A no-op wherever schemas are not a level of their own: in
+        MySQL the database switcher already did it, and SQLite has
+        nothing to switch.
+        """
+        return None
 
     def list_functions(self) -> list[FunctionInfo]:
         """Stored functions in the connected database, sorted by name.

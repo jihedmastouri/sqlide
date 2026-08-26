@@ -16,6 +16,8 @@ makes for these listings.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from sqlide.backend.db.metadata import Capabilities, MetadataProvider, NodeRef
 
 
@@ -72,22 +74,34 @@ class PostgresMetadata(MetadataProvider):
     # on the table", and unticking one would build a REVOKE that does not
     # do what the box says. Column grants stay in the Grant… dialog.
 
+    #: The keyword GRANT names each kind of target with.
+    _GRANT_KEYWORDS = {
+        "table": "TABLE", "view": "TABLE",
+        "function": "FUNCTION", "procedure": "PROCEDURE",
+    }
+
     def grant_target(self, ref: NodeRef) -> str:
-        """The object as GRANT names it. The connection row is not one:
-        cluster-wide rights are role attributes (SUPERUSER, CREATEDB),
-        set with ALTER ROLE rather than granted on a target."""
+        """The object as GRANT names it, schema-qualified and quoted
+        part by part (PG-01) — `TABLE "staging"."orders"`, never the
+        bare name whichever search path happens to resolve.
+
+        The connection row is not a target: cluster-wide rights are
+        role attributes (SUPERUSER, CREATEDB), set with ALTER ROLE
+        rather than granted on anything.
+        """
         quote = self.connector.quote_ident
         if ref.kind == "database":
             return f"DATABASE {quote(ref.name)}"
         if ref.kind == "schema":
             return f"SCHEMA {quote(ref.name)}"
-        schema = ref.schema or self._safe_schema()
-        if ref.kind in ("table", "view"):
-            return f"TABLE {quote(schema)}.{quote(ref.name)}"
-        if ref.kind in ("function", "procedure"):
-            keyword = "FUNCTION" if ref.kind == "function" else "PROCEDURE"
-            return f"{keyword} {quote(schema)}.{quote(ref.name)}"
-        return ""
+        keyword = self._GRANT_KEYWORDS.get(ref.kind)
+        if keyword is None:
+            return ""
+        if not ref.schema:
+            # A node that names no schema is one the search path found,
+            # so that is the schema it is in.
+            ref = replace(ref, schema=self._safe_schema())
+        return f"{keyword} {self.quoted_name(ref)}"
 
     def _safe_schema(self) -> str:
         """The schema a node that names none belongs to: the one the

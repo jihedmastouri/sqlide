@@ -32,10 +32,16 @@ MAX_HISTORY = 200
 
 @dataclass
 class TabState:
-    kind: str  # "table" | "query" | "cli" | "definition" | "function" | "relations" | "querybuilder" | "indexes" | "users"
+    kind: str  # "table" | "query" | "cli" | "definition" | "function" | "relations" | "querybuilder" | "indexes" | "users" | "object"
     connection: str  # ConnectionProfile.name within the workspace
     table: str = ""  # table/definition/function tabs: object name; querybuilder: base table
     sql: str = ""  # query tabs only
+    # Object info tabs: which node of the tree the tab was opened on.
+    # `table` carries the object's own name, so these three are the
+    # rest of its identity (see frontend/object_info.py).
+    object_kind: str = ""  # "index" | "column" | "category" | …
+    object_owner: str = ""  # owning table, for the kinds that need one
+    object_category: str = ""  # category nodes: "indexes", "triggers", …
 
 
 @dataclass

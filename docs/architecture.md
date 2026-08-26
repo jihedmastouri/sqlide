@@ -79,6 +79,7 @@ sqlide/
 │   └── db/
 │       ├── base.py         # Connector ABC + dataclasses + ConnectorError
 │       ├── registry.py     # kind -> adapter, driver availability
+│       ├── objects.py      # per-node object descriptors (the info view)
 │       ├── sqlite/
 │       ├── mysql/
 │       ├── postgres/
@@ -89,6 +90,7 @@ sqlide/
     ├── launcher.py         # in-app workspace switcher
     ├── window.py           # one workspace: split view, tabs, pop-outs, connectors
     ├── sidebar.py           # lazy schema tree (TreeListModel)
+    ├── object_info.py       # read-only info view for any tree node
     ├── users_tab.py         # accounts + privileges (review-then-run DDL)
     ├── backups_tab.py       # backup manager: jobs, schedules, run history
     ├── backup_destinations.py  # destination list + per-kind editor

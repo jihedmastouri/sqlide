@@ -21,11 +21,16 @@ saved back to the workspace file whenever they change and when the
 window closes (which also captures query-console SQL and the selected
 tab). When no tabs are open the content area shows a status message.
 
-Layout: the connections sidebar is the outermost OverlaySplitView and
-runs the full window height with its own header bar (Workspaces,
-settings menu) over a row that offers Add Connection, a search icon and
-Refresh — clicking the search icon puts the table filter where the
-first two were. It is not collapsible or closable. To its right, the content area has its own
+Layout: the connections sidebar is the start child of the outermost
+Gtk.Paned and runs the full window height with its own header bar
+(Workspaces, settings menu) over a row that offers Add Connection, a
+search icon and Refresh — clicking the search icon puts the table
+filter where the first two were. It is not collapsible or closable,
+but its inner edge is a drag handle like the side panel's: the width
+is held between settings.SIDEBAR_MIN_WIDTH and SIDEBAR_MAX_WIDTH,
+double-clicking the handle resets it to the default, and whatever it
+is left at is written to settings.toml, so it survives a restart. To
+its right, the content area has its own
 header bar and the workspace's identity stripe under it, then a
 Gtk.Paned whose draggable right-hand child is the side panel (hidden by
 default) wraps the tab area. A persistent status bar
@@ -82,6 +87,7 @@ from sqlide.backend import identity, schemas
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import objects, registry
 from sqlide.backend.db.base import Connector, ConnectorError, FilterCondition
+from sqlide.backend import settings as settings_backend
 from sqlide.backend.workspaces import HistoryEntry, Workspace
 from sqlide.frontend.cli_console import CliConsole
 from sqlide.frontend.connection_dialog import ConnectionDialog
@@ -110,6 +116,13 @@ from sqlide.frontend import transfer
 # floor is what a DDL listing needs before it starts wrapping every
 # line; the default leaves the tab area the larger half on a 1100px
 # window, which is the size this window opens at.
+# How long a sidebar drag must be still before its width is written
+# back to settings.toml, and how many pixels either side of the drag
+# handle still count as "on the handle" for the double-click reset
+# (GTK4 gives no handle width to ask for, and the divider is a few
+# pixels wide however it is themed).
+_SIDEBAR_WIDTH_SAVE_DELAY = 400
+_HANDLE_GRAB = 8
 _SIDE_PANEL_WIDTH = 340
 _SIDE_PANEL_MIN_WIDTH = 260
 
@@ -290,10 +303,33 @@ class MainWindow(Adw.ApplicationWindow):
             [p.name for p in workspace.connections]
         )
 
-        self._split = Adw.OverlaySplitView(show_sidebar=True)
-        self._split.set_min_sidebar_width(220)
-        self._split.set_enable_hide_gesture(False)
-        self._split.set_enable_show_gesture(False)
+        # A Gtk.Paned, not an Adw.OverlaySplitView: the sidebar is
+        # never collapsed here, and a Paned is what gives its inner
+        # edge a drag handle. The sidebar keeps its size when the
+        # window is resized (the content area absorbs it) and can't be
+        # dragged narrower than its size request.
+        self._split = Gtk.Paned(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            resize_start_child=False,
+            shrink_start_child=False,
+            resize_end_child=True,
+            shrink_end_child=True,
+        )
+        self._split.set_position(
+            settings_backend.clamp_sidebar_width(
+                settings_backend.store.settings.sidebar_width
+            )
+        )
+        self._split.connect("notify::position", self._sidebar_resized)
+        self._sidebar_width_source = 0
+        # Double-clicking the handle puts the default width back. The
+        # gesture sits on the Paned itself and only answers clicks that
+        # land on the handle, so a double click inside either child is
+        # left alone.
+        reset = Gtk.GestureClick()
+        reset.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        reset.connect("pressed", self._handle_clicked)
+        self._split.add_controller(reset)
 
         # Sidebar. It is not collapsible and spans the full window
         # height, with its own header at the very top — the window's
@@ -342,7 +378,8 @@ class MainWindow(Adw.ApplicationWindow):
         sidebar_view.add_top_bar(sidebar_header)
         sidebar_view.add_top_bar(self._sidebar_actions())
         sidebar_view.set_content(self._sidebar)
-        self._split.set_sidebar(sidebar_view)
+        sidebar_view.set_size_request(settings_backend.SIDEBAR_MIN_WIDTH, -1)
+        self._split.set_start_child(sidebar_view)
 
         # Content: one or more tab panes (each with its own tab bar) in
         # nested Paned splitters, or a placeholder when nothing is open.
@@ -470,7 +507,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._transaction_since: dict[str, float] = {}
         GLib.timeout_add_seconds(20, self._status_tick)
 
-        self._split.set_content(top_view)
+        self._split.set_end_child(top_view)
 
         # Tab overview: zoomed-out grid of tab thumbnails. It must wrap
         # the widget tree that contains the TabView so open tabs stay
@@ -530,6 +567,46 @@ class MainWindow(Adw.ApplicationWindow):
             self._sidebar.add_profile(profile)
         self._restore_tabs()
         self._update_active_panel()
+
+    # Sidebar width
+
+    def _sidebar_resized(self, *_args) -> None:
+        """Keep a drag inside the allowed range and remember where it
+        stopped. The write is debounced: a drag emits a position change
+        per frame, and settings.toml is not a thing to rewrite sixty
+        times a second."""
+        position = self._split.get_position()
+        clamped = settings_backend.clamp_sidebar_width(position)
+        if clamped != position:
+            self._split.set_position(clamped)
+            return  # the set re-enters here with the clamped value
+        if self._sidebar_width_source:
+            GLib.source_remove(self._sidebar_width_source)
+        self._sidebar_width_source = GLib.timeout_add(
+            _SIDEBAR_WIDTH_SAVE_DELAY, self._save_sidebar_width
+        )
+
+    def _save_sidebar_width(self) -> bool:
+        self._sidebar_width_source = 0
+        width = settings_backend.clamp_sidebar_width(
+            self._split.get_position()
+        )
+        if width != settings_backend.store.settings.sidebar_width:
+            settings_backend.store.update(sidebar_width=width)
+        return GLib.SOURCE_REMOVE
+
+    def _handle_clicked(self, gesture, n_press: int, x: float, _y: float):
+        """Double click on the divider — and only on the divider —
+        restores the default width."""
+        if n_press != 2:
+            return
+        position = self._split.get_position()
+        if not (
+            position - _HANDLE_GRAB <= x <= position + _HANDLE_GRAB
+        ):
+            return
+        self._split.set_position(settings_backend.DEFAULT_SIDEBAR_WIDTH)
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
 
     # Side panel
 
@@ -1630,6 +1707,9 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_close_request(self, *_args) -> bool:
         self._save_state()
+        if self._sidebar_width_source:
+            GLib.source_remove(self._sidebar_width_source)
+            self._save_sidebar_width()
         if self._close_confirmed:
             return False
         # Keep the window and ask; a confirming response closes it for

@@ -1,6 +1,6 @@
 ## CORE-03 — Sidebar search mode
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** —
 
 ### Problem
@@ -14,14 +14,14 @@ Clicking search in the left sidebar turns that toolbar row into a search row.
 
 ### Acceptance criteria
 
-- [ ] Clicking the search button hides the other buttons in that row and shows a
+- [x] Clicking the search button hides the other buttons in that row and shows a
       search input, an **Exit** control and a **Filter** control.
-- [ ] Filter lets the user scope results by object type (connections, databases,
+- [x] Filter lets the user scope results by object type (connections, databases,
       schemas where applicable, tables, views, indexes, functions, columns) —
       multi-select, with an "All" default.
-- [ ] Exit (and `Esc`) restores the normal toolbar, clears the query and restores
+- [x] Exit (and `Esc`) restores the normal toolbar, clears the query and restores
       the previous tree expansion state.
-- [ ] Results are filtered in-tree, showing matching nodes with their ancestors,
+- [x] Results are filtered in-tree, showing matching nodes with their ancestors,
       match text highlighted.
-- [ ] Search is debounced and does not block the UI on large trees.
-- [ ] The chosen filter scope persists for the session.
+- [x] Search is debounced and does not block the UI on large trees.
+- [x] The chosen filter scope persists for the session.

@@ -64,10 +64,13 @@ because their items depend on the connection's capabilities. Hovering
 a table/view shows its DDL in a tooltip (fetched lazily, cached on the
 node); hovering a connection shows a short summary.
 
-set_filter() switches the view to fuzzy-find mode: a flat list of the
-tables, views and functions whose names loosely match the query
-(subsequence match), across every connection whose schema has already
-been loaded. Clearing the query restores the tree.
+set_filter() switches the view to search mode: the same tree, pruned
+to the rows whose names match the query (subsequence match, matched
+letters bold) together with their ancestors, optionally narrowed to
+chosen object kinds (frontend/tree_search.py). Only already-loaded
+schema is searched. clear_filter() — Exit, or Escape, in the sidebar's
+search row — brings the tree back with the expansion it had when
+search opened.
 
 Lazy loading: GTK probes create_func just to decide whether a row gets
 an expander arrow, so it must stay cheap — it only creates (and caches)
@@ -90,6 +93,7 @@ from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import objects
 from sqlide.backend.db.base import Connector
 from sqlide.frontend import identity as identity_ui
+from sqlide.frontend import tree_search
 from sqlide.frontend.util import describe, run_async
 
 _EXPANDABLE = ("connection", "database", "category", "table", "view")
@@ -173,6 +177,11 @@ class Node(GObject.Object):
         # Connection rows: adapter capabilities, known once loaded.
         self.ddl_kinds: tuple[str, ...] = ()
         self.supports_drop = False
+        # Search mode: this row is a throwaway clone of `source`, and
+        # search_ranges are the letters of its label the query lit up.
+        self.filtered = False
+        self.source: Node | None = None
+        self.search_ranges: tuple[tuple[int, int], ...] = ()
 
 
 class Sidebar(Gtk.ScrolledWindow):
@@ -226,6 +235,10 @@ class Sidebar(Gtk.ScrolledWindow):
         # recycled, so the handler resolves the node through this
         # rather than through a captured reference).
         self._new_buttons: dict[Gtk.Widget, Node] = {}
+
+        # Search mode: the tree expansion to put back on the way out.
+        self._filtering = False
+        self._saved_expansion: frozenset[str] = frozenset()
 
         self._roots = Gio.ListStore(item_type=Node)
         self._tree = Gtk.TreeListModel.new(
@@ -333,67 +346,112 @@ class Sidebar(Gtk.ScrolledWindow):
         if dot is not None:
             _style_dot(dot, connected)
 
-    def set_filter(self, text: str) -> None:
-        """Fuzzy-find mode: replace the tree with a flat list of the
-        matching tables/views/functions of every loaded connection;
-        an empty query restores the tree."""
-        text = text.strip().lower()
+    def set_filter(
+        self, text: str, scopes: frozenset[str] = frozenset()
+    ) -> None:
+        """Search mode: keep the tree's shape but show only the rows
+        whose names match, each under its own ancestors, with the
+        matched letters bold. `scopes` narrows the hunt to object kinds
+        (see frontend/tree_search.py); the empty set is "All".
+
+        Only what a connection has already loaded is searched — the
+        sidebar never connects behind the user's back — and the tree
+        expansion of the moment search opened is remembered, so leaving
+        search puts the sidebar back exactly as it was."""
+        text = text.strip()
         if not text:
-            self._view.set_model(Gtk.SingleSelection(model=self._tree))
+            self.clear_filter()
             return
-        matches = []
-        for node in self._search_candidates():
-            key = _fuzzy_key(text, node.label.lower())
-            if key is not None:
-                matches.append((key, node))
-        matches.sort(key=lambda pair: (pair[0], pair[1].label.lower()))
-        store = Gio.ListStore(item_type=Node)
-        for _key, node in matches:
-            store.append(node)
-        if not matches:
-            store.append(Node("note", "(no matches in loaded connections)"))
-        flat = Gtk.TreeListModel.new(
-            store,
+        if not self._filtering:
+            self._saved_expansion = self._expansion_state()
+            self._filtering = True
+        roots = Gio.ListStore(item_type=Node)
+        for conn in _items(self._roots):
+            clone = self._filter_node(conn, text, scopes)
+            if clone is not None:
+                roots.append(clone)
+        if not roots.get_n_items():
+            roots.append(Node("note", "(no matches in loaded connections)"))
+        filtered = Gtk.TreeListModel.new(
+            roots,
             passthrough=False,
-            autoexpand=False,
-            create_func=self._create_children,
+            autoexpand=True,  # a match is no use hidden under its parents
+            create_func=_filtered_children,
         )
-        self._view.set_model(Gtk.SingleSelection(model=flat))
+        self._view.set_model(Gtk.SingleSelection(model=filtered))
 
-    def _search_candidates(self):
-        """Fresh table/view/function Nodes from every connection whose
-        schema has been loaded (detail carries the connection name),
-        and from each of its already-loaded other databases."""
-        for i in range(self._roots.get_n_items()):
-            conn = self._roots.get_item(i)
-            yield from self._node_candidates(conn)
-
-    def _node_candidates(self, conn: Node):
-        """The searchable objects under one connection or database
-        row, recursing into the databases it has loaded."""
-        if conn.store is None:
+    def clear_filter(self) -> None:
+        """Leave search mode: the real tree comes back, expanded the
+        way the user left it."""
+        self._view.set_model(Gtk.SingleSelection(model=self._tree))
+        if not self._filtering:
             return
-        for j in range(conn.store.get_n_items()):
-            category = conn.store.get_item(j)
-            if category.kind == "database":
-                yield from self._node_candidates(category)
-                continue
-            if category.kind != "category":
-                continue
-            if category.category in ("tables", "views"):
-                kind = "table" if category.category == "tables" else "view"
-                for info in category.payload or []:
-                    yield Node(
-                        kind, info.name,
-                        detail=conn.label, profile=conn.profile,
-                    )
-            else:
-                for child in _items(category.store):
-                    if child.kind == "function":
-                        yield Node(
-                            "function", child.label,
-                            detail=conn.label, profile=conn.profile,
-                        )
+        self._filtering = False
+        expansion, self._saved_expansion = self._saved_expansion, frozenset()
+        self._restore_expansion(expansion)
+
+    def _filter_node(
+        self, node: Node, query: str, scopes: frozenset[str]
+    ) -> Node | None:
+        """A clone of `node` holding its matching descendants, or None
+        when neither it nor anything under it matches. Ancestors of a
+        match are kept even when they don't match themselves — a bare
+        column name says nothing without the table above it."""
+        children = Gio.ListStore(item_type=Node)
+        for child in self._search_children(node):
+            clone = self._filter_node(child, query, scopes)
+            if clone is not None:
+                children.append(clone)
+        hit = (
+            tree_search.match(query, node.label)
+            if tree_search.in_scope(node.kind, scopes)
+            else None
+        )
+        if hit is None and not children.get_n_items():
+            return None
+        clone = _clone(node)
+        clone.search_ranges = hit[1] if hit is not None else ()
+        clone.store = children
+        _adopt(clone)
+        return clone
+
+    def _search_children(self, node: Node):
+        """What search sees under a row: the children it has loaded,
+        or — for a Tables/Views category never expanded — the objects
+        the row above it already fetched into the payload."""
+        if node.kind not in _EXPANDABLE:
+            return
+        loaded = [child for child in _items(node.store) if child.kind != "note"]
+        if loaded:
+            yield from loaded
+            return
+        if node.kind == "category" and node.category in ("tables", "views"):
+            kind = "table" if node.category == "tables" else "view"
+            for info in node.payload or []:
+                yield Node(kind, info.name, profile=node.profile)
+
+    def _expansion_state(self) -> frozenset[str]:
+        """Which rows are open right now, by path, so the set survives
+        the model being swapped out from under them."""
+        return frozenset(
+            _node_path(row.get_item())
+            for row in _rows(self._tree)
+            if row.get_expanded()
+        )
+
+    def _restore_expansion(self, paths: frozenset[str]) -> None:
+        # Expanding a row reveals more rows, which may themselves need
+        # expanding, so the walk re-reads the model's length as it goes.
+        index = 0
+        while index < self._tree.get_n_items():
+            row = self._tree.get_row(index)
+            if (
+                row is not None
+                and not row.get_expanded()
+                and _node_path(row.get_item()) in paths
+            ):
+                row.set_expanded(True)
+            index += 1
 
     def expand_profile(self, name: str) -> None:
         """Expand (and thereby connect/load) the row for a profile."""
@@ -760,7 +818,12 @@ class Sidebar(Gtk.ScrolledWindow):
         if icon_name:
             list_item.icon.set_from_icon_name(icon_name)
         list_item.icon.set_visible(bool(icon_name))
-        list_item.label.set_text(node.label)
+        if node.search_ranges:
+            list_item.label.set_markup(
+                tree_search.highlight(node.label, node.search_ranges)
+            )
+        else:
+            list_item.label.set_text(node.label)
         if node.kind == "note":
             list_item.label.add_css_class("dim-label")
         else:
@@ -768,7 +831,10 @@ class Sidebar(Gtk.ScrolledWindow):
         list_item.pk.set_visible(node.is_pk)
         list_item.detail.set_text(node.detail)
         list_item.detail.set_visible(bool(node.detail))
-        list_item.caret.set_visible(node.kind in _EXPANDABLE)
+        list_item.caret.set_visible(
+            node.kind in _EXPANDABLE
+            and (not node.filtered or bool(node.store.get_n_items()))
+        )
         _set_caret(list_item.caret, row.get_expanded())
         list_item.row_handler = row.connect(
             "notify::expanded", self._on_row_expanded, list_item
@@ -1156,6 +1222,47 @@ def _database_profile(
     )
 
 
+def _rows(tree: Gtk.TreeListModel):
+    """Every row the tree model currently exposes (i.e. under an
+    expanded parent)."""
+    for i in range(tree.get_n_items()):
+        row = tree.get_row(i)
+        if row is not None:
+            yield row
+
+
+def _clone(node: Node) -> Node:
+    """A search-mode copy of a row: same object behind it (so opening,
+    dropping and refreshing still work), but with children of its own —
+    the matches — instead of the live subtree."""
+    copy = Node(
+        node.kind,
+        node.label,
+        detail=node.detail,
+        profile=node.profile,
+        category=node.category,
+        payload=node.payload,
+        is_pk=node.is_pk,
+        table=node.table,
+    )
+    copy.connected = node.connected
+    copy.ddl = node.ddl
+    copy.ddl_kinds = node.ddl_kinds
+    copy.supports_drop = node.supports_drop
+    copy.loaded = True  # search never loads: it filters what is there
+    copy.filtered = True
+    copy.source = node
+    return copy
+
+
+def _filtered_children(node: Node) -> Gio.ListStore | None:
+    """Search mode's create_func: the matches already computed, and
+    nothing to load."""
+    if node.store is None or not node.store.get_n_items():
+        return None
+    return node.store
+
+
 def _items(store: Gio.ListStore | None):
     """Every node in a (possibly unloaded) child store."""
     for i in range(store.get_n_items() if store is not None else 0):
@@ -1183,26 +1290,6 @@ def _new_items(kinds: tuple[str, ...]) -> Gio.Menu:
         )
         menu.append_item(item)
     return menu
-
-
-def _fuzzy_key(query: str, name: str) -> tuple[int, int, int] | None:
-    """Subsequence match of query in name (both lowercase). None when
-    it doesn't match; otherwise a sort key — tighter, earlier, shorter
-    matches first."""
-    start = name.find(query)
-    if start != -1:  # contiguous: always beats scattered matches
-        return (0, start, len(name))
-    position = 0
-    first = -1
-    for char in query:
-        position = name.find(char, position)
-        if position == -1:
-            return None
-        if first == -1:
-            first = position
-        position += 1
-    spread = position - first - len(query)
-    return (1 + spread, first, len(name))
 
 
 def _row_profile(row: Gtk.TreeListRow) -> ConnectionProfile | None:

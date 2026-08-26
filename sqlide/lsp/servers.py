@@ -2,7 +2,8 @@
 
 Which server runs for a connection, in order:
 
-1. A user plugin: an executable in $XDG_CONFIG_HOME/sqlide/lsp/ named
+1. A user plugin: an executable in the config directory's lsp/ folder
+   (backend/config.py resolves where that is), named
    after the connection kind ("postgres", "mysql", "sqlite", "jdbc"),
    or "default" as a catch-all. It is spawned with no arguments, must
    speak LSP over stdio, and receives the connection's details in
@@ -37,6 +38,7 @@ import tempfile
 import threading
 from pathlib import Path
 
+from sqlide.backend import config
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.lsp.client import LspClient
 
@@ -51,8 +53,7 @@ _KNOWN_SERVERS = ("postgrestools", "sqls", "sql-language-server")
 
 
 def plugin_dir() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
-    return Path(base) / "sqlide" / "lsp"
+    return config.config_dir() / "lsp"
 
 
 def plugin_command(kind: str) -> list[str] | None:

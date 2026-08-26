@@ -1,7 +1,7 @@
 ---
 title: Connection Security
 description: Managing connections and where passwords are stored.
-order: 8
+order: 9
 ---
 
 ## Managing connections
@@ -16,15 +16,17 @@ in the sidebar header).
 
 With the `keyring` extra installed and a backend available (GNOME
 Keyring, KWallet, macOS Keychain, …), a connection's password and SSH
-tunnel password are stored there instead of in the workspace's JSON
-file, which keeps only a blank placeholder:
+tunnel password are stored there instead of in the workspace's
+`connections.toml`, which keeps only a blank placeholder — which is
+what makes a config directory safe to commit to git (see
+[Configuration Files](configuration)):
 
 ```sh
 pip install "sqlide[keyring]"
 ```
 
 Without a usable keyring — the extra isn't installed, or no backend is
-running — sqlide falls back to plain text in the JSON file, as in
+running — sqlide falls back to plain text in that file, as in
 earlier versions. Nothing needs configuring either way; sqlide detects
 what's available.
 

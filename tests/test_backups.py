@@ -371,13 +371,15 @@ def test_schedule_descriptions_read_as_sentences():
 
 
 def test_config_job_packs_the_config_directory(store, tmp_path, monkeypatch):
-    config = tmp_path / "config"
-    (config / "workspaces").mkdir(parents=True)
-    (config / "settings.json").write_text('{"theme": "dark"}')
-    (config / "workspaces" / "w.json").write_text('{"name": "Work"}')
+    config_dir = tmp_path / "config"
+    (config_dir / "workspaces" / "w").mkdir(parents=True)
+    (config_dir / "settings.toml").write_text('theme = "dark"\n')
+    (config_dir / "workspaces" / "w" / "workspace.toml").write_text(
+        'name = "Work"\n'
+    )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setattr(
-        "sqlide.backend.backup._config_dir", lambda: config
+        "sqlide.backend.config.config_dir", lambda: config_dir
     )
     job = _job(store, tmp_path, kind=KIND_CONFIG)
 

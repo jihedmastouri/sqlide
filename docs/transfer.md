@@ -4,9 +4,9 @@ description: Moving workspaces and connections between machines as XML.
 order: 7
 ---
 
-sqlide keeps workspaces as JSON files under
-`~/.config/sqlide/workspaces/`, keyed by a local id, with passwords in
-the system keyring. That is the right shape for the app and the wrong
+sqlide keeps workspaces as [config files](configuration) under
+`workspaces/<id>/`, keyed by a local id, with passwords in the system
+keyring. That is the right shape for the app and the wrong
 shape for carrying a setup to another machine — so transfers use a
 separate, readable XML format.
 

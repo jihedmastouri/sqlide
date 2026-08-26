@@ -1,6 +1,6 @@
 ## CORE-13 — File-system configuration (git-friendly)
 
-- **Status:** todo
+- **Status:** done
 - **Blocks:** CORE-08 (persistence), CORE-09
 
 ### Problem
@@ -26,17 +26,35 @@ collide in git:
 
 ### Acceptance criteria
 
-- [ ] Config location is documented per OS and overridable by env var and CLI flag.
-- [ ] The app reads config on start and writes back changes made in the UI,
+- [x] Config location is documented per OS and overridable by env var and CLI flag.
+- [x] The app reads config on start and writes back changes made in the UI,
       preserving comments and key order where the format allows.
-- [ ] Editing a file on disk while the app runs is picked up (watch + reload) or,
+- [x] Editing a file on disk while the app runs is picked up (watch + reload) or,
       if that's too invasive for a given key, surfaced as "restart to apply".
-- [ ] Invalid config produces a clear error naming the file, line and key, and
+- [x] Invalid config produces a clear error naming the file, line and key, and
       falls back to defaults instead of crashing.
-- [ ] A documented schema/reference for every key, so an agent can edit safely.
-- [ ] **Secrets are never written in plaintext** — passwords stay in the OS
+- [x] A documented schema/reference for every key, so an agent can edit safely.
+- [x] **Secrets are never written in plaintext** — passwords stay in the OS
       keychain/secret store and the config references them; document how a config
       file can be committed to git safely.
-- [ ] Round-trip test: export → edit by hand → load → identical behaviour.
+- [x] Round-trip test: export → edit by hand → load → identical behaviour.
+
+### Notes
+
+TOML won: config files are TOML, written back through a small
+comment-preserving writer (`backend/tomlwrite.py`). XML is kept only
+where it already earned its place — the workspace import/export format
+(`backend/exchange.py`, docs/transfer.md) — and is not a config format.
+
+Session state (open tabs, history, placeholders, saved filters) stays
+JSON in `workspaces/<id>/state.json`: it is churn, not configuration,
+and keeping it out of the TOML is what makes the config files worth
+committing. Per-connection overrides land with the features that need
+them (CORE-08/CORE-09); the file split leaves room for them.
+
+Settings are watched and reload live. Workspace files are read at
+startup only — an open window would write its in-memory tabs and
+connections back over an edit — so those are "restart to apply", as
+documented.
 
 

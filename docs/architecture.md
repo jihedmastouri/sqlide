@@ -1,7 +1,7 @@
 ---
 title: Architecture
 description: How the backend and frontend are split, and where things live.
-order: 9
+order: 10
 ---
 
 Two top-level packages, strictly separated:
@@ -87,17 +87,23 @@ A **workspace** is the unit you open: it owns zero or more connection
 profiles and remembers its open tabs (table tabs and query consoles,
 including console SQL text and the selected tab), so reopening a
 workspace restores it as it was left. It also keeps a query history
-capped at 200 entries. Each workspace persists as its own JSON file in
-`~/.config/sqlide/workspaces/<id>.json`.
+capped at 200 entries. Each workspace is a directory of its own,
+`workspaces/<id>/` in the config directory: `workspace.toml` (id, name,
+colour), `connections.toml` (the connection definitions) and
+`state.json` (tabs, history, filters — session state). See
+[Configuration Files](configuration) for the full reference, and
+`backend/config.py` for how the config directory is resolved.
 
 ## Layout
 
 ```
 sqlide/
 ├── backend/               # NO GTK in here
+│   ├── config.py          # config dir resolution, TOML load, errors, watch
+│   ├── tomlwrite.py       # comment-preserving TOML writer
 │   ├── connections.py     # ConnectionProfile dataclass
-│   ├── workspaces.py      # Workspace/TabState + per-file JSON store
-│   ├── settings.py        # global settings store (theme, font, vim…)
+│   ├── workspaces.py      # Workspace/TabState + per-workspace file store
+│   ├── settings.py        # global settings store (settings.toml)
 │   ├── saved.py           # saved snippets/queries
 │   ├── secrets.py         # connection passwords: system keyring or plain text
 │   ├── backup.py          # zip/restore of the config directory itself

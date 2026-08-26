@@ -1,11 +1,25 @@
 """Application-wide settings and their file-based store.
 
-Unlike workspaces, settings are global: one JSON file at
-$XDG_CONFIG_HOME/sqlide/settings.json. The module-level `store` is the
-single instance; the application loads it at startup and widgets that
-render a setting subscribe to be re-applied on change. update() is the
-only mutator — it persists and notifies in one step, so callers never
-see a saved file and a live UI disagree.
+Unlike workspaces, settings are global: one TOML file, settings.toml
+in the config directory (backend/config.py resolves where that is).
+The module-level `store` is the single instance; the application loads
+it at startup and widgets that render a setting subscribe to be
+re-applied on change. update() is the only mutator — it persists and
+notifies in one step, so callers never see a saved file and a live UI
+disagree — and it rewrites the file through tomlwrite.merge(), so
+comments and key order a person put there survive a change made in the
+UI.
+
+The file is meant to be edited by hand (or by an agent) while the app
+runs: reload() re-reads it and notifies the same subscribers, and the
+application ticks config.watcher so an external edit is picked up
+without a restart. A settings.json from an earlier version is imported
+once, on the first load that finds no settings.toml.
+
+An unreadable file, or a key with a value outside its allowed set, is
+reported through backend/config.py — naming file, line and key — and
+falls back to the default for that key; the rest of the file still
+applies.
 
 Settings:
 - theme: "system" | "light" | "dark" (Adw color scheme override)
@@ -53,6 +67,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
+from sqlide.backend import config, tomlwrite
 from sqlide.backend.sql_risk import CONFIRM_MODES, DEFAULT_CONFIRM_MODE
 
 THEMES = ("system", "light", "dark")
@@ -60,11 +75,6 @@ TIME_ZONES = ("local", "utc", "server")
 DEFAULT_TIME_ZONE = "local"
 DEFAULT_FONT_SIZE = 11
 DEFAULT_MAX_RESULT_ROWS = 5000
-
-
-def _config_dir() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
-    return Path(base) / "sqlide"
 
 
 @dataclass
@@ -82,42 +92,86 @@ class Settings:
     keymap: dict[str, str] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict) -> Settings:
-        theme = data.get("theme", "system")
+    def from_dict(cls, data: dict, path: Path | None = None) -> Settings:
+        """Settings from a parsed file. Every value is validated here;
+        a bad one is reported (naming the file and the key) and
+        replaced by its default rather than failing the whole load."""
+
+        def bad(key: str, got, expected: str, default):
+            if path is not None:
+                config.record_error(
+                    path,
+                    f"{got!r} is not {expected}; using {default!r}",
+                    line=_line_of(path, key),
+                    key=key,
+                )
+            return default
+
+        def choice(key: str, allowed, default: str) -> str:
+            got = data.get(key, default)
+            if got in allowed:
+                return got
+            return bad(key, got, "one of " + ", ".join(allowed), default)
+
+        def flag(key: str, default: bool) -> bool:
+            got = data.get(key, default)
+            if isinstance(got, bool):
+                return got
+            return bad(key, got, "true or false", default)
+
+        def number(key: str, default: int, minimum: int = 0) -> int:
+            got = data.get(key, default)
+            if isinstance(got, bool) or not isinstance(got, (int, float)):
+                return bad(key, got, "a number", default)
+            return max(minimum, int(got))
+
+        def table(key: str) -> dict[str, str]:
+            got = data.get(key) or {}
+            if not isinstance(got, dict):
+                return bad(key, got, "a table of strings", {})
+            return {str(k): str(v) for k, v in got.items()}
+
+        def text(key: str, default: str = "") -> str:
+            got = data.get(key, default)
+            if isinstance(got, str):
+                return got
+            return bad(key, got, "a string", default)
+
         return cls(
-            theme=theme if theme in THEMES else "system",
-            editor_font_size=int(
-                data.get("editor_font_size", DEFAULT_FONT_SIZE)
+            theme=choice("theme", THEMES, "system"),
+            editor_font_size=number(
+                "editor_font_size", DEFAULT_FONT_SIZE, minimum=1
             ),
-            vim_mode=bool(data.get("vim_mode", False)),
-            confirm_destructive=(
-                mode
-                if (mode := data.get("confirm_destructive")) in CONFIRM_MODES
-                else DEFAULT_CONFIRM_MODE
+            vim_mode=flag("vim_mode", False),
+            confirm_destructive=choice(
+                "confirm_destructive", CONFIRM_MODES, DEFAULT_CONFIRM_MODE
             ),
-            max_result_rows=max(
-                0, int(data.get("max_result_rows", DEFAULT_MAX_RESULT_ROWS))
+            max_result_rows=number(
+                "max_result_rows", DEFAULT_MAX_RESULT_ROWS
             ),
-            time_zone=(
-                tz
-                if (tz := data.get("time_zone")) in TIME_ZONES
-                else DEFAULT_TIME_ZONE
-            ),
-            lsp_enabled=bool(data.get("lsp_enabled", True)),
-            lsp_defaults={
-                str(k): str(v)
-                for k, v in (data.get("lsp_defaults") or {}).items()
-            },
-            mcp_defaults={
-                str(k): str(v)
-                for k, v in (data.get("mcp_defaults") or {}).items()
-            },
-            last_workspace=str(data.get("last_workspace") or ""),
-            keymap={
-                str(k): str(v)
-                for k, v in (data.get("keymap") or {}).items()
-            },
+            time_zone=choice("time_zone", TIME_ZONES, DEFAULT_TIME_ZONE),
+            lsp_enabled=flag("lsp_enabled", True),
+            lsp_defaults=table("lsp_defaults"),
+            mcp_defaults=table("mcp_defaults"),
+            last_workspace=text("last_workspace"),
+            keymap=table("keymap"),
         )
+
+
+def _line_of(path: Path, key: str) -> int:
+    """Which line of `path` sets `key` — so an error message can point
+    at it. 0 when the file doesn't mention the key at all."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0
+    for number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if stripped.startswith("#") or "=" not in stripped:
+            continue
+        if stripped.split("=", 1)[0].strip().strip('"') == key:
+            return number
+    return 0
 
 
 def session_time_zone() -> str | None:
@@ -165,16 +219,46 @@ def result_row_cap() -> int | None:
 
 class SettingsStore:
     def __init__(self, path: Path | None = None) -> None:
-        self.path = path or (_config_dir() / "settings.json")
+        self.path = path or (config.config_dir() / "settings.toml")
         self.settings = Settings()
         self._listeners: list[Callable[[Settings], None]] = []
 
     def load(self) -> Settings:
-        if self.path.exists():
-            self.settings = Settings.from_dict(
-                json.loads(self.path.read_text(encoding="utf-8"))
-            )
+        """Read settings.toml, importing a pre-TOML settings.json once
+        if that is all there is, and start watching the file so a hand
+        edit while the app runs is picked up."""
+        if not self.path.exists():
+            self._import_json()
+        self.settings = Settings.from_dict(
+            config.load_toml(self.path), path=self.path
+        )
+        config.watcher.watch(self.path, lambda _path: self.reload())
         return self.settings
+
+    def reload(self) -> Settings:
+        """Re-read the file and notify subscribers — what an external
+        edit runs through. Every setting the UI renders (theme, font,
+        row cap, keymap…) is applied from a listener, so a reload is
+        enough; the ones read per action read the store directly.
+        Nothing here needs a restart."""
+        self.settings = Settings.from_dict(
+            config.load_toml(self.path), path=self.path
+        )
+        for listener in self._listeners:
+            listener(self.settings)
+        return self.settings
+
+    def _import_json(self) -> None:
+        legacy = self.path.with_name("settings.json")
+        if not legacy.exists():
+            return
+        try:
+            data = json.loads(legacy.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            config.record_error(legacy, f"is not valid JSON: {exc}")
+            return
+        self.settings = Settings.from_dict(data, path=legacy)
+        self._write()
 
     def subscribe(self, listener: Callable[[Settings], None]) -> None:
         self._listeners.append(listener)
@@ -191,13 +275,23 @@ class SettingsStore:
             if not hasattr(self.settings, name):
                 raise AttributeError(f"Unknown setting: {name}")
             setattr(self.settings, name, value)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps(asdict(self.settings), indent=2) + "\n",
-            encoding="utf-8",
-        )
+        self._write()
         for listener in self._listeners:
             listener(self.settings)
+
+    def _write(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            existing = self.path.read_text(encoding="utf-8")
+        except OSError:
+            existing = ""
+        self.path.write_text(
+            tomlwrite.merge(existing, asdict(self.settings)),
+            encoding="utf-8",
+        )
+        # Our own write must not come back through the watcher as an
+        # external edit (it would reload and re-notify for nothing).
+        config.watcher.forget(self.path)
 
 
 store = SettingsStore()

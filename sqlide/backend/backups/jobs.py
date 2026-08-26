@@ -1,6 +1,6 @@
 """The persisted backup model: destinations, jobs, runs, and the store.
 
-Everything lives in one file, $XDG_CONFIG_HOME/sqlide/backups.json,
+Everything lives in one file, backups.json in the config directory (backend/config.py),
 rather than inside a workspace: a destination (an S3 bucket, a
 backup server) is a property of the machine, and a scheduled job has
 to be findable by the headless runner without opening a workspace.
@@ -16,13 +16,12 @@ JSON is written with the secret blanked whenever the keyring took it.
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
 
-from sqlide.backend import secrets
+from sqlide.backend import config, secrets
 
 # Keyring scope for destination credentials. secrets keys on
 # (owner, name, field); backups own a namespace of their own so a
@@ -48,11 +47,6 @@ LOCAL, S3, SFTP, FTP = "local", "s3", "sftp", "ftp"
 DESTINATION_KINDS = (LOCAL, S3, SFTP, FTP)
 
 MAX_RUNS = 200
-
-
-def _config_dir() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
-    return Path(base) / "sqlide"
 
 
 def _new_id() -> str:
@@ -230,7 +224,7 @@ class BackupStore:
     """
 
     def __init__(self, path: Path | None = None) -> None:
-        self.path = path or (_config_dir() / "backups.json")
+        self.path = path or (config.config_dir() / "backups.json")
         self.destinations: list[Destination] = []
         self.jobs: list[Job] = []
         self.runs: list[Run] = []

@@ -114,14 +114,16 @@ is restored into the main window, the same way a split view is.
 Close and relaunch — you land back in the workspace you were last in,
 with both the connections and the tabs you left open restored,
 including query console text. State lives in
-`~/.config/sqlide/workspaces/<id>.json`. To land somewhere else next
-time, switch workspaces from the grid icon in the sidebar header.
+`~/.config/sqlide/workspaces/<id>/`. To land somewhere else next time,
+switch workspaces from the grid icon in the sidebar header.
 
 ## Next steps
 
 - [Language Servers](/docs/language-servers/) for schema-aware completion.
 - [Create/Drop DDL](/docs/ddl/) for building and dropping schema objects.
 - [MCP Server](/docs/mcp-server/) to let an AI assistant query read-only.
+- [Configuration Files](/docs/configuration/) for every key you can set
+   by hand, and how to keep your config in git.
 - [Connection Security](/docs/connection-security/) for keyring-backed
   passwords.
 - [Import and Export](/docs/transfer/) to carry a workspace to another

@@ -229,6 +229,8 @@ class Sidebar(Gtk.ScrolledWindow):
         on_open_schema: Callable[[ConnectionProfile], None],
         on_edit_connection: Callable[[ConnectionProfile], None],
         on_disconnect: Callable[[ConnectionProfile], None],
+        on_close_tabs: Callable[[ConnectionProfile], None],
+        count_tabs: Callable[[str], int],
         on_remove_connection: Callable[[ConnectionProfile], None],
         on_add_connection: Callable[[], None],
         show_error: Callable[[str], None],
@@ -252,6 +254,8 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_open_schema = on_open_schema
         self._on_edit_connection = on_edit_connection
         self._on_disconnect = on_disconnect
+        self._on_close_tabs = on_close_tabs
+        self._count_tabs = count_tabs
         self._on_remove_connection = on_remove_connection
         self._show_error = show_error
         # Currently bound status dot per connection name, so
@@ -320,6 +324,7 @@ class Sidebar(Gtk.ScrolledWindow):
             ("open-schema", self._menu_open_schema),
             ("edit-connection", self._menu_edit_connection),
             ("disconnect", self._menu_disconnect),
+            ("close-tabs", self._menu_close_tabs),
             ("remove-connection", self._menu_remove_connection),
         ):
             action = Gio.SimpleAction.new(name, None)
@@ -1007,6 +1012,16 @@ class Sidebar(Gtk.ScrolledWindow):
                 # Always listed, so the menu keeps its shape; only live
                 # while the connection actually has something open.
                 menu.append("Disconnect", "schema.disconnect")
+                # The count is part of the label: what "all related
+                # tabs" means is exactly the number the window would
+                # close, and zero of them leaves the item dead.
+                open_tabs = self._count_tabs(node.label)
+                menu.append(
+                    f"Close all {open_tabs} related tabs"
+                    if open_tabs != 1
+                    else "Close the 1 related tab",
+                    "schema.close-tabs",
+                )
                 menu.append("Remove…", "schema.remove-connection")
             return menu
         if node.kind == "function" and node.profile is not None:
@@ -1204,12 +1219,19 @@ class Sidebar(Gtk.ScrolledWindow):
     def set_menu_node(self, node: Node) -> None:
         """Point the menu actions at the row that was right-clicked,
         and re-derive the enabled ones from its state: Disconnect only
-        means anything while the connection is open."""
+        means anything while the connection is open, and Close all
+        related tabs only while it has tabs."""
         self._menu_node = node
         disconnect = self._actions.lookup_action("disconnect")
         if disconnect is not None:
             disconnect.set_enabled(
                 node.kind == "connection" and bool(node.connected)
+            )
+        close_tabs = self._actions.lookup_action("close-tabs")
+        if close_tabs is not None:
+            close_tabs.set_enabled(
+                node.kind == "connection"
+                and self._count_tabs(node.label) > 0
             )
 
     def collapse_connection(self, name: str) -> None:
@@ -1229,6 +1251,11 @@ class Sidebar(Gtk.ScrolledWindow):
             if row is not None:
                 row.set_expanded(False)
             return
+
+    def _menu_close_tabs(self, *_args) -> None:
+        node = self._menu_node
+        if node is not None and node.profile is not None:
+            self._on_close_tabs(node.profile)
 
     def _menu_disconnect(self, *_args) -> None:
         node = self._menu_node

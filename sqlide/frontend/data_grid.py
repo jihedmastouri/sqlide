@@ -1707,6 +1707,33 @@ class TableTab(Gtk.Box):
         if section:
             self._properties.select_section(section)
 
+    def unsaved_work(self) -> str:
+        """The edits sitting in this grid that were never written, as a
+        phrase for the confirmation that lists them — "" when there are
+        none."""
+        pending = sum(len(changes) for _pk, changes in self._pending.values())
+        if not pending:
+            return ""
+        return f"{pending} unsaved edit(s)"
+
+    def save_unsaved_work(self) -> None:
+        """Write the pending edits before the tab goes. No preview
+        dialog here: the confirmation that got us this far already
+        listed the tabs and asked, so asking again per tab would be the
+        same question twice."""
+        updates = self._pending_updates()
+        if not updates:
+            return
+        self._pending.clear()
+        self._update_save_button()
+
+        def work():
+            connector = self._ensure(self.profile)
+            for pk_values, column, value in updates:
+                connector.update_cell(self.table, pk_values, column, value)
+
+        run_async(work, lambda _r: None, lambda exc: self._show_error(str(exc)))
+
     def status_context(self) -> str:
         """This tab's line in the window's status bar: what is loaded
         and how much of it."""

@@ -11,6 +11,11 @@ its schema, while tabs on it stay open behind a banner offering
 Reconnect — the next call through ensure_connector would reopen the
 session anyway, so nothing in them breaks.
 
+Close all related tabs, next to it, goes the other way: every tab on
+one connection closes at once, after a single confirmation listing the
+ones holding work that was never written (typed SQL, pending grid
+edits) with Save, Discard or Cancel.
+
 Open tabs are part of the workspace: they are restored on open and
 saved back to the workspace file whenever they change and when the
 window closes (which also captures query-console SQL and the selected
@@ -274,6 +279,11 @@ class MainWindow(Adw.ApplicationWindow):
         # Tabs left standing on a connection the user disconnected,
         # and the banner each one grew (feedback.set_disconnected).
         self._disconnect_banners: dict[Gtk.Widget, Adw.Banner] = {}
+        # Set to a connection's name while its tabs are being closed in
+        # one go (Close all related tabs), so the per-tab transaction
+        # confirmation stays out of the way: the user was asked once,
+        # for all of them, already.
+        self._closing_connection = ""
         self._restoring = False
         self._last_connection = ""
         self._connection_names = Gtk.StringList.new(
@@ -322,6 +332,8 @@ class MainWindow(Adw.ApplicationWindow):
             on_open_schema=self._open_schema,
             on_edit_connection=self._edit_connection,
             on_disconnect=self._disconnect_connection,
+            on_close_tabs=self._close_connection_tabs,
+            count_tabs=self.count_connection_tabs,
             on_remove_connection=self._remove_connection,
             on_add_connection=self._add_connection,
             show_error=self.show_error,
@@ -1274,8 +1286,14 @@ class MainWindow(Adw.ApplicationWindow):
         if isinstance(child, QueryConsole):
             name = child.open_transaction_connection()
             if name:
-                self._confirm_console_close(view, page, name)
-                return True  # close_page_finish decides later
+                if self._closing_connection == name:
+                    # Part of a Close all related tabs run: the one
+                    # confirmation covered this tab, so roll the
+                    # transaction back and let the close through.
+                    self._rollback_connections([name])
+                else:
+                    self._confirm_console_close(view, page, name)
+                    return True  # close_page_finish decides later
         if isinstance(child, McpServerTab) and child.running:
             self._confirm_mcp_close(view, page, child)
             return True
@@ -1867,6 +1885,99 @@ class MainWindow(Adw.ApplicationWindow):
             for i in range(pane.view.get_n_pages()):
                 children.append(pane.view.get_nth_page(i).get_child())
         return children
+
+    # Closing every tab on a connection (CORE-07)
+
+    def _connection_pages(self, name: str) -> list[tuple[_TabPane, Adw.TabPage]]:
+        """Every open tab on this connection, across panes and pop-out
+        windows, paired with the pane it lives in. Collected up front:
+        closing a page mutates the views it is iterating."""
+        return [
+            (pane, page)
+            for pane in self._all_panes()
+            for page in [
+                pane.view.get_nth_page(i)
+                for i in range(pane.view.get_n_pages())
+            ]
+            if _page_connection(page.get_child()) == name
+        ]
+
+    def count_connection_tabs(self, name: str) -> int:
+        """How many open tabs belong to this connection. The sidebar
+        asks before it builds the connection menu, so the item can
+        carry the count and go dead when there is nothing to close."""
+        return len(self._connection_pages(name))
+
+    def _close_connection_tabs(self, profile: ConnectionProfile) -> None:
+        """The connection menu's Close all related tabs: every tab on
+        this connection and no other. Tabs holding work that was never
+        written — typed SQL, edited grid cells — are listed in one
+        confirmation first, rather than one dialog per tab."""
+        pages = self._connection_pages(profile.name)
+        if not pages:
+            self.show_error(f"No tabs are open on {profile.name}")
+            return
+        unsaved = [
+            (page, work)
+            for _pane, page in pages
+            for work in [getattr(page.get_child(), "unsaved_work", lambda: "")()]
+            if work
+        ]
+        if not unsaved:
+            self._do_close_connection_tabs(profile.name, pages)
+            return
+        listing = "\n".join(
+            f"• {page.get_title()} — {work}" for page, work in unsaved
+        )
+        count = len(pages)
+        dialog = Adw.AlertDialog(
+            heading=f"Close {count} tab{'' if count == 1 else 's'} "
+            f"on “{profile.name}”?",
+            body="These tabs have work that was never written:\n\n"
+            f"{listing}",
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("discard", "Discard")
+        dialog.add_response("save", "Save")
+        dialog.set_response_appearance(
+            "discard", Adw.ResponseAppearance.DESTRUCTIVE
+        )
+        dialog.set_response_appearance(
+            "save", Adw.ResponseAppearance.SUGGESTED
+        )
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def respond(_dialog, response: str) -> None:
+            if response == "cancel":
+                return
+            if response == "save":
+                for page, _work in unsaved:
+                    save = getattr(page.get_child(), "save_unsaved_work", None)
+                    if save is not None:
+                        save()
+            self._do_close_connection_tabs(profile.name, pages)
+
+        dialog.connect("response", respond)
+        dialog.present(self)
+
+    def _do_close_connection_tabs(
+        self, name: str, pages: list[tuple[_TabPane, Adw.TabPage]]
+    ) -> None:
+        self._closing_connection = name
+        try:
+            for pane, page in pages:
+                # A closed tab keeps no disconnected banner: the
+                # registry is keyed by widget and would otherwise hold
+                # tabs that no longer exist.
+                self._disconnect_banners.pop(page.get_child(), None)
+                pane.view.close_page(page)
+        finally:
+            self._closing_connection = ""
+        count = len(pages)
+        self.show_message(
+            f"Closed {count} tab{'' if count == 1 else 's'} on {name}"
+        )
 
     def _edit_connection(self, profile: ConnectionProfile) -> None:
         ConnectionDialog(

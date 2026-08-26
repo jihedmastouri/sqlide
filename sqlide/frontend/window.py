@@ -1229,10 +1229,29 @@ class MainWindow(Adw.ApplicationWindow):
             )
         else:
             self._side_panel.set_filter_target("", [])
+        self._update_note_target(child)
         if isinstance(child, (QueryConsole, CliConsole)):
             self._set_console_info(child)
         else:
             self._refresh_side_ddl()
+
+    def _update_note_target(self, child) -> None:
+        """Tell the side panel's Notes page which object the active tab
+        is about — a new note defaults to it — and which connections
+        the workspace still has, so a note about a removed one is
+        badged orphaned rather than dropped."""
+        connection = ""
+        table = ""
+        if isinstance(child, (TableTab, DefinitionTab)):
+            connection = child.profile.name
+            table = child.table
+        elif isinstance(child, (QueryConsole, CliConsole)):
+            connection = child.selected_connection()
+        self._side_panel.set_note_target(
+            connection,
+            table,
+            [profile.name for profile in self.workspace.connections],
+        )
 
     def _set_console_info(self, console: QueryConsole | CliConsole) -> None:
         """Fill the side panel's Info page with the console's

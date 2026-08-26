@@ -29,7 +29,8 @@ the cursor; Run All (Ctrl+Shift+Enter) executes the whole buffer.
 Explain runs the same statements behind the adapter's explain prefix
 (EXPLAIN QUERY PLAN on SQLite); each plan tab offers the plan as a
 graph (frontend/plan_graph.py — the shape a plan actually has), as the
-table the server returned, and as JSON.
+table the server returned, and as JSON. A statement the user wrote as
+an EXPLAIN itself gets those same three views.
 Statements run sequentially through Connector.execute()
 on a worker thread, stopping at the first failure. After a run the
 bottom panel always shows at least two tabs: a Status tab first (each
@@ -1030,7 +1031,9 @@ class QueryConsole(Gtk.Box):
                 # An explain plan is a tree, a table and JSON;
                 # a result is just a table.
                 page: Gtk.Widget = (
-                    _explain_views(grid, result) if explain else grid
+                    _explain_views(grid, result)
+                    if explain or _is_explain(sql)
+                    else grid
                 )
                 counts.append(
                     f"first {len(result)} row(s)"
@@ -1164,6 +1167,25 @@ def _format_elapsed(seconds: float) -> str:
     if seconds < 1:
         return f"{seconds * 1000:.1f} ms"
     return f"{seconds:.2f} s"
+
+
+_EXPLAIN_WORDS = ("explain", "describe", "desc")
+
+
+def _is_explain(sql: str) -> bool:
+    """Whether a statement is a plan request the user typed out. The
+    Explain button is not the only way to ask for a plan, so a hand
+    written EXPLAIN (or PostgreSQL's leading comments before one) gets
+    the same Graph/Table/JSON views the button's results get."""
+    text = sql.strip()
+    while text.startswith("--") or text.startswith("/*"):
+        if text.startswith("--"):
+            _line, _sep, text = text.partition("\n")
+        else:
+            _comment, _sep, text = text.partition("*/")
+        text = text.strip()
+    first = text.split(None, 1)[0].lower() if text.split() else ""
+    return first in _EXPLAIN_WORDS
 
 
 def _explain_views(grid: ResultGrid, result: ResultSet) -> Gtk.Widget:

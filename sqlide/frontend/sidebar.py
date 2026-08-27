@@ -168,12 +168,21 @@ _DEFAULT_NEW_KINDS = ("table", "view", "index")
 _SECTION_CHILD_KINDS = objects.SECTION_CHILD_KINDS
 _NON_LIST_SECTIONS = ("general", "ddl")
 
-# Lazily loaded category → the object row kind it holds.
+# Lazily loaded category → the object row kind it holds. The catalog
+# folders (PG-02) are all lazy: each is one listing the adapter reads on
+# expand, so a connection costs nothing for the folders nobody opens.
+# The relation folders — Tables, Views, Foreign Tables, Materialized
+# Views — are filled from the listing the row above already made, so
+# they are not here.
 _LAZY_CATEGORIES = {
     "functions": "function",
     "indexes": "index",
     "triggers": "trigger",
     "events": "event",
+} | {
+    slug: kind
+    for slug, (_label, kind) in objects.CATALOG_CATEGORIES.items()
+    if slug not in objects.RELATION_FOLDERS and slug != "administer"
 }
 
 
@@ -496,10 +505,14 @@ class Sidebar(Gtk.ScrolledWindow):
         if loaded:
             yield from loaded
             return
-        if node.kind == "category" and node.category in ("tables", "views"):
-            kind = "table" if node.category == "tables" else "view"
-            for info in node.payload or []:
-                yield Node(kind, info.name, profile=node.profile)
+        if node.kind == "category" and node.category in objects.RELATION_FOLDERS:
+            kind = _relation_kind(node.category)
+            for info in _category_rows(node):
+                yield Node(
+                    kind, info.name,
+                    detail=getattr(info, "detail", ""),
+                    profile=node.profile,
+                )
 
     def _expansion_state(self) -> frozenset[str]:
         """Which rows are open right now, by path, so the set survives
@@ -645,12 +658,33 @@ class Sidebar(Gtk.ScrolledWindow):
         return node.store
 
     def _fill_category(self, node: Node) -> None:
-        # Tables/Views got their objects from the row above them, in
-        # one list_tables() call, so filling is synchronous.
-        kind = "table" if node.category == "tables" else "view"
-        for info in node.payload or []:
-            node.store.append(Node(kind, info.name, profile=node.profile))
-        if not node.payload:
+        """A folder whose rows need no query of its own: the relation
+        folders, which share the one list_tables() call the row above
+        made, and Administer, which holds folders rather than objects
+        (PG-02). Filling is synchronous either way."""
+        if node.category == "administer":
+            for slug, label in _administer_categories(node.profile):
+                node.store.append(Node(
+                    "category", label,
+                    profile=node.profile, category=slug,
+                ))
+            if not node.store.get_n_items():
+                node.store.append(Node("note", "(nothing to administer)"))
+            _adopt(node)
+            node.loaded = True
+            return
+        kind = _relation_kind(node.category)
+        rows = _category_rows(node)
+        for info in rows:
+            node.store.append(Node(
+                kind, info.name,
+                # A partitioned table says so next to its name: it is
+                # still a table, and the note is what tells it from a
+                # plain one without a second icon vocabulary (PG-02).
+                detail=getattr(info, "detail", ""),
+                profile=node.profile,
+            ))
+        if not rows:
             node.store.append(Node("note", "(none)"))
         _adopt(node)
         node.loaded = True
@@ -756,11 +790,17 @@ class Sidebar(Gtk.ScrolledWindow):
 
             def fill(loaded):
                 (
-                    objects, kinds, supports_drop,
+                    relations, kinds, supports_drop,
                     databases, schemas, current_schema,
                 ) = loaded
                 node.ddl_kinds = kinds
                 node.supports_drop = supports_drop
+                # The folders this level shows beside the rows under it
+                # — Administer under a connection, Extensions under a
+                # database, Sequences under a schema — are the engine's
+                # declaration (registry.level_categories, PG-02), so the
+                # tree grows them without naming an engine here.
+                folders = _level_categories(node.profile, node.kind)
                 if databases:
                     current = node.profile.database
                     for name in sorted(databases, key=lambda n: n != current):
@@ -769,6 +809,7 @@ class Sidebar(Gtk.ScrolledWindow):
                             detail="current" if name == current else "",
                             profile=_database_profile(node.profile, name),
                         ))
+                    _append_folders(store, node, folders, relations)
                     return
                 if schemas:
                     # The one bare names already resolve in comes first
@@ -784,9 +825,17 @@ class Sidebar(Gtk.ScrolledWindow):
                             ),
                             profile=schema_profile(node.profile, name),
                         ))
+                    _append_folders(store, node, folders, relations)
                     return
-                tables = [t for t in objects if t.kind != "view"]
-                views = [t for t in objects if t.kind == "view"]
+                if folders:
+                    # An engine that declares this level's folders gets
+                    # exactly those, in its own order: Foreign Tables
+                    # belongs next to Tables, not after everything the
+                    # generic list happens to know about.
+                    _append_folders(store, node, folders, relations)
+                    return
+                tables = [t for t in relations if t.kind != "view"]
+                views = [t for t in relations if t.kind == "view"]
                 store.append(Node(
                     "category", "Tables",
                     profile=node.profile, category="tables", payload=tables,
@@ -813,32 +862,46 @@ class Sidebar(Gtk.ScrolledWindow):
                                 profile=node.profile, category=category,
                             ))
         elif node.kind == "category":  # the lazy categories
+            slug = node.category
+            schema = node.profile.schema if node.profile is not None else ""
+
             def work():
                 connector = self._ensure(node.profile)
-                if node.category == "functions":
+                if slug == "functions":
                     return connector.list_functions()
-                if node.category == "indexes":
+                if slug == "indexes":
                     return connector.list_indexes()
-                if node.category == "triggers":
+                if slug == "triggers":
                     return connector.list_triggers()
-                return connector.list_events()
+                if slug == "events":
+                    return connector.list_events()
+                if slug == "roles":
+                    return connector.list_users()
+                # A catalog folder: one listing, named by its slug
+                # (PG-02). An adapter with no such folder answers
+                # empty and the row shows its empty state.
+                return connector.list_catalog(slug, schema)
 
-            def fill(objects):
-                kind = _LAZY_CATEGORIES[node.category]
-                for obj in objects:
+            def fill(found):
+                kind = _LAZY_CATEGORIES[slug]
+                for obj in found:
                     table = ""  # only index/trigger rows own one
-                    if node.category == "events":  # plain names
+                    if slug == "events":  # plain names
                         name, detail = obj, ""
-                    elif node.category == "functions":
+                    elif slug == "functions":
                         name, detail = obj.name, ""
-                    else:  # IndexInfo | TriggerInfo
+                    elif slug in ("indexes", "triggers"):
                         name, table = obj.name, obj.table
                         detail = table
+                    else:  # ObjectSummary | UserInfo
+                        name = obj.name
+                        detail = getattr(obj, "detail", "")
                     store.append(Node(
                         kind, name,
                         detail=detail, profile=node.profile, table=table,
+                        category=slug,
                     ))
-                if not objects:
+                if not found:
                     store.append(Node("note", "(none)"))
         else:  # section: the objects of one Properties section
             table = node.table
@@ -853,6 +916,11 @@ class Sidebar(Gtk.ScrolledWindow):
                         index for index in connector.list_indexes()
                         if index.table == table
                     ]
+                if slug == "partitions":
+                    # The pieces of a partitioned table, nested under
+                    # the table they belong to (PG-02); a plain table
+                    # answers empty and the section says so.
+                    return connector.list_partitions(table)
                 return [
                     trigger for trigger in connector.list_triggers()
                     if trigger.table == table
@@ -872,6 +940,7 @@ class Sidebar(Gtk.ScrolledWindow):
                     else:
                         store.append(Node(
                             _SECTION_CHILD_KINDS[slug], item.name,
+                            detail=getattr(item, "detail", ""),
                             profile=node.profile, table=table,
                         ))
                 if not found:
@@ -1490,6 +1559,79 @@ def _database_profile(
     )
 
 
+def _level_categories(
+    profile: ConnectionProfile | None, level: str
+) -> tuple[tuple[str, str], ...]:
+    """The folders this engine hangs off `level` — (slug, label), in
+    display order. A capability answer like the rest (CORE-02): it
+    needs no connection, so the level is laid out before the server is
+    asked anything, and an engine that declares none keeps the generic
+    Tables/Views/Functions set (PG-02)."""
+    if profile is None:
+        return ()
+    try:
+        return registry.level_categories(profile.kind, level)
+    except Exception:  # an adapter the registry doesn't know
+        return ()
+
+
+def _administer_categories(
+    profile: ConnectionProfile | None,
+) -> tuple[tuple[str, str], ...]:
+    """What the Administer folder holds on this engine."""
+    if profile is None:
+        return ()
+    try:
+        return registry.administer_categories(profile.kind)
+    except Exception:
+        return ()
+
+
+def _relation_kind(category: str) -> str:
+    """The row kind a relation folder holds — Materialized Views hold
+    views, Foreign Tables hold tables."""
+    folder = objects.RELATION_FOLDERS.get(category)
+    return folder[0] if folder else "table"
+
+
+def _category_rows(node: Node) -> list:
+    """The relations that belong in one relation folder, out of the
+    listing the row above it made: the kind the folder holds, carrying
+    one of the notes that puts a row in *this* folder rather than a
+    sibling — a partition is not listed beside the table it is part
+    of (PG-02)."""
+    folder = objects.RELATION_FOLDERS.get(node.category)
+    if folder is None:
+        return list(node.payload or [])
+    kind, notes = folder
+    return [
+        info
+        for info in node.payload or []
+        if info.kind == kind and getattr(info, "detail", "") in notes
+    ]
+
+
+def _append_folders(
+    store: Gio.ListStore,
+    node: Node,
+    folders: tuple[tuple[str, str], ...],
+    relations: list,
+) -> None:
+    """The declared folders of one level, as rows. A relation folder
+    carries the listing already made — so it fills without a second
+    query, and can say how many rows it holds before it is opened;
+    every other folder is lazy and says nothing it has not fetched."""
+    for slug, label in folders:
+        payload = list(relations) if slug in objects.RELATION_FOLDERS else None
+        row = Node(
+            "category", label,
+            profile=node.profile, category=slug, payload=payload,
+        )
+        if payload is not None:
+            row.detail = str(len(_category_rows(row)))
+        store.append(row)
+
+
 def _has_schemas(profile: ConnectionProfile | None) -> bool:
     """Whether this engine puts schemas below the database — a
     capability question the provider layer answers with no connection
@@ -1636,7 +1778,7 @@ def _connection_summary(node: Node) -> str:
     summary = f"{profile.kind} · {target}" if target else profile.kind
     if node.loaded and node.store is not None:
         count = sum(
-            len(child.payload)
+            len(_category_rows(child))
             for i in range(node.store.get_n_items())
             if (child := node.store.get_item(i)).kind == "category"
             and child.payload is not None

@@ -12,6 +12,11 @@ from typing import Any
 class TableInfo:
     name: str
     kind: str  # "table" | "view"
+    #: A one-line note for the row, where the relation is a special
+    #: case of its kind: a partitioned table, a foreign table, a
+    #: materialized view. Empty for a plain table or view, which is
+    #: what the sidebar shows nothing extra for.
+    detail: str = ""
 
 
 @dataclass(frozen=True)
@@ -499,6 +504,24 @@ class Connector(ABC):
     def list_table_functions(self, table: str) -> list[ObjectSummary]:
         """Functions related to the table: the ones its triggers call,
         where the catalog can say."""
+        return []
+
+    def list_catalog(self, slug: str, schema: str = "") -> list[ObjectSummary]:
+        """The rows of one of the looser catalog folders the object
+        tree can show — sequences, extensions, tablespaces, server
+        settings — named by the folder's slug (db/metadata.py's
+        CATALOG_CATEGORIES).
+
+        Deliberately one method rather than one per folder: what these
+        listings have in common is a name and a line of explanation
+        (`ObjectSummary`), and an engine that has no such folder never
+        offers it, so the interface would otherwise grow a dozen
+        methods that answer `[]` everywhere but PostgreSQL.
+
+        Concrete default (not abstract): a slug this adapter has no
+        catalog for answers empty, and the folder shows its empty
+        state rather than an error.
+        """
         return []
 
     # Accounts and privileges. Reading is a catalog query like any

@@ -8,6 +8,14 @@ its own — the same table name lives in as many schemas as you like, and
 flattening them is how `public.orders` and `staging.orders` become one
 row that resolves to whichever the search path found first.
 
+The folders each level shows are declared here (PG-02) rather than in
+the sidebar: a schema holds relations, routines, sequences, types and
+aggregates; a database holds its schemas plus the things that belong
+to the database and not to any one schema (event triggers, extensions,
+storage, roles); the connection holds its databases plus what is the
+server's own. Every one of them is a plain category node, so it opens
+the generic object info view like any other row (CORE-01).
+
 Minimum supported server: PostgreSQL 10, the oldest in the test matrix
 (tests/conftest.py). Partitioned tables — relkind 'p' — arrived in 10,
 so every supported version answers the catalog queries the adapter
@@ -18,7 +26,15 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from sqlide.backend.db.metadata import Capabilities, MetadataProvider, NodeRef
+from sqlide.backend.db.metadata import (
+    CATALOG_CATEGORIES,
+    RELATION_FOLDERS,
+    CATEGORY_LABELS,
+    Capabilities,
+    MetadataProvider,
+    NodeRef,
+    _safe,
+)
 
 
 class PostgresMetadata(MetadataProvider):
@@ -111,6 +127,103 @@ class PostgresMetadata(MetadataProvider):
         except Exception:
             return "public"
 
+    #: The folders each level of the tree shows (PG-02):
+    #:
+    #: * a schema: the relations first, then the routines and the
+    #:   declarations. Tables, Views, Indexes and Functions are the
+    #:   shared categories (metadata.CATEGORIES); the rest are catalog
+    #:   folders (objects.CATALOG_CATEGORIES);
+    #: * a database, after its schemas: what belongs to the database
+    #:   rather than to any schema in it;
+    #: * the connection, after its databases: what is the server's own,
+    #:   with Administer holding the server-wide listings one folder
+    #:   down so the connection row does not grow five of them.
+    LEVEL_CATEGORIES = {
+        "connection": ("administer", "system_info"),
+        "database": (
+            "event_triggers", "extensions", "storage", "system_info",
+            "roles",
+        ),
+        "schema": (
+            "tables",
+            "foreign_tables",
+            "views",
+            "materialized_views",
+            "indexes",
+            "functions",
+            "sequences",
+            "data_types",
+            "aggregates",
+        ),
+    }
+    #: What Administer holds.
+    ADMINISTER_CATEGORIES = ("roles", "storage", "system_info")
+
+    def tree_categories(self, ref: NodeRef) -> list[NodeRef]:
+        return [
+            self.category(ref, slug)
+            for slug in self.LEVEL_CATEGORIES.get(ref.kind, ())
+        ]
+
+    def categories(self, ref: NodeRef) -> list[NodeRef]:
+        """A schema's folders. Overridden so the shared categories and
+        the catalog ones come back interleaved in one order — Foreign
+        Tables belongs next to Tables, not after everything the base
+        class happens to know about."""
+        if ref.kind == "schema":
+            return self.tree_categories(ref)
+        return super().categories(ref)
+
+    def category(self, ref: NodeRef, slug: str) -> NodeRef:
+        """One folder row, whichever vocabulary its slug comes from."""
+        if slug in CATALOG_CATEGORIES:
+            return self.catalog_category(ref, slug)
+        return ref.child("category", CATEGORY_LABELS[slug], category=slug)
+
+    def _category_children(self, ref: NodeRef) -> list[NodeRef]:
+        """The relation folders read the schema's relations directly,
+        so a partitioned table, a foreign table and a materialized
+        view each land in the folder that names them instead of all
+        four kinds sharing Tables and Views."""
+        slug = ref.category or ref.name.lower()
+        wanted = RELATION_FOLDERS.get(slug)
+        if wanted is not None:
+            kind, notes = wanted
+            return [
+                ref.child(
+                    kind, info.name, category=slug,
+                    detail=self.object_detail(info),
+                )
+                for info in self._objects(ref)
+                if info.kind == kind and self.object_detail(info) in notes
+            ]
+        return super()._category_children(ref)
+
+    def object_detail(self, info) -> str:
+        """A relation's one-line note: what makes it a special case of
+        its kind ("partitioned"), empty for a plain one. The sidebar
+        shows it next to the name, which is how a partitioned table is
+        told from a plain one without a second icon (PG-02)."""
+        return getattr(info, "detail", "")
+
+    def list_children(self, ref: NodeRef) -> list[NodeRef]:
+        """A partitioned table's partitions hang under it, after its
+        columns, so the pieces of one table are browsable as one thing
+        and each of them opens as the table it is (PG-02). Every other
+        node keeps the shared behaviour."""
+        children = super().list_children(ref)
+        if ref.kind == "table" and ref.detail == "partitioned":
+            children += [
+                ref.child(
+                    "table", partition.name, table=ref.name,
+                    detail=partition.detail or "partition",
+                )
+                for partition in _safe(
+                    lambda: self.connector.list_partitions(ref.name), []
+                )
+            ]
+        return children
+
     def _current_database(self) -> str:
         return getattr(self.connector, "database", "") or ""
 
@@ -126,7 +239,7 @@ class PostgresMetadata(MetadataProvider):
                 detail="current" if name == current else "",
             )
             for name in self.connector.list_schemas()
-        ]
+        ] + self.tree_categories(ref)
 
     def _objects(self, ref: NodeRef):
         """The tables and views of the schema this folder was opened

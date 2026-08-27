@@ -1,6 +1,6 @@
 ## CORE-53 — Keep grants out of the right side panel for users and roles
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-47, CORE-12
 
 ### Problem

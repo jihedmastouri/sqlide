@@ -13,7 +13,8 @@ from __future__ import annotations
 import pytest
 
 from sqlide.backend.db.base import ConnectorError, UserInfo
-from sqlide.backend.db.metadata import PRINCIPAL_COLUMN_NAMES
+from sqlide.backend.db.metadata import PRINCIPAL_COLUMN_NAMES, NodeRef
+from sqlide.backend.db.objects import ObjectRef
 from sqlide.backend.db.mysql.metadata import MysqlMetadata
 from sqlide.backend.db.postgres.metadata import PostgresMetadata
 from sqlide.backend.db.sqlite import SqliteConnector
@@ -153,3 +154,85 @@ def test_overview_survives_a_catalog_it_cannot_read():
 
     columns, rows = MysqlMetadata(Refuses()).principal_table()
     assert columns and rows == []
+
+
+# The properties panel's view of a principal (CORE-53): its own
+# attributes and a way into the permission editor — never its grants,
+# which are a screen of their own and a slow listing to fetch.
+
+
+class _Principals:
+    """An account list, plus a trip-wire on every catalog call the
+    panel must not make while a principal is merely selected."""
+
+    def __init__(self, users: list[UserInfo]) -> None:
+        self._users = users
+        self.grant_queries: list[str] = []
+
+    def list_users(self) -> list[UserInfo]:
+        return self._users
+
+    def account_ident(self, user: UserInfo) -> str:
+        return f"'{user.name}'@'{user.host}'" if user.host else user.name
+
+    def list_privileges(self, user: UserInfo):
+        self.grant_queries.append(user.name)
+        return []
+
+    def list_object_grants(self, kind: str, name: str):
+        self.grant_queries.append(name)
+        return []
+
+
+ANALYSTS = UserInfo(
+    name="analysts",
+    can_login=False,
+    kind="group",
+    create_db=True,
+    member_of=("readers",),
+    valid_until="2030-01-01 00:00:00",
+    connection_limit="-1",
+)
+
+
+def test_principal_properties_show_the_accounts_own_attributes():
+    connector = _Principals([ANALYSTS])
+    provider = PostgresMetadata(connector)
+    info = provider.describe(NodeRef("principal", "analysts"))
+    summary = dict(info.summary)
+    assert info.type_label == "Account"
+    assert summary["Type"] == "group"
+    assert summary["Member of"] == "readers"
+    assert summary["Connection limit"] == "unlimited"
+    # A flag is answered rather than left blank in a key/value block.
+    assert summary["Login"] == "no" and summary["Create DB"] == "yes"
+
+
+def test_selecting_a_principal_issues_no_grant_query():
+    connector = _Principals([ANALYSTS])
+    info = PostgresMetadata(connector).describe(
+        NodeRef("principal", "analysts")
+    )
+    assert connector.grant_queries == []
+    titles = [table.title for table in info.tables]
+    # One row that opens the editor, not a listing of what it holds.
+    assert titles == ["Permissions"]
+    (table,) = info.tables
+    assert len(table.rows) == 1
+    assert table.link(0) == ObjectRef("principal", "analysts")
+
+
+def test_principal_sections_drop_permissions_but_objects_keep_them():
+    assert "permissions" in PostgresMetadata.property_sections()
+    assert "permissions" in PostgresMetadata.sections_for("table")
+    for kind in ("principal", "user", "role"):
+        assert "permissions" not in PostgresMetadata.sections_for(kind)
+        assert "permissions" not in MysqlMetadata.sections_for(kind)
+
+
+def test_a_principal_the_server_no_longer_has_still_describes():
+    info = PostgresMetadata(_Principals([])).describe(
+        NodeRef("principal", "ghost")
+    )
+    assert info.name == "ghost" and info.tables == []
+    assert info.note

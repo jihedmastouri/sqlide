@@ -27,6 +27,9 @@ So the UI asks a provider instead:
 * `principal_columns()` / `principal_table()` — the account overview
   (CORE-12): the columns this engine has attributes for, and the rows
   filled in for them.
+* `principal_properties(ref)` — a user or a role as the properties
+  panel shows it (CORE-53): the account's own attributes and a link to
+  the permission editor, never its grants.
 * `object_grants(ref)` — the inverse: who may do what to one object,
   direct and inherited, for the Permissions section of its properties
   (CORE-11).
@@ -379,6 +382,27 @@ PRINCIPAL_FIELDS: dict[str, Callable[[UserInfo], str]] = {
 #: know the vocabulary before a provider is chosen.
 PRINCIPAL_COLUMN_NAMES = tuple(PRINCIPAL_FIELDS)
 
+#: The columns of that set that are yes/no answers rather than text.
+PRINCIPAL_FLAGS = frozenset(
+    ("Login", "Superuser", "Create DB", "Create role", "Locked")
+)
+
+
+def _permission_editor_link(user: UserInfo) -> objects.DetailTable:
+    """The one row a principal's properties show instead of its grants:
+    a link into the permission editor for that account (CORE-53).
+
+    A link rather than a listing — the editor is the screen that shows
+    what the account holds and the only one that can change it, so the
+    panel points at it rather than fetching the same thing again.
+    """
+    return objects.DetailTable(
+        title="Permissions",
+        columns=["Privileges"],
+        rows=[("Open the permission editor…",)],
+        links=[objects.ObjectRef("principal", user.name)],
+    )
+
 
 def _yes(flag: bool) -> str:
     """A boolean cell: "yes" or nothing. An empty cell reads as "no"
@@ -418,6 +442,11 @@ class MetadataProvider:
     #: keys of PRINCIPAL_FIELDS. The generic provider knows only what
     #: every account has.
     PRINCIPAL_COLUMNS: tuple[str, ...] = ("Name", "Type", "Login")
+    #: The node kinds that are an account rather than an object. They
+    #: are described from their own attributes and never carry a
+    #: grants listing (CORE-53); the tree spells one "principal", a
+    #: grant row or a link may spell it "user" or "role".
+    PRINCIPAL_KINDS: tuple[str, ...] = ("user", "role", "principal")
     #: The schemas the server owns: exact names, and the prefixes a
     #: whole family of them shares (PostgreSQL's `pg_*`). Declared per
     #: engine so the sidebar can dim and sort them without knowing
@@ -629,6 +658,8 @@ class MetadataProvider:
         """The read-only descriptor the info view renders (CORE-01),
         with the Permissions section appended where this engine and
         this kind of object have one (CORE-11)."""
+        if ref.kind in self.PRINCIPAL_KINDS:
+            return self.principal_properties(ref)
         info = objects.describe(
             self.connector,
             ref.kind,
@@ -677,6 +708,22 @@ class MetadataProvider:
             for slug, _label in objects.PROPERTY_SECTIONS
             if gated.get(slug, True)
         )
+
+    @classmethod
+    def sections_for(cls, kind: str) -> tuple[str, ...]:
+        """`property_sections()` as it applies to one kind of node.
+
+        An account is not an object with an ACL of its own: what a user
+        or a role may do is a long, slow listing and the permission
+        editor is the screen built for it, so the Permissions section
+        is dropped from a principal's descriptor rather than inlined
+        beside its attributes (CORE-53). Every other kind gets the
+        engine's full section list.
+        """
+        sections = cls.property_sections()
+        if kind in cls.PRINCIPAL_KINDS:
+            return tuple(slug for slug in sections if slug != "permissions")
+        return sections
 
     def table_properties(self, ref: NodeRef) -> objects.ObjectInfo:
         """The descriptor behind a table tab's Properties side: the
@@ -776,6 +823,55 @@ class MetadataProvider:
             for user in self.list_principals()
         ]
 
+    def principal_properties(self, ref: NodeRef) -> objects.ObjectInfo:
+        """A user or a role as the properties panel shows it: its own
+        attributes, and a way through to the permission editor
+        (CORE-53).
+
+        The panel is a summary. What an account may do is a listing of
+        its own — long to read and slow to fetch — and the permission
+        editor is where it is both shown and changed, so selecting a
+        principal asks the catalog for the account list and nothing
+        else: no grant query is issued here.
+        """
+        label = objects.TYPE_LABELS.get(ref.kind, "Account")
+        user = self._principal(ref.name)
+        if user is None:
+            return objects.ObjectInfo(
+                kind=ref.kind or "principal",
+                name=ref.name,
+                type_label=label,
+                summary=[("Name", ref.name)],
+                note="No account by this name on the server any more.",
+            )
+        return objects.ObjectInfo(
+            kind=ref.kind or "principal",
+            name=ref.name,
+            type_label=label,
+            summary=self.principal_summary(user),
+            tables=[_permission_editor_link(user)],
+        )
+
+    def principal_summary(self, user: UserInfo) -> list[tuple[str, str]]:
+        """One account's own attributes, as the General block shows
+        them: the columns this engine has something behind
+        (`principal_columns`), spelled the way the overview spells
+        them.
+
+        A flag reads "yes"/"no" here rather than "yes"/blank: a column
+        of blanks reads as "no" in a wide table, but a single line
+        saying nothing at all reads as a missing answer.
+        """
+        summary = []
+        for column in self.principal_columns():
+            value = PRINCIPAL_FIELDS[column](user)
+            if column in PRINCIPAL_FLAGS:
+                value = value or "no"
+            elif not value:
+                continue
+            summary.append((column, value))
+        return summary
+
     def list_grants(self, ref: NodeRef) -> list[PrivilegeInfo]:
         """Who may do what to `ref`.
 
@@ -786,7 +882,7 @@ class MetadataProvider:
         """
         if not self.CAPABILITIES.grants:
             return []
-        if ref.kind in ("user", "role", "principal"):
+        if ref.kind in self.PRINCIPAL_KINDS:
             user = self._principal(ref.name)
             if user is None:
                 return []
@@ -883,7 +979,7 @@ class MetadataProvider:
         grant model and this object kind carries grants. Everywhere
         else the descriptor is returned untouched — a section this
         engine cannot fill is never drawn (CORE-04)."""
-        if "permissions" not in self.property_sections():
+        if "permissions" not in self.sections_for(ref.kind):
             return info
         if ref.kind not in self.GRANTABLE_KINDS:
             return info

@@ -2856,10 +2856,15 @@ class MainWindow(Adw.ApplicationWindow):
         tab = self.open_users(profile)
         if tab is None:
             return
-        tab.open_permissions_for(
-            ref.name,
-            NodeRef(kind=ref.category or "table", name=ref.table),
+        # A grant row names the object it was read from; a principal
+        # picked in the tree names none, and the editor then opens on
+        # its own object tree rather than on an empty node (CORE-53).
+        scope = (
+            NodeRef(kind=ref.category or "table", name=ref.table)
+            if ref.table
+            else None
         )
+        tab.open_permissions_for(ref.name, scope)
 
     def open_users(self, profile: ConnectionProfile) -> UsersTab | None:
         """The connection's accounts and their privileges. Deduplicated

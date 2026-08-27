@@ -26,6 +26,7 @@ from sqlide.backend.db.base import (
     TypeSpec,
     build_filter_clauses,
 )
+from sqlide.backend.db.sqlite import pragmas as pragma_rules
 
 #: The built-ins to fall back on where `pragma_function_list` is not
 #: compiled in (SQLite before 3.30). Not the whole set — the core
@@ -127,9 +128,23 @@ class SqliteConnector(Connector):
     statement is serialized behind a lock (hence check_same_thread=False).
     """
 
-    def __init__(self, file_path: str, read_only: bool = False) -> None:
+    def __init__(
+        self,
+        file_path: str,
+        read_only: bool = False,
+        pragmas: tuple[str, ...] = (),
+    ) -> None:
         self.file_path = file_path
         self.read_only = read_only  # MCP instances: open with mode=ro
+        #: The profile's saved PRAGMA defaults, "name = value" a line
+        #: (CORE-13), applied by connect() on every connection. Only
+        #: names the catalog declares and values it validates are ever
+        #: run — see backend/db/sqlite/pragmas.py.
+        self.pragma_defaults: tuple[str, ...] = tuple(pragmas or ())
+        #: What went wrong applying them, one message a default. The
+        #: connection still opens: a hand-edited config line should
+        #: cost its own setting, not the database.
+        self.pragma_errors: list[str] = []
         self._conn: sqlite3.Connection | None = None
         self._lock = threading.Lock()
 
@@ -164,6 +179,25 @@ class SqliteConnector(Connector):
             self._conn.text_factory = _decode_text
         except sqlite3.Error as exc:
             raise ConnectorError(str(exc)) from exc
+        self._apply_pragma_defaults()
+
+    def _apply_pragma_defaults(self) -> None:
+        """Run the profile's saved PRAGMA defaults (SQ-02, CORE-13).
+
+        A default that no longer parses, or that this build refuses, is
+        collected in `pragma_errors` rather than raised: the user asked
+        to open a database, and a setting they cannot have is a message
+        beside the connection, not a failure to open it.
+        """
+        self.pragma_errors = []
+        if not self.pragma_defaults:
+            return
+        self.pragma_errors.extend(pragma_rules.default_errors(self.pragma_defaults))
+        for spec, value in pragma_rules.parse_defaults(self.pragma_defaults):
+            try:
+                self._run(f"PRAGMA {spec.name} = {value}")
+            except ConnectorError as exc:
+                self.pragma_errors.append(f"{spec.name}: {exc}")
 
     def close(self) -> None:
         if self._conn is not None:

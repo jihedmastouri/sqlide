@@ -30,12 +30,14 @@ ALTER TABLE … RENAME COLUMN, which the definition tab already relies on.
 
 from __future__ import annotations
 
+from sqlide.backend.db.base import ConnectorError, ResultSet
 from sqlide.backend.db.metadata import (
     CATALOG_CATEGORIES,
     Capabilities,
     MetadataProvider,
     NodeRef,
 )
+from sqlide.backend.db.sqlite import pragmas
 
 
 class SqliteMetadata(MetadataProvider):
@@ -94,3 +96,61 @@ class SqliteMetadata(MetadataProvider):
         if slug in CATALOG_CATEGORIES:
             return self.catalog_category(ref, slug)
         return ref.child("category", self.category_label(slug), category=slug)
+
+    # PRAGMAs (SQ-02)
+    #
+    # The catalog in sqlite/pragmas.py says what each pragma is; this
+    # reads the values off the connection and writes the ones the user
+    # changes. Two rules the ticket asks for live here rather than in
+    # the UI, so a caller that skips the UI keeps them:
+    #
+    #   * a name is only ever one the catalog declares, and a value
+    #     only ever one `normalize()` accepted, so nothing user-typed
+    #     reaches the SQL text (a PRAGMA takes no bound parameters);
+    #   * a change is followed by a read, so the value shown is the
+    #     one the database has and not the one that was asked for —
+    #     SQLite quietly ignores `page_size` on a populated file and
+    #     refuses `journal_mode` inside a transaction.
+
+    def list_pragmas(self, advanced: bool = False) -> list[pragmas.PragmaState]:
+        return [
+            pragmas.PragmaState(spec=spec)
+            if spec.kind == pragmas.CHECK
+            else self._pragma_state(spec)
+            for spec in pragmas.listed(advanced)
+        ]
+
+    def set_pragma(self, name: str, value) -> pragmas.PragmaState:
+        spec = pragmas.spec(name)
+        if spec is None:
+            raise ConnectorError(f"Unknown pragma: {name}")
+        try:
+            statement = pragmas.statement(spec, value)
+        except pragmas.PragmaError as exc:
+            raise ConnectorError(str(exc)) from exc
+        self.connector.execute(statement)
+        return self._pragma_state(spec)
+
+    def run_pragma_check(self, name: str) -> ResultSet:
+        spec = pragmas.spec(name)
+        if spec is None or spec.kind not in (pragmas.CHECK, pragmas.READONLY):
+            raise ConnectorError(f"{name} is not an informational pragma")
+        result = self.connector.execute(f"PRAGMA {spec.name}")
+        if isinstance(result, ResultSet):
+            return result
+        return ResultSet(columns=[spec.name], rows=[])
+
+    def _pragma_state(self, spec: pragmas.PragmaSpec) -> pragmas.PragmaState:
+        """One row's current value, or the reason there isn't one — a
+        pragma this build was compiled without answers with no rows,
+        and a row that says so beats a row that is silently blank."""
+        try:
+            result = self.connector.execute(f"PRAGMA {spec.name}")
+        except ConnectorError as exc:
+            return pragmas.PragmaState(spec=spec, error=str(exc))
+        rows = result.rows if isinstance(result, ResultSet) else []
+        if not rows or rows[0][0] is None:
+            return pragmas.PragmaState(
+                spec=spec, error="not available in this SQLite build"
+            )
+        return pragmas.PragmaState(spec=spec, value=str(rows[0][0]))

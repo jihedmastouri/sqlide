@@ -292,6 +292,11 @@ class Sidebar(Gtk.ScrolledWindow):
         on_extension_action: (
             Callable[[ConnectionProfile, str, str], None] | None
         ) = None,
+        # The engine's settings surface, where it has one — SQLite's
+        # PRAGMAs (SQ-02). Optional for the same reason as the line
+        # above: a harness that only walks the tree need not supply
+        # one, and the menu item then does nothing.
+        on_pragmas: Callable[[ConnectionProfile], None] | None = None,
     ) -> None:
         super().__init__(vexpand=True)
         # Both scrollbars, on demand. Row labels are not ellipsized
@@ -318,6 +323,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_mcp_server = on_mcp_server
         self._on_manage_users = on_manage_users
         self._on_monitor = on_monitor
+        self._on_pragmas = on_pragmas
         self._on_open_schema = on_open_schema
         self._on_edit_connection = on_edit_connection
         self._on_disconnect = on_disconnect
@@ -392,6 +398,7 @@ class Sidebar(Gtk.ScrolledWindow):
             ("mcp-server", self._menu_mcp_server),
             ("manage-users", self._menu_manage_users),
             ("monitor", self._menu_monitor),
+            ("pragmas", self._menu_pragmas),
             ("open-schema", self._menu_open_schema),
             ("edit-connection", self._menu_edit_connection),
             ("disconnect", self._menu_disconnect),
@@ -1270,6 +1277,13 @@ class Sidebar(Gtk.ScrolledWindow):
                 # for the engines that have a server to report on.
                 if metrics.supported(node.profile.kind if node.profile else ""):
                     menu.append("Monitoring…", "schema.monitor")
+                # The engine's own settings surface, where it has one:
+                # SQLite's PRAGMAs (SQ-02). A capability answer, so no
+                # engine is named here.
+                if node.profile is not None and registry.capabilities(
+                    node.profile.kind
+                ).pragmas:
+                    menu.append("PRAGMAs…", "schema.pragmas")
                 menu.append("Edit…", "schema.edit-connection")
                 # Always listed, so the menu keeps its shape; only live
                 # while the connection actually has something open.
@@ -1508,6 +1522,11 @@ class Sidebar(Gtk.ScrolledWindow):
         node = self._menu_node
         if node is not None and node.profile is not None:
             self._on_manage_users(node.profile)
+
+    def _menu_pragmas(self, *_args) -> None:
+        node = self._menu_node
+        if node is not None and node.profile is not None and self._on_pragmas:
+            self._on_pragmas(node.profile)
 
     def _menu_monitor(self, *_args) -> None:
         node = self._menu_node

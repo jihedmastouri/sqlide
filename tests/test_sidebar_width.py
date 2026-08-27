@@ -136,6 +136,65 @@ def test_a_long_name_gets_a_tooltip_of_its_own(gtk) -> None:
     )
 
 
+def test_the_secondary_text_ellipsizes_and_yields_the_width(gtk) -> None:
+    """The name keeps its full width request; the detail beside it
+    asks for next to nothing, so a long type or row count cannot push
+    the tree wider than the sidebar the user sized (CORE-51)."""
+    from gi.repository import Pango
+
+    bar = make_sidebar()
+    item = gtk.ListItem()
+    bar._setup_row(None, item)
+    detail = item.detail
+    assert detail.get_ellipsize() == Pango.EllipsizeMode.END
+
+    detail.set_text("character varying(255) collate en_US.utf8")
+    minimum, natural, *_ = detail.measure(gtk.Orientation.HORIZONTAL, -1)
+    item.label.set_text("customer_order_line_item_reference")
+    name_minimum, *_ = item.label.measure(gtk.Orientation.HORIZONTAL, -1)
+    # An ellipsis' worth, against a name that insists on all of itself.
+    assert minimum < name_minimum / 4
+    # And it never asks for the whole string either, however long.
+    detail.set_text("character varying(255) collate en_US.utf8" * 4)
+    assert detail.measure(gtk.Orientation.HORIZONTAL, -1)[1] == natural
+
+
+def test_a_long_detail_barely_widens_the_row(gtk) -> None:
+    """Measured on the row the factory builds — the same one at every
+    depth, since indentation is the expander's business and the labels
+    inside it are sized identically for a top-level connection and a
+    column six levels down."""
+    bar = make_sidebar()
+    rows = []
+    for detail in ("", "timestamp with time zone, not null, default now()"):
+        item = gtk.ListItem()
+        bar._setup_row(None, item)
+        item.label.set_text("customer_order_line_item_reference")
+        from sqlide.frontend.sidebar import _show_detail
+
+        _show_detail(item.detail, detail)
+        rows.append(
+            item.get_child().measure(gtk.Orientation.HORIZONTAL, -1)[0]
+        )
+    plain, detailed = rows
+    assert detailed - plain < 40  # an ellipsis and its spacing, no more
+
+
+def test_the_full_detail_is_a_hover_away(gtk) -> None:
+    from sqlide.frontend.sidebar import _show_detail
+
+    bar = make_sidebar()
+    item = gtk.ListItem()
+    bar._setup_row(None, item)
+    _show_detail(item.detail, "character varying(255)")
+    assert item.detail.get_tooltip_text() == "character varying(255)"
+    assert item.detail.get_visible()
+    # Recycled into a row with nothing to say, it says nothing.
+    _show_detail(item.detail, "")
+    assert item.detail.get_tooltip_text() is None
+    assert not item.detail.get_visible()
+
+
 # The window's splitter
 
 

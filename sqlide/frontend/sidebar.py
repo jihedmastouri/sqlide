@@ -95,9 +95,13 @@ node); hovering a connection shows a short summary; hovering any other
 row whose name is long enough to run past a narrow sidebar shows the
 name in full.
 
-Labels are never ellipsized, so the tree keeps its natural width and
-the sidebar (a Gtk.ScrolledWindow) grows a horizontal scrollbar when
-that is wider than the panel, and a vertical one when it is taller.
+Name labels are never ellipsized, so the tree keeps its natural width
+and the sidebar (a Gtk.ScrolledWindow) grows a horizontal scrollbar
+when that is wider than the panel, and a vertical one when it is
+taller. The secondary label beside a name — type, row count, detail —
+is the exception: it ellipsizes and asks for next to no width, so it
+yields to the name instead of widening the tree, and carries the
+untruncated text in a tooltip (CORE-51).
 
 set_filter() switches the view to search mode: the same tree, pruned
 to the rows whose names match the query (subsequence match, matched
@@ -121,7 +125,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Callable
 
-from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
 from sqlide.backend import identity
 from sqlide.backend.connections import ConnectionProfile
@@ -197,6 +201,13 @@ _LAZY_CATEGORIES = {
 # From how many characters a plain row's name earns a tooltip of its
 # own — about what fits in the sidebar at its default width.
 _LONG_LABEL = 28
+
+# How wide the secondary label may grow before it ellipsizes, in
+# characters. It never asks for more than this, so a long type or a
+# six-digit row count cannot widen the tree past the width the sidebar
+# was dragged to; and it can shrink to an ellipsis when the name needs
+# the room, because the name is the part worth reading (CORE-51).
+_DETAIL_MAX_CHARS = 18
 
 
 class Node(GObject.Object):
@@ -299,7 +310,7 @@ class Sidebar(Gtk.ScrolledWindow):
         on_pragmas: Callable[[ConnectionProfile], None] | None = None,
     ) -> None:
         super().__init__(vexpand=True)
-        # Both scrollbars, on demand. Row labels are not ellipsized
+        # Both scrollbars, on demand. Row name labels are not ellipsized
         # (a truncated "customer_order_line_items" tells you nothing),
         # so a deep tree or a long name scrolls rather than being cut
         # to fit whatever width the sidebar was dragged to. The
@@ -1103,9 +1114,17 @@ class Sidebar(Gtk.ScrolledWindow):
         pk.add_css_class("accent")
         badge = identity_ui.environment_badge(identity.UNSET)
         badge.set_valign(Gtk.Align.CENTER)
-        detail = Gtk.Label()
+        detail = Gtk.Label(hexpand=False)
         detail.add_css_class("dim-label")
         detail.add_css_class("caption")
+        # The name label above expands and is never ellipsized, so it
+        # keeps its full width request; this one ellipsizes and asks
+        # for almost nothing, so the box takes the room back here
+        # first. Indentation is the expander's business, so a deeply
+        # nested row yields exactly the same way a top-level one does.
+        detail.set_ellipsize(Pango.EllipsizeMode.END)
+        detail.set_max_width_chars(_DETAIL_MAX_CHARS)
+        detail.set_width_chars(0)
         new_button = Gtk.Button(icon_name="list-add-symbolic")
         new_button.add_css_class("flat")
         new_button.add_css_class("row-action")
@@ -1194,8 +1213,7 @@ class Sidebar(Gtk.ScrolledWindow):
         else:
             list_item.content.remove_css_class("system-row")
         list_item.pk.set_visible(node.is_pk)
-        list_item.detail.set_text(node.detail)
-        list_item.detail.set_visible(bool(node.detail))
+        _show_detail(list_item.detail, node.detail)
         list_item.caret.set_visible(
             node.kind in _EXPANDABLE
             and (not node.filtered or bool(node.store.get_n_items()))
@@ -1968,6 +1986,16 @@ def _set_caret(caret: Gtk.Image, expanded: bool) -> None:
     caret.set_from_icon_name(
         "pan-down-symbolic" if expanded else "pan-end-symbolic"
     )
+
+
+def _show_detail(label: Gtk.Label, detail: str) -> None:
+    """Put a row's secondary text in its label. The text ellipsizes
+    rather than widening the tree (CORE-51), and ellipsized text is
+    only half an answer — so the whole of it goes in the label's own
+    tooltip, which wins over the row's for the label's area."""
+    label.set_text(detail)
+    label.set_visible(bool(detail))
+    label.set_tooltip_text(detail or None)
 
 
 def _name_tooltip(node: Node, tooltip: Gtk.Tooltip) -> bool:

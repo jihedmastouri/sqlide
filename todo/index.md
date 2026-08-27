@@ -63,6 +63,21 @@
 | CORE-34 | Export a chart as PNG or SVG, and copy it | CORE-31, CORE-32 |
 | CORE-35 | Dashboard tab: several saved charts, refreshed together | CORE-33 |
 
+### Data grid and SQL (from RS-04)
+
+| ID | Title | Depends on |
+|---|---|---|
+| CORE-36 | Export a result set or table to a file | — |
+| CORE-37 | Import a CSV file into a table | CORE-36 |
+| CORE-38 | Insert and delete rows in the data grid | — |
+| CORE-39 | Grid edits saved as one transaction | — |
+| CORE-40 | Stable, efficient data-grid pagination | — |
+| CORE-41 | Per-connector catalog cache | — |
+| CORE-42 | Value panel and record view for wide cells | — |
+| CORE-43 | Foreign-key navigation in the grid | CORE-41 |
+| CORE-44 | Format SQL in the editor | — |
+| CORE-45 | Find a value across a database's tables | CORE-02, CORE-43 |
+
 ### Monitoring
 
 | ID | Title | Depends on |
@@ -100,4 +115,4 @@
 | RS-01 | Improve the Query Builder (done — see `docs/query-builder-research.md`, filed CORE-17…CORE-22) |
 | RS-02 | Improve the Table Creator (done — see `docs/table-creator-research.md`, filed CORE-23…CORE-29) |
 | RS-03 | BI / charting support (done — see `docs/charting-research.md`, filed CORE-30…CORE-35) |
-| RS-04 | DBeaver Comparission |
+| RS-04 | DBeaver Comparission (done — see `docs/dbeaver-comparison.md`, filed CORE-36…CORE-45) |

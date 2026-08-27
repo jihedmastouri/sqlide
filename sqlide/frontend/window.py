@@ -33,7 +33,9 @@ is left at is written to settings.toml, so it survives a restart. To
 its right, the content area has its own
 header bar and the workspace's identity stripe under it, then a
 Gtk.Paned whose draggable right-hand child is the side panel (hidden by
-default) wraps the tab area. A persistent status bar
+default, its width remembered in settings.toml) wraps the tab area: the
+active object's properties, notes and history beside the tab rather
+than instead of it (CORE-47). A persistent status bar
 closes the content area at the bottom: the active tab's connection,
 its state, running jobs and transient messages, refreshed on every tab
 switch, run and connection change so it can never show a connection
@@ -101,7 +103,12 @@ from sqlide.frontend.drop_dialog import present_drop_dialog
 from sqlide.frontend.extension_dialog import present_extension_dialog
 from sqlide.frontend.backups_tab import BackupsTab
 from sqlide.frontend.mcp_tab import McpServerTab
-from sqlide.frontend.object_info import ObjectInfoTab, tab_key
+from sqlide.frontend.object_info import (
+    ObjectInfoTab,
+    PropertiesView,
+    properties_key,
+    tab_key,
+)
 from sqlide.frontend.query_builder import QueryBuilderTab
 from sqlide.frontend.query_console import QueryConsole
 from sqlide.frontend.relation_graph import RelationGraphTab
@@ -116,19 +123,16 @@ from sqlide.frontend.users_tab import UsersTab
 from sqlide.frontend import transfer
 
 
-# Default and floor width of the right side panel, in pixels. The
-# floor is what a DDL listing needs before it starts wrapping every
-# line; the default leaves the tab area the larger half on a 1100px
-# window, which is the size this window opens at.
 # How long a sidebar drag must be still before its width is written
 # back to settings.toml, and how many pixels either side of the drag
 # handle still count as "on the handle" for the double-click reset
 # (GTK4 gives no handle width to ask for, and the divider is a few
 # pixels wide however it is themed).
+# The right side panel's width is remembered the same way, on the same
+# debounce (CORE-47).
 _SIDEBAR_WIDTH_SAVE_DELAY = 400
+_SIDE_PANEL_WIDTH_SAVE_DELAY = 400
 _HANDLE_GRAB = 8
-_SIDE_PANEL_WIDTH = 340
-_SIDE_PANEL_MIN_WIDTH = 260
 
 # How long the sidebar's search box waits for the typing to stop before
 # refiltering the tree: long enough that a fast typist rebuilds it once,
@@ -153,9 +157,29 @@ def _follow_target(child) -> tuple[str, str, str] | None:
         return (key[1], "table", key[2])
     if key[0] == "function":
         return (key[1], "function", key[2])
-    if key[0] == "object":  # (kind, connection, node kind, name, table)
+    if key[0] in ("object", "properties"):
+        # (kind, connection, node kind, name, owning table)
         return (key[1], key[2], key[3])
     return None
+
+
+def _properties_target(child) -> tuple:
+    """Which object a tab's properties are about (CORE-47): the pair
+    the side panel and a properties window are pointed at, or
+    (None, None) for a tab that is about no single object — a query
+    console, the history, the backups tab.
+    """
+    profile = getattr(child, "profile", None)
+    if profile is None:
+        return (None, None)
+    if isinstance(child, PropertiesView):
+        return (profile, child.ref)
+    if isinstance(child, ObjectInfoTab):
+        return (profile, child.ref)
+    table = getattr(child, "table", "")
+    if table:
+        return (profile, objects.ObjectRef(kind="table", name=table))
+    return (None, None)
 
 
 def _qualified(profile: ConnectionProfile, name: str) -> str:
@@ -212,6 +236,12 @@ def _tab_menu(popped_out: bool = False) -> Gio.Menu:
     are the discoverable half of pop-out: dragging a tab off its bar
     does the same thing, but nothing on screen says so."""
     menu = Gio.Menu()
+    # Properties first: the tab's object, beside it in the panel or in
+    # a window of its own (CORE-47).
+    properties = Gio.Menu()
+    properties.append("Properties", "win.tab-properties")
+    properties.append("Properties (Window)", "win.tab-properties-window")
+    menu.append_section(None, properties)
     menu.append("Close Tab", "win.close-tab")
     section = Gio.Menu()
     section.append("Close Other Tabs", "win.close-other-tabs")
@@ -412,6 +442,8 @@ class MainWindow(Adw.ApplicationWindow):
             on_open_object=self.open_object,
             on_open_section=self.open_table_section,
             on_open_window=self.open_in_window,
+            on_open_properties=self.open_properties,
+            on_open_properties_window=self.open_properties_window,
             on_new_query=self.new_query,
             on_open_cli=self.open_cli,
             on_open_definition=self.open_definition,
@@ -506,6 +538,13 @@ class MainWindow(Adw.ApplicationWindow):
         # default. It sits inside the content area (below the header bar
         # and tab bar), so its edge and toggle stay away from the window
         # controls.
+        # The properties surface the panel shows: one widget the window
+        # owns and retargets as tabs change (CORE-47). A detached
+        # window gets its own instance, so the two never fight over
+        # which object is on screen.
+        self._properties_view = PropertiesView(
+            self.ensure_connector, self.show_error, self.open_object
+        )
         self._side_panel = SidePanel(
             on_activate=self._history_activated,
             on_clear=self._clear_history,
@@ -518,6 +557,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_apply_filter=self._apply_saved_filter,
             on_save_filter=self._save_current_filter,
             on_delete_filter=self._delete_saved_filter,
+            properties=self._properties_view,
         )
         self._side_panel.set_entries(workspace.history)
         # A Gtk.Paned rather than an Adw.OverlaySplitView, which has no
@@ -532,10 +572,19 @@ class MainWindow(Adw.ApplicationWindow):
             resize_end_child=False,
             shrink_end_child=False,
         )
-        self._side_panel.set_size_request(_SIDE_PANEL_MIN_WIDTH, -1)
+        self._side_panel.set_size_request(
+            settings_backend.SIDE_PANEL_MIN_WIDTH, -1
+        )
         self._side_panel.set_visible(False)
         self._history_split.set_start_child(self._stack)
         self._history_split.set_end_child(self._side_panel)
+        # Like the sidebar's, the panel's width is a preference: a drag
+        # of this divider is clamped and written to settings.toml, so
+        # the panel comes back the width it was left (CORE-47).
+        self._side_panel_width_source = 0
+        self._history_split.connect(
+            "notify::position", self._side_panel_resized
+        )
 
         self._history_toggle = Gtk.ToggleButton(
             icon_name="sidebar-show-right-symbolic"
@@ -684,9 +733,38 @@ class MainWindow(Adw.ApplicationWindow):
             width = self._history_split.get_width()
             if width:
                 self._history_split.set_position(
-                    max(0, width - _SIDE_PANEL_WIDTH)
+                    max(0, width - self._remembered_panel_width())
                 )
         self._side_panel.set_visible(shown)
+
+    def _remembered_panel_width(self) -> int:
+        return settings_backend.clamp_side_panel_width(
+            settings_backend.store.settings.side_panel_width
+        )
+
+    def _side_panel_resized(self, *_args) -> None:
+        """A drag of the panel's divider, debounced the same way the
+        sidebar's is — a drag emits a position change per frame, and
+        settings.toml is not a thing to rewrite sixty times a second.
+        Only a visible panel has a width worth remembering."""
+        if not self._side_panel.get_visible():
+            return
+        if self._side_panel_width_source:
+            GLib.source_remove(self._side_panel_width_source)
+        self._side_panel_width_source = GLib.timeout_add(
+            _SIDE_PANEL_WIDTH_SAVE_DELAY, self._save_side_panel_width
+        )
+
+    def _save_side_panel_width(self) -> bool:
+        self._side_panel_width_source = 0
+        total = self._history_split.get_width()
+        if total:
+            width = settings_backend.clamp_side_panel_width(
+                total - self._history_split.get_position()
+            )
+            if width != settings_backend.store.settings.side_panel_width:
+                settings_backend.store.update(side_panel_width=width)
+        return GLib.SOURCE_REMOVE
 
     # Sidebar toolbar
 
@@ -1116,6 +1194,11 @@ class MainWindow(Adw.ApplicationWindow):
         not come from a tab's own context menu — for a pop-out, its own
         pane; for the main window, whichever pane is active."""
         for name, callback in (
+            ("tab-properties", self._menu_tab_properties),
+            (
+                "tab-properties-window",
+                lambda pane: self._menu_tab_properties(pane, window=True),
+            ),
             ("close-tab", self._close_menu_tab),
             ("close-other-tabs", self._close_other_tabs),
             ("close-tabs-right", self._close_tabs_right),
@@ -1338,6 +1421,7 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self._side_panel.set_filter_target("", [])
         self._update_note_target(child)
+        self._side_panel.set_properties_target(*_properties_target(child))
         self.follow_in_sidebar(child)
         if isinstance(child, (QueryConsole, CliConsole)):
             self._set_console_info(child)
@@ -1854,6 +1938,9 @@ class MainWindow(Adw.ApplicationWindow):
         if self._sidebar_width_source:
             GLib.source_remove(self._sidebar_width_source)
             self._save_sidebar_width()
+        if self._side_panel_width_source:
+            GLib.source_remove(self._side_panel_width_source)
+            self._save_side_panel_width()
         if self._close_confirmed:
             return False
         # Keep the window and ask; a confirming response closes it for
@@ -2362,7 +2449,6 @@ class MainWindow(Adw.ApplicationWindow):
             self.ensure_connector,
             self.show_error,
             on_aggregate=self.show_aggregate,
-            on_open_object=self.open_object,
         )
         page = self._append_tab(
             tab,
@@ -2382,14 +2468,110 @@ class MainWindow(Adw.ApplicationWindow):
         self, profile: ConnectionProfile, table: str, section: str
     ) -> None:
         """A sidebar row under a table — Indexes, Constraints, Columns
-        — opens that table's Properties view on that section (CORE-05).
+        — opens that table on that properties section (CORE-05).
 
-        The table tab is reused where it is already open, so the deep
-        link never costs a second copy of the grid.
+        Since CORE-47 the section is not a mode of the tab: the table's
+        data tab is opened (or reused, so the deep link never costs a
+        second copy of the grid) and the right side panel — which is
+        following that tab anyway — is revealed on the named section.
+        A properties window already showing this object is sent to the
+        section too, so a link lands wherever the user is reading.
         """
-        tab = self.open_table(profile, table)
-        if tab is not None:
-            tab.show_properties(section)
+        self.open_table(profile, table)
+        ref = objects.ObjectRef(kind="table", name=table)
+        detached = self._tab_for(properties_key(profile, ref))
+        if detached is not None:
+            detached.select_section(section)
+            self._focus_tab(properties_key(profile, ref))
+            return
+        self.open_properties(profile, ref, section)
+
+    # Properties (CORE-47): the side panel, and windows torn off it
+
+    def open_properties(
+        self,
+        profile: ConnectionProfile,
+        ref: objects.ObjectRef,
+        section: str = "",
+    ) -> None:
+        """Show one object's properties in the right side panel.
+
+        The panel normally follows the active tab; asking for an
+        object explicitly points it there and reveals the panel, on a
+        named section when a deep link asked for one.
+        """
+        self._side_panel.set_properties_target(profile, ref)
+        self._set_side_panel_shown(True)
+        self._side_panel.show_properties(section)
+
+    def open_properties_window(
+        self,
+        profile: ConnectionProfile,
+        ref: objects.ObjectRef,
+        section: str = "",
+    ) -> None:
+        """One object's properties in a window of its own.
+
+        The same tear-out path a dragged tab and Open (Window) take
+        (CORE-52): the surface is made as a tab and moved after. It is
+        its own PropertiesView, so it keeps showing this object however
+        the tabs behind it change — and it outlives the tab it was
+        opened from, since it holds nothing of that tab. Session-only:
+        a properties window is a view of something the workspace
+        already remembers, so it is not restored on reopen.
+        """
+        self.open_in_window(
+            lambda: self.open_properties_tab(profile, ref, section)
+        )
+
+    def open_properties_tab(
+        self,
+        profile: ConnectionProfile,
+        ref: objects.ObjectRef,
+        section: str = "",
+    ) -> PropertiesView:
+        """A properties surface as a tab, deduplicated per object."""
+        key = properties_key(profile, ref)
+        existing = self._tab_for(key)
+        if existing is not None:
+            self._focus_tab(key)
+            if section:
+                existing.select_section(section)
+            return existing
+        view = PropertiesView(
+            self.ensure_connector,
+            self.show_error,
+            self.open_object,
+            profile=profile,
+            ref=ref,
+        )
+        label = objects.TYPE_LABELS.get(ref.kind, "object").lower()
+        self._append_tab(
+            view,
+            key,
+            f"{ref.name} · properties",
+            f"Properties of {label} {ref.name} on {profile.name}",
+        )
+        if section:
+            view.select_section(section)
+        return view
+
+    def _menu_tab_properties(
+        self, pane: _TabPane | None = None, window: bool = False
+    ) -> None:
+        """The tab menu's Properties items: the active (or right-
+        clicked) tab's object, in the panel or in a window."""
+        target = self._target_tab(pane)
+        if target is None:
+            return
+        profile, ref = _properties_target(target[1].get_child())
+        if profile is None or ref is None:
+            self.show_error("This tab is not about an object")
+            return
+        if window:
+            self.open_properties_window(profile, ref)
+        else:
+            self.open_properties(profile, ref)
 
     def open_definition(self, profile: ConnectionProfile, table: str) -> None:
         key = ("definition", profile.name, table)

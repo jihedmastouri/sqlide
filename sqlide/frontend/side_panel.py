@@ -4,13 +4,20 @@ An Adw.ViewStack behind an Adw.ViewSwitcher in the header bar. Which
 pages are offered depends on the active tab (the window reports it
 through set_context):
 
-- query console ("console"): Info, Snippets, Queries, Notes, History,
+- query console ("console"): Properties, Info, Snippets, Queries,
+  Notes, History, Aggregate
+- table data tab ("table"):  Properties, Info, Notes, History,
+  Aggregate, Filters
+- other result grids ("grid"): Properties, Info, Notes, History,
   Aggregate
-- table data tab ("table"):  Info, Notes, History, Aggregate, Filters
-- other result grids ("grid"): Info, Notes, History, Aggregate
-- everything else ("other"): Info, Notes, History
+- everything else ("other"): Properties, Info, Notes, History
 
 Pages:
+- Properties: everything about the active tab's object — the sections
+  its engine has, its DDL, its children (CORE-47). The widget is an
+  object_info.PropertiesView the window owns and retargets as tabs
+  change; the same widget class is what a detached properties window
+  holds. Read-only, here and there.
 - Info: details of the active tab — the DDL of the active table or
   definition tab (highlighted, read-only), or the connection details
   of a console. The window fills it on tab changes (set_definition /
@@ -55,6 +62,7 @@ from sqlide.frontend.util import describe
 
 _CONTEXT_PAGES = {
     "console": (
+        "properties",
         "info",
         "snippets",
         "queries",
@@ -62,9 +70,16 @@ _CONTEXT_PAGES = {
         "history",
         "aggregate",
     ),
-    "table": ("info", "notes", "history", "aggregate", "filters"),
-    "grid": ("info", "notes", "history", "aggregate"),
-    "other": ("info", "notes", "history"),
+    "table": (
+        "properties",
+        "info",
+        "notes",
+        "history",
+        "aggregate",
+        "filters",
+    ),
+    "grid": ("properties", "info", "notes", "history", "aggregate"),
+    "other": ("properties", "info", "notes", "history"),
 }
 
 
@@ -284,8 +299,21 @@ class SidePanel(Gtk.Box):
         on_apply_filter: Callable[[dict], None],
         on_save_filter: Callable[[str], None],
         on_delete_filter: Callable[[dict], None],
+        properties: Gtk.Widget | None = None,
     ) -> None:
         super().__init__()
+
+        # The properties surface belongs to the window (it needs a
+        # connector and an object to open links into), so it is handed
+        # in; without one the page is a placeholder, which is what the
+        # panel's tests and any harness without a window get.
+        self._properties = properties
+        if self._properties is None:
+            placeholder = Gtk.Label(
+                label="No properties to show", margin_top=24, wrap=True
+            )
+            placeholder.add_css_class("dim-label")
+            self._properties = placeholder
 
         self._history = HistoryPanel(on_activate=on_activate, on_clear=on_clear)
 
@@ -367,6 +395,12 @@ class SidePanel(Gtk.Box):
 
         self._stack = Adw.ViewStack()
         for name, title, icon, child in (
+            (
+                "properties",
+                "Properties",
+                "view-list-symbolic",
+                self._properties,
+            ),
             ("info", "Info", "dialog-information-symbolic", info_page),
             (
                 "snippets",
@@ -433,6 +467,21 @@ class SidePanel(Gtk.Box):
         current = self._stack.get_visible_child_name()
         if current not in names:
             self._stack.set_visible_child_name(names[0])
+
+    # Properties
+
+    def set_properties_target(self, profile, ref) -> None:
+        """Point the Properties page at the active tab's object, or at
+        nothing (both None) for a tab that is about no object."""
+        if hasattr(self._properties, "set_target"):
+            self._properties.set_target(profile, ref)
+
+    def show_properties(self, section: str = "") -> None:
+        """Bring the Properties page to the front, on one section when
+        a deep link named one (CORE-05/CORE-47)."""
+        self._stack.set_visible_child_name("properties")
+        if section and hasattr(self._properties, "select_section"):
+            self._properties.select_section(section)
 
     # History
 

@@ -1,8 +1,10 @@
-"""Sidebar deep links into a table's Properties view (CORE-05).
+"""Sidebar deep links into a table's properties (CORE-05).
 
-Opening *Tables → orders → Indexes* has to land on the orders tab's
-Properties side with the Indexes section selected, reusing the tab if
-it is already open. The pieces that make that possible are testable
+Opening *Tables → orders → Indexes* has to land on the orders table's
+properties with the Indexes section selected, reusing the table tab if
+it is already open. Since CORE-47 that surface is the right side panel
+(or a detached properties window), not a mode of the tab — the wiring
+end of that is tested in test_properties_panel.py. The pieces that make that possible are testable
 apart from the display — the section slugs the descriptor carries and
 the rows the sidebar grows under a table — and the wiring itself is
 checked against a real Sidebar where GTK has a display to open.

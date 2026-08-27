@@ -1,6 +1,6 @@
 ## CORE-04 — Table tab: Data / Properties toggle
 
-- **Status:** done
+- **Status:** done (the toggle superseded by CORE-47)
 - **Depends on:** CORE-01
 - **Blocks:** CORE-05, CORE-11
 
@@ -24,10 +24,11 @@ everything about the table.
 
 ### Notes
 
-- The toggle lives at the top of every `TableTab` (frontend/data_grid.py)
-  as two linked toggle buttons over a `Gtk.Stack`. Both sides stay
-  built, so unsaved edits, filters, sort and the grid's scroll position
-  survive a trip through Properties and back.
+- **Superseded by CORE-47**: the Data | Properties toggle is gone.
+  Properties are a page of the right side panel that follows the
+  active tab, and can be torn off into a window of their own; the
+  table tab shows data. Everything below about *what* a properties
+  view holds still stands — only where it is read changed.
 - Which sections exist is a capability question, so it is answered by
   the provider layer: `MetadataProvider.property_sections()` (a
   classmethod, like `capabilities()`) filters
@@ -44,7 +45,7 @@ everything about the table.
   off the PRAGMAs. Table names travel as parameters or quoted
   identifiers, never concatenated.
 - Rendering is shared with CORE-01: `object_info.InfoBody` was split out
-  of `ObjectInfoTab` and both use it, so a row in a Properties section
+  of `ObjectInfoTab` and both it and `PropertiesView` use it, so a row in a Properties section
   opens the child's info view exactly as it does in the info tab.
 - Sections an engine supports but that are currently empty keep their
   heading and say "(none)" — "this engine has no policies" and "this

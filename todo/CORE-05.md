@@ -27,10 +27,16 @@ table's Properties view with the Indexes section selected.
   Indexes, Triggers — `objects.SECTION_CHILD_KINDS`) still expand into
   them, so one specific index opens its own info view (CORE-01); the
   rest are leaves that only deep-link.
-- Activating a section row calls `window.open_table_section`, which
-  reuses the open table tab (`_tab_for`) and calls
-  `TableTab.show_properties(section)`: the toggle flips to Properties
-  and the grid keeps its rows, edits, filters and scroll position.
+- Activating a section row calls `window.open_table_section`. Since
+  CORE-47 the section is not a mode of the tab: the table's data tab
+  is opened (or reused, `_tab_for`, so the link never costs a second
+  grid) and the right side panel — which follows that tab anyway — is
+  revealed on the named section through
+  `SidePanel.show_properties(section)`. A detached properties window
+  already showing that object wins: it is focused and scrolled
+  instead, so the link lands in whichever surface is being read. The
+  sidebar's own Properties / Properties (Window) items take the same
+  target, section and all.
 - The target section is found by slug: `DetailTable.slug` carries the
   `PROPERTY_SECTIONS` key through the descriptor, `InfoBody` keeps a
   slug → widget map and `select_section` scrolls to it and marks it

@@ -529,33 +529,47 @@ def _column(position: int, name: str) -> Gtk.ColumnViewColumn:
     return column
 
 
-class TablePropertiesView(Gtk.Box):
-    """The Properties side of a table tab (CORE-04).
+def properties_key(
+    profile: ConnectionProfile, ref: objects.ObjectRef
+) -> tuple:
+    """Identity of a properties surface: the same object asked for
+    twice lands on the one that is already open (CORE-47)."""
+    return ("properties", profile.name, ref.kind, ref.name, ref.table)
 
-    Everything about the open table in one scroll: general information,
-    then the sections this engine actually has — the metadata provider
-    decides which, so MySQL never shows a Policies heading and SQLite
-    never shows Partitions. Rows link on into the child object's own
-    info view, the same as anywhere else a detail table is drawn.
 
-    Loaded lazily on the first switch and kept afterwards: the grid it
-    shares a tab with keeps its rows, its edits and its scroll position
-    while this is on screen, because both are children of one stack.
+class PropertiesView(Gtk.Box):
+    """Everything about one object, in one scroll (CORE-47).
+
+    The right side panel's Properties page and a detached properties
+    window are both this widget: general information, then the sections
+    this engine actually has — columns, constraints, keys, indexes,
+    triggers, partitions, policies, the DDL — with every row opening
+    that child object's own info view. Read-only: editing an object
+    stays with the definition tab and the table designer.
+
+    A table or a view is described by the provider's `table_properties`
+    (the section set CORE-04 defined); anything else — an index, a
+    function, a folder — by its own descriptor, so any node of the tree
+    has properties to show.
+
+    The panel retargets one of these as tabs change (`set_target`); the
+    catalog is read when the widget is actually on screen, so a panel
+    nobody has opened costs nothing.
     """
 
     def __init__(
         self,
-        profile: ConnectionProfile,
-        table: str,
         ensure_connector: Callable[[ConnectionProfile], Connector],
         show_error: Callable[[str], None],
         on_open_object: Callable[
             [ConnectionProfile, objects.ObjectRef], None
         ] | None = None,
+        profile: ConnectionProfile | None = None,
+        ref: objects.ObjectRef | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.profile = profile
-        self.table = table
+        self.ref = ref
         self._ensure = ensure_connector
         self._show_error = show_error
         self._on_open_object = on_open_object
@@ -568,36 +582,97 @@ class TablePropertiesView(Gtk.Box):
             margin_start=6,
             margin_end=6,
         )
-        title = Gtk.Label(label=f"{table} · properties", xalign=0, hexpand=True)
-        title.add_css_class("heading")
-        refresh = Gtk.Button(icon_name="view-refresh-symbolic")
-        refresh.add_css_class("flat")
-        describe(refresh, "Re-read this table's properties")
-        refresh.connect("clicked", lambda *_: self.reload())
-        bar.append(title)
-        bar.append(refresh)
+        self._title = Gtk.Label(xalign=0, hexpand=True)
+        self._title.add_css_class("heading")
+        self._refresh = Gtk.Button(icon_name="view-refresh-symbolic")
+        self._refresh.add_css_class("flat")
+        describe(self._refresh, "Re-read this object's properties")
+        self._refresh.connect("clicked", lambda *_: self.reload())
+        bar.append(self._title)
+        bar.append(self._refresh)
         self.append(bar)
 
         self._body = InfoBody(self._open_link, summary_title="General")
-        self._body.show_message("Loading…")
         self.append(self._body)
+        # Read on the frame it first becomes visible, wherever it lives:
+        # a hidden panel page and a hidden window make no queries.
+        self.connect("map", lambda *_: self.ensure_loaded())
+        self._show_target()
+
+    # A detached properties window is session-only: it is a view of
+    # something the workspace already remembers, not a tab to restore.
+    def tab_state(self) -> None:
+        return None
+
+    def set_target(
+        self,
+        profile: ConnectionProfile | None,
+        ref: objects.ObjectRef | None,
+    ) -> None:
+        """Point this view at another object — what the side panel does
+        on every tab switch. The same object again is left alone, so
+        switching away and back does not re-read the catalog."""
+        if profile is None or ref is None:
+            self.profile, self.ref = None, None
+            self._loaded = False
+            self._show_target()
+            return
+        if (
+            self.profile is not None
+            and self.ref is not None
+            and properties_key(self.profile, self.ref)
+            == properties_key(profile, ref)
+        ):
+            return
+        self.profile, self.ref = profile, ref
+        self._loaded = False
+        self._show_target()
+        if self.get_mapped():
+            self.ensure_loaded()
+
+    def _show_target(self) -> None:
+        has_target = self.profile is not None and self.ref is not None
+        self._refresh.set_visible(has_target)
+        if not has_target:
+            self._title.set_label("")
+            self._body.show_message(
+                "Open a tab, or pick an object in the tree, to see its "
+                "properties"
+            )
+            return
+        self._title.set_label(f"{self.ref.name} · properties")
+        self._body.show_message("Loading…")
 
     def ensure_loaded(self) -> None:
-        """Read the catalog the first time the view is shown; later
-        switches show what is already there until Refresh is pressed."""
-        if self._loaded:
+        """Read the catalog the first time this view is shown; later
+        looks show what is already there until Refresh is pressed."""
+        if self._loaded or self.profile is None or self.ref is None:
             return
         self._loaded = True
         self.reload()
 
     def reload(self) -> None:
+        profile, ref = self.profile, self.ref
+        if profile is None or ref is None:
+            return
         self._loaded = True
-        profile, table = self.profile, self.table
 
         def work() -> objects.ObjectInfo:
             connector = self._ensure(profile)
             provider = registry.create_provider(profile.kind, connector)
-            return provider.table_properties(NodeRef("table", table))
+            if ref.kind in ("table", "view"):
+                return provider.table_properties(
+                    NodeRef("table", ref.name)
+                )
+            return provider.describe(
+                NodeRef(
+                    kind=ref.kind,
+                    name=ref.name,
+                    table=ref.table,
+                    category=ref.category,
+                    schema=ref.schema or profile.schema,
+                )
+            )
 
         run_async(work, self._body.render, self._failed)
 
@@ -608,8 +683,9 @@ class TablePropertiesView(Gtk.Box):
     def select_section(self, slug: str) -> None:
         """Show one named section (CORE-05): the sidebar's Indexes row
         under a table lands here, on this table's Indexes."""
+        self.ensure_loaded()
         self._body.select_section(slug)
 
     def _open_link(self, ref: objects.ObjectRef) -> None:
-        if self._on_open_object is not None:
+        if self._on_open_object is not None and self.profile is not None:
             self._on_open_object(self.profile, ref)

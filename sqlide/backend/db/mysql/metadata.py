@@ -6,6 +6,20 @@ Shape: connection → database → object. In MySQL a schema *is* a
 database, so there is no schema level to add — a second one would only
 repeat the first.
 
+The folders each level shows are declared here (MY-01) rather than in
+the sidebar: a database holds its relations, its routines — functions
+and procedures are different things here, so each gets a folder — its
+indexes, triggers and scheduled events; the connection holds its
+databases plus what belongs to the server, which is its accounts, its
+settings, and an Administer folder holding both one level down. Every
+one of them is a plain category node, so it opens the generic object
+info view like any other row (CORE-01).
+
+Because a schema *is* a database, the server's own schemas are
+databases in this tree: `information_schema`, `mysql`,
+`performance_schema` and `sys` are listed, dimmed and sorted last, the
+same treatment PostgreSQL's catalog schemas get (PG-03).
+
 Minimum supported server: MySQL 5.7, the oldest in the test matrix
 (tests/conftest.py). Roles arrived in 8.0: on 5.7 the role catalog is
 missing and list_users() answers with accounts alone, which is a
@@ -15,6 +29,8 @@ shorter list rather than an error (db/metadata.py `_safe`).
 from __future__ import annotations
 
 from sqlide.backend.db.metadata import (
+    CATALOG_CATEGORIES,
+    CATEGORY_LABELS,
     Capabilities,
     MetadataProvider,
     NodeRef,
@@ -29,6 +45,13 @@ class MysqlMetadata(MetadataProvider):
     PRINCIPAL_COLUMNS = (
         "Name", "Host", "Type", "Login", "Locked", "Plugin",
         "Password expiry", "Member of",
+    )
+    #: The databases the server owns rather than the user. A schema is
+    #: a database here, so these answer `is_system_schema` and
+    #: `is_system_database` alike: the tree shows them dimmed and last,
+    #: and the console's database switcher leaves them out (MY-01).
+    SYSTEM_SCHEMAS = (
+        "information_schema", "performance_schema", "mysql", "sys",
     )
     CAPABILITIES = Capabilities(
         databases=True,
@@ -69,6 +92,56 @@ class MysqlMetadata(MetadataProvider):
         "view": _TABLE_PRIVILEGES,
         "column": ("SELECT", "INSERT", "UPDATE", "REFERENCES"),
     }
+
+    #: The folders each level hangs off itself, beside the rows under
+    #: it (CORE-02):
+    #:
+    #: * a database holds everything that lives in it — a schema is a
+    #:   database here, so its objects hang one level higher than they
+    #:   do on PostgreSQL;
+    #: * the connection, after its databases: the accounts, the
+    #:   server's settings, and Administer holding both again one
+    #:   folder down, so the row does not grow a listing per chore.
+    LEVEL_CATEGORIES = {
+        "connection": ("users", "administer", "system_info"),
+        "database": (
+            "tables",
+            "views",
+            "indexes",
+            "procedures",
+            "functions",
+            "triggers",
+            "events",
+        ),
+    }
+    #: What Administer holds.
+    ADMINISTER_CATEGORIES = ("users", "system_info")
+
+    @classmethod
+    def is_system_database(cls, name: str) -> bool:
+        """A schema is a database here, so the two questions are one."""
+        return cls.is_system_schema(name)
+
+    def tree_categories(self, ref: NodeRef) -> list[NodeRef]:
+        return [
+            self.category(ref, slug)
+            for slug in self.LEVEL_CATEGORIES.get(ref.kind, ())
+        ]
+
+    def categories(self, ref: NodeRef) -> list[NodeRef]:
+        """A database's folders. Overridden so the shared categories
+        and the catalog ones come back in one declared order, and so
+        Procedures and Functions are two folders rather than the one
+        the generic set has."""
+        if ref.kind == "database":
+            return self.tree_categories(ref)
+        return super().categories(ref)
+
+    def category(self, ref: NodeRef, slug: str) -> NodeRef:
+        """One folder row, whichever vocabulary its slug comes from."""
+        if slug in CATALOG_CATEGORIES:
+            return self.catalog_category(ref, slug)
+        return ref.child("category", CATEGORY_LABELS[slug], category=slug)
 
     def grant_target(self, ref: NodeRef) -> str:
         """The object as MySQL's GRANT names it: `*.*` for the server,

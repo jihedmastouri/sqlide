@@ -106,12 +106,18 @@ def test_administer_holds_the_server_wide_listings() -> None:
     ] == ["Roles", "Storage", "System Info"]
 
 
-@pytest.mark.parametrize("kind", ["sqlite", "mysql"])
+@pytest.mark.parametrize("kind", ["sqlite"])
 def test_an_engine_without_these_folders_declares_none(kind) -> None:
     # The generic Tables/Views/Functions set is not a declaration: an
     # engine that has nothing extra keeps what the tree always did.
     assert registry.level_categories(kind, "schema") == ()
     assert registry.level_categories(kind, "connection") == ()
+
+
+def test_an_engine_without_schemas_declares_nothing_at_that_level() -> None:
+    """MySQL declares folders of its own (MY-01), but not at a level it
+    does not have: a schema is a database there."""
+    assert registry.level_categories("mysql", "schema") == ()
 
 
 def test_every_catalog_folder_is_lazy() -> None:

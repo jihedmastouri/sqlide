@@ -31,6 +31,7 @@ class Connector(ABC):
     def list_tables(self) -> list[TableInfo]          # tables + views
     def list_columns(self, table) -> list[ColumnInfo] # name, type, pk, nullable
     def list_functions(self) -> list[FunctionInfo]    # concrete default: []
+    def list_routines(self, kind) -> list[FunctionInfo]  # one kind of routine
     def fetch_rows(self, table, offset, limit) -> ResultSet
     def execute(self, sql) -> ResultSet | int         # rows or affected count
     def update_cell(self, table, pk_values, column, value) -> None

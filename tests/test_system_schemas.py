@@ -41,9 +41,34 @@ def test_postgres_names_its_own_schemas(name: str, expected: bool) -> None:
     assert registry.is_system_schema("postgres", name) is expected
 
 
-@pytest.mark.parametrize("kind", ["mysql", "sqlite", "jdbc"])
+@pytest.mark.parametrize("kind", ["sqlite", "jdbc"])
 def test_an_engine_without_the_level_has_no_system_schemas(kind: str) -> None:
     assert registry.is_system_schema(kind, "information_schema") is False
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("information_schema", True),
+        ("performance_schema", True),
+        ("mysql", True),
+        ("sys", True),
+        ("SYS", True),
+        ("sqlide", False),
+        ("mysqlish", False),  # a user database that merely starts "mysql"
+    ],
+)
+def test_mysql_names_its_own_databases(name: str, expected: bool) -> None:
+    """A schema *is* a database in MySQL, so its catalog schemas are
+    databases in the tree and both questions have the one answer
+    (MY-01)."""
+    assert registry.is_system_schema("mysql", name) is expected
+    assert registry.is_system_database("mysql", name) is expected
+
+
+@pytest.mark.parametrize("kind", ["postgres", "sqlite", "jdbc"])
+def test_a_database_is_not_a_schema_anywhere_else(kind: str) -> None:
+    assert registry.is_system_database(kind, "information_schema") is False
 
 
 def test_the_sidebar_asks_the_provider_and_never_the_engine() -> None:

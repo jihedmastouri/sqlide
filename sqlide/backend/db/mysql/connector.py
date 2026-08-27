@@ -323,10 +323,21 @@ class MysqlConnector(Connector):
         except pymysql.Error as exc:
             raise ConnectorError(_message(exc)) from exc
 
-    def list_databases(self) -> list[str]:
+    def list_databases(self, *, include_system: bool = False) -> list[str]:
+        """Every database on the server, sorted by name.
+
+        In MySQL a schema *is* a database, so the server's own schemas
+        (`information_schema`, `mysql`, `performance_schema`, `sys`)
+        turn up in this listing. They are left out by default — a
+        database switcher offering them is offering to work in the
+        catalog — and asked for by the object tree, which shows them
+        dimmed and last rather than hiding them (MY-01, PG-03).
+        """
         _, rows, _ = self._run("SHOW DATABASES")
         return sorted(
-            name for (name,) in rows if name not in _SYSTEM_SCHEMAS
+            name
+            for (name,) in rows
+            if include_system or name.lower() not in _SYSTEM_SCHEMAS
         )
 
     # Accounts and privileges
@@ -546,10 +557,23 @@ class MysqlConnector(Connector):
         ]
 
     def list_functions(self) -> list[FunctionInfo]:
-        _, rows, _ = self._run(
+        """Every stored routine — functions and procedures alike, which
+        is what the definition tab and the completer want."""
+        return self.list_routines()
+
+    def list_routines(self, kind: str = "") -> list[FunctionInfo]:
+        """Stored routines, narrowed to one kind where one is asked
+        for: MySQL has both stored functions and stored procedures, and
+        the tree gives each a folder of its own (MY-01)."""
+        sql = (
             "SELECT routine_name FROM information_schema.routines "
-            "WHERE routine_schema = DATABASE() ORDER BY routine_name"
+            "WHERE routine_schema = DATABASE()"
         )
+        params: tuple = ()
+        if kind:
+            sql += " AND routine_type = %s"
+            params = (kind.upper(),)
+        _, rows, _ = self._run(sql + " ORDER BY routine_name", params)
         return [FunctionInfo(name=name) for (name,) in rows]
 
     # Table properties (CORE-04). information_schema answers all of
@@ -692,6 +716,74 @@ class MysqlConnector(Connector):
             "WHERE event_schema = DATABASE() ORDER BY event_name"
         )
         return [name for (name,) in rows]
+
+    # The looser catalog folders the object tree can show (MY-01).
+    # One listing per slug, each cheap: SHOW VARIABLES is served from
+    # memory and the rest read information_schema for the connected
+    # database only.
+
+    #: The server variables the System Info folder reports, in the
+    #: order it lists them — enough to answer "what server is this,
+    #: how is it configured, and how does it read my text".
+    _SYSTEM_VARIABLES = (
+        "version",
+        "version_comment",
+        "character_set_server",
+        "collation_server",
+        "default_storage_engine",
+        "sql_mode",
+        "time_zone",
+        "max_connections",
+        "max_allowed_packet",
+        "innodb_buffer_pool_size",
+        "lower_case_table_names",
+        "read_only",
+    )
+
+    def list_catalog(self, slug: str, schema: str = "") -> list[ObjectSummary]:
+        if slug == "system_info":
+            return self._catalog_system_info()
+        return []
+
+    def _catalog_system_info(self) -> list[ObjectSummary]:
+        """The server and the connected database, as name/value rows.
+
+        A variable this server has never heard of simply does not come
+        back — 5.7 and 8.x disagree about a few — so the folder is
+        shorter on an older server rather than an error (MY-01).
+        """
+        _, rows, _ = self._run(
+            "SHOW VARIABLES WHERE Variable_name IN ("
+            + ", ".join(["%s"] * len(self._SYSTEM_VARIABLES))
+            + ")",
+            tuple(self._SYSTEM_VARIABLES),
+        )
+        order = {name: i for i, name in enumerate(self._SYSTEM_VARIABLES)}
+        found = sorted(rows, key=lambda row: order.get(row[0], len(order)))
+        entries = [
+            ObjectSummary(name=name, kind="setting", detail=value or "")
+            for name, value in found
+        ]
+        _, extra, _ = self._run(
+            "SELECT schema_name, default_character_set_name, "
+            "default_collation_name FROM information_schema.schemata "
+            "WHERE schema_name = DATABASE()"
+        )
+        for name, charset, collation in extra:
+            entries += [
+                ObjectSummary(
+                    name="database", kind="setting", detail=name or ""
+                ),
+                ObjectSummary(
+                    name="database character set", kind="setting",
+                    detail=charset or "",
+                ),
+                ObjectSummary(
+                    name="database collation", kind="setting",
+                    detail=collation or "",
+                ),
+            ]
+        return entries
 
     def ddl_kinds(self) -> tuple[str, ...]:
         return (

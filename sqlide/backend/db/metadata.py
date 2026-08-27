@@ -439,6 +439,18 @@ class MetadataProvider:
             cls.SYSTEM_SCHEMA_PREFIXES
         )
 
+    @classmethod
+    def is_system_database(cls, name: str) -> bool:
+        """Is `name` a database the server owns rather than the user?
+
+        False everywhere a database and a schema are different things:
+        PostgreSQL keeps its catalogs in schemas, so no database of its
+        own is the server's. In MySQL a schema *is* a database, so
+        there this is the same question as `is_system_schema` and the
+        provider says so (MY-01).
+        """
+        return False
+
     def capabilities(self) -> Capabilities:
         return self.CAPABILITIES
 
@@ -576,6 +588,7 @@ class MetadataProvider:
             category=ref.category,
             detail=ref.detail,
             schema=ref.schema,
+            administer=self.ADMINISTER_CATEGORIES,
         )
         qualified = self.qualified_name(ref)
         if qualified != info.name:
@@ -1062,13 +1075,25 @@ class MetadataProvider:
         one database and a level of its own would be an empty step."""
         if self.CAPABILITIES.databases:
             current = self._current_database()
-            names = _safe(self.connector.list_databases, [])
+            names = _safe(
+                lambda: self.connector.list_databases(include_system=True), []
+            )
             return [
                 NodeRef(
                     "database", name, database=name,
                     detail="current" if name == current else "",
+                    system=self.is_system_database(name),
                 )
-                for name in sorted(names, key=lambda n: n != current)
+                # The server's own databases come last: they are there
+                # to be looked into, not worked in (PG-03, MY-01). On an
+                # engine that has none this is the plain "current
+                # first" order it always was.
+                for name in sorted(
+                    names,
+                    key=lambda n: (
+                        self.is_system_database(n), n != current, n
+                    ),
+                )
             ] + self.tree_categories(ref)
         return self.categories(ref)
 
@@ -1149,7 +1174,7 @@ class MetadataProvider:
         """The rows of a catalog folder: the accounts, the sub-folders
         of Administer, or whatever the adapter's `list_catalog` gives
         for this slug."""
-        if slug == "roles":
+        if slug in ("roles", "users"):
             return [
                 ref.child("principal", user.name, detail=user.detail)
                 for user in self.list_principals()
@@ -1184,10 +1209,12 @@ class MetadataProvider:
                 if (info.kind == "view") == want_view
             ]
         if slug in ("functions", "procedures"):
+            kind = "function" if slug == "functions" else "procedure"
             return [
-                ref.child("function" if slug == "functions" else "procedure",
-                          function.name)
-                for function in _safe(self.connector.list_functions, [])
+                ref.child(kind, function.name, category=slug)
+                for function in _safe(
+                    lambda: self.connector.list_routines(kind), []
+                )
             ]
         if slug == "indexes":
             return [

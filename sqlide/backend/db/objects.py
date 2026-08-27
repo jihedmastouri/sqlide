@@ -34,6 +34,7 @@ CATEGORY_KINDS = {
     "tables": "table",
     "views": "view",
     "functions": "function",
+    "procedures": "procedure",
     "indexes": "index",
     "triggers": "trigger",
     "events": "event",
@@ -61,6 +62,10 @@ CATALOG_CATEGORIES = {
     "storage": ("Storage", "tablespace"),
     "system_info": ("System Info", "setting"),
     "roles": ("Roles", "principal"),
+    #: The same listing under the name the engine uses for it: MySQL
+    #: has accounts and (from 8.0) roles in one table, and calls the
+    #: folder Users (MY-01).
+    "users": ("Users", "principal"),
     "administer": ("Administer", "category"),
 }
 
@@ -99,6 +104,7 @@ TYPE_LABELS = {
     "view": "View",
     "column": "Column",
     "function": "Function",
+    "procedure": "Procedure",
     "index": "Index",
     "trigger": "Trigger",
     "event": "Event",
@@ -184,6 +190,7 @@ def describe(
     path: str = "",
     detail: str = "",
     schema: str = "",
+    administer: tuple[str, ...] = (),
 ) -> ObjectInfo:
     """The descriptor for one sidebar node. Never raises for an
     unknown kind: it falls back to the generic summary.
@@ -191,6 +198,11 @@ def describe(
     `schema` is the schema the node was found in, on the engines that
     have schemas as a level (PG-01): the catalog folders are listed per
     schema, so a row from one of them needs to say which (PG-02).
+
+    `administer` is what this engine's Administer folder holds (its
+    provider's ADMINISTER_CATEGORIES), so the folder's view and its
+    tree rows cannot drift apart on an engine that administers
+    something other than PostgreSQL's set (MY-01).
     """
     builder = _BUILDERS.get(kind)
     if kind in CATALOG_KINDS:
@@ -201,10 +213,12 @@ def describe(
     if builder is None:
         info = _generic(connector, kind, name, path=path, detail=detail)
     else:
+        extra = {"administer": administer} if kind == "category" else {}
         info = _replace_path(
             builder(
                 connector, kind, name,
                 table=table, category=category, path=path, schema=schema,
+                **extra,
             ),
             path,
         )
@@ -339,7 +353,9 @@ def _objects_table(objects) -> DetailTable:
     )
 
 
-def _category(connector, kind, name, *, table, category, path, schema):
+def _category(
+    connector, kind, name, *, table, category, path, schema, administer=()
+):
     """A folder row: the list of what is inside it, most relevant
     columns first, every row opening its own info view."""
     slug = (category or name).lower()
@@ -360,13 +376,16 @@ def _category(connector, kind, name, *, table, category, path, schema):
             ],
             links=[ObjectRef(child, o.name) for o in objects],
         )
-    elif slug == "functions":
-        functions = _safe(connector.list_functions, [])
+    elif slug in ("functions", "procedures"):
+        # One routine catalog, narrowed to the kind this folder holds
+        # where the engine tells them apart (MY-01); an engine that
+        # does not answers with every routine either way.
+        functions = _safe(lambda: connector.list_routines(child), [])
         detail = DetailTable(
             title=name,
             columns=["Name"],
             rows=[(f.name,) for f in functions],
-            links=[ObjectRef("function", f.name) for f in functions],
+            links=[ObjectRef(child, f.name) for f in functions],
         )
     elif slug == "indexes":
         indexes = _safe(connector.list_indexes, [])
@@ -397,7 +416,9 @@ def _category(connector, kind, name, *, table, category, path, schema):
         )
     elif slug in CATALOG_CATEGORIES:
         child = CATALOG_CATEGORIES[slug][1]
-        detail = _catalog_table(connector, name, slug, schema)
+        detail = _catalog_table(
+            connector, name, slug, schema, administer=administer
+        )
     else:
         detail = DetailTable(title=name, columns=["Name"], rows=[], links=[])
     return ObjectInfo(
@@ -409,13 +430,17 @@ def _category(connector, kind, name, *, table, category, path, schema):
 
 
 def _catalog_table(
-    connector: Connector, label: str, slug: str, schema: str
+    connector: Connector,
+    label: str,
+    slug: str,
+    schema: str,
+    administer: tuple[str, ...] = (),
 ) -> DetailTable:
     """One catalog folder as a list: name, what it is, and the line of
     explanation the listing carried. Every row opens the object it
     names, so the folder view and the tree reach the same places
     (CORE-01)."""
-    if slug == "roles":
+    if slug in ("roles", "users"):
         accounts = _safe(connector.list_users, [])
         return DetailTable(
             title=label,
@@ -425,7 +450,10 @@ def _catalog_table(
             empty_note="(no accounts)",
         )
     if slug == "administer":
-        folders = _ADMINISTER_FOLDERS
+        # What Administer holds is the engine's answer (its provider's
+        # ADMINISTER_CATEGORIES); the default keeps this readable for a
+        # caller that has only a connector.
+        folders = tuple(administer) or _ADMINISTER_FOLDERS
         return DetailTable(
             title=label,
             columns=["Name", "Holds"],

@@ -384,7 +384,10 @@ class PostgresConnector(Connector):
         except psycopg.Error as exc:
             raise ConnectorError(_message(exc)) from exc
 
-    def list_databases(self) -> list[str]:
+    def list_databases(self, *, include_system: bool = False) -> list[str]:
+        # Every connectable database, system or not: PostgreSQL keeps
+        # its catalogs in schemas rather than in databases of their own,
+        # so `include_system` has nothing here to add (PG-03).
         _, rows, _ = self._run(
             "SELECT datname FROM pg_database "
             "WHERE datistemplate = false AND datallowconn "

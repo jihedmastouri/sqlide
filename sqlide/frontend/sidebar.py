@@ -39,10 +39,16 @@ what the console's schema dropdown builds), so the connection behind
 it has that schema on its search path and every listing under the row
 is that schema's, resolved rather than guessed.
 
-Accounts stay out of the tree: they are not schema objects, and a
-category of them under every connection buries the tables people came
-for. "Users & Permissions…" on the connection menu opens them in a tab
-instead (frontend/users_tab.py).
+Accounts are not schema objects, so they never sit among the tables
+people came for: an engine that shows them at all hangs them off the
+*connection* row, in the folder its provider declares (Roles on
+PostgreSQL, Users on MySQL — PG-02, MY-01). "Users & Permissions…" on
+the connection menu still opens them in a tab of their own
+(frontend/users_tab.py).
+
+Where a schema *is* a database — MySQL — the server's own schemas are
+databases in this tree, so a database row is dimmed, sorted last and
+hidden by the same setting a system schema is (PG-03, MY-01).
 
 Under a table sit its Properties sections (CORE-05) — Columns,
 Constraints, Foreign keys, Indexes, … — exactly the sections that
@@ -177,6 +183,7 @@ _NON_LIST_SECTIONS = ("general", "ddl")
 # they are not here.
 _LAZY_CATEGORIES = {
     "functions": "function",
+    "procedures": "procedure",
     "indexes": "index",
     "triggers": "trigger",
     "events": "event",
@@ -825,7 +832,15 @@ class Sidebar(Gtk.ScrolledWindow):
 
             def work():
                 connector = self._ensure(node.profile)
-                databases = connector.list_databases() if root else []
+                databases = (
+                    # The server's own databases come back too and are
+                    # filtered (or not) below, exactly as its own
+                    # schemas are: in MySQL a schema *is* a database
+                    # (MY-01, PG-03).
+                    connector.list_databases(include_system=True)
+                    if root
+                    else []
+                )
                 schemas = (
                     # The server's own schemas come back too and are
                     # filtered (or not) below: whether they are shown
@@ -862,11 +877,22 @@ class Sidebar(Gtk.ScrolledWindow):
                 folders = _level_categories(node.profile, node.kind)
                 if databases:
                     current = node.profile.database
-                    for name in sorted(databases, key=lambda n: n != current):
+                    kind = node.profile.kind if node.profile else ""
+                    show_system = settings_store.settings.show_system_schemas
+                    for name in sorted(
+                        databases,
+                        key=lambda n: (
+                            _is_system_database(kind, n), n != current, n
+                        ),
+                    ):
+                        system = _is_system_database(kind, name)
+                        if system and not show_system:
+                            continue
                         store.append(Node(
                             "database", name,
                             detail="current" if name == current else "",
                             profile=_database_profile(node.profile, name),
+                            system=system,
                         ))
                     _append_folders(store, node, folders, relations)
                     return
@@ -937,15 +963,19 @@ class Sidebar(Gtk.ScrolledWindow):
 
             def work():
                 connector = self._ensure(node.profile)
-                if slug == "functions":
-                    return connector.list_functions()
+                if slug in ("functions", "procedures"):
+                    # Two folders where the engine has two kinds of
+                    # routine, one listing where it has one (MY-01).
+                    return connector.list_routines(_LAZY_CATEGORIES[slug])
                 if slug == "indexes":
                     return connector.list_indexes()
                 if slug == "triggers":
                     return connector.list_triggers()
                 if slug == "events":
                     return connector.list_events()
-                if slug == "roles":
+                if slug in ("roles", "users"):
+                    # The same accounts under whichever name the engine
+                    # gives the folder (MY-01).
                     return connector.list_users()
                 # A catalog folder: one listing, named by its slug
                 # (PG-02). An adapter with no such folder answers
@@ -958,7 +988,7 @@ class Sidebar(Gtk.ScrolledWindow):
                     table = ""  # only index/trigger rows own one
                     if slug == "events":  # plain names
                         name, detail = obj, ""
-                    elif slug == "functions":
+                    elif slug in ("functions", "procedures"):
                         name, detail = obj.name, ""
                     elif slug in ("indexes", "triggers"):
                         name, table = obj.name, obj.table
@@ -1752,6 +1782,20 @@ def _is_system_schema(kind: str, name: str) -> bool:
         return False
     try:
         return registry.is_system_schema(kind, name)
+    except Exception:  # an adapter the registry doesn't know
+        return False
+
+
+def _is_system_database(kind: str, name: str) -> bool:
+    """Whether `name` is one of the server's own databases on this
+    engine — the provider layer's answer again (MY-01). False wherever
+    a database and a schema are different things; true for MySQL's
+    catalog schemas, which are databases here.
+    """
+    if not kind:
+        return False
+    try:
+        return registry.is_system_database(kind, name)
     except Exception:  # an adapter the registry doesn't know
         return False
 

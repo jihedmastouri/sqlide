@@ -220,8 +220,14 @@ def test_mysql_tree_walks(mysql) -> None:
 def test_mysql_lists_databases_then_objects(mysql) -> None:
     _version, connector = mysql
     provider = registry.create_provider("mysql", connector)
-    databases = provider.list_children(provider.root("sqlide"))
-    assert [d.kind for d in databases] == ["database"] * len(databases)
+    children = provider.list_children(provider.root("sqlide"))
+    databases = [c for c in children if c.kind == "database"]
+    # The databases first, then the folders the connection itself
+    # holds — the accounts, Administer, System Info (MY-01).
+    assert [c.kind for c in children] == (
+        ["database"] * len(databases)
+        + ["category"] * (len(children) - len(databases))
+    )
     assert databases[0].name == connector.database  # the current one first
     tables = provider.list_children(
         databases[0].child("category", "Tables", category="tables")

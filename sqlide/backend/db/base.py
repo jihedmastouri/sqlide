@@ -366,9 +366,15 @@ class Connector(ABC):
     @abstractmethod
     def list_columns(self, table: str) -> list[ColumnInfo]: ...
 
-    def list_databases(self) -> list[str]:
+    def list_databases(self, *, include_system: bool = False) -> list[str]:
         """Databases reachable through this connection, sorted by name,
         for the query console's database switcher.
+
+        `include_system` adds the databases the server owns — on MySQL,
+        where a schema *is* a database, that is `information_schema`,
+        `mysql`, `performance_schema` and `sys`. The object tree asks
+        for them and shows them dimmed (PG-03, MY-01); the switcher
+        leaves them out, the same split `list_schemas` makes.
 
         Concrete default (not abstract): single-database connectors —
         SQLite, where one file is one database — need no override.
@@ -434,6 +440,18 @@ class Connector(ABC):
         catalog — SQLite, the unimplemented stubs — need no override.
         """
         return []
+
+    def list_routines(self, kind: str = "") -> list[FunctionInfo]:
+        """Stored routines of one kind — "function", "procedure" — or
+        every routine for "".
+
+        Concrete default (not abstract): an engine that does not tell
+        functions from procedures answers with all of them either way,
+        which is what `list_functions` already gives. Only an engine
+        that has both *and* shows them as folders of their own (MySQL,
+        MY-01) needs to override.
+        """
+        return self.list_functions()
 
     def list_indexes(self) -> list[IndexInfo]:
         """Indexes in the connected database, sorted by name, with

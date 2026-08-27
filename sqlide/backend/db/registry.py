@@ -109,6 +109,15 @@ def is_system_schema(kind: str, name: str) -> bool:
     return provider_class(kind).is_system_schema(name)
 
 
+def is_system_database(kind: str, name: str) -> bool:
+    """Is `name` a database `kind`'s server owns rather than the user
+    (MY-01)? False on the engines where a database and a schema are
+    different things; the same question as `is_system_schema` where
+    they are one, which is the provider's answer and not the UI's.
+    """
+    return provider_class(kind).is_system_database(name)
+
+
 def level_categories(kind: str, level: str) -> tuple[tuple[str, str], ...]:
     """(slug, label) for the folders `kind` hangs off one level of its
     tree — a connection, a database, a schema (PG-02). Answerable

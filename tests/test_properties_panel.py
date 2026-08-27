@@ -122,8 +122,20 @@ def window(gtk, tmp_path, monkeypatch):
     win.destroy()
 
 
+def _drain() -> None:
+    """Run the pending idle callbacks — surfaces are released on idle,
+    after the tab that closed has left the view."""
+    from gi.repository import GLib
+
+    context = GLib.MainContext.default()
+    while context.pending():
+        context.iteration(False)
+
+
 def _panel(win):
-    return win._properties_view
+    """The properties surface the panel is showing — one per object
+    since CORE-50, so this is whichever one is in front."""
+    return win._properties_view.current
 
 
 # The tab no longer has a mode
@@ -169,7 +181,7 @@ def test_a_tab_about_no_object_clears_the_panel(window) -> None:
     win._update_active_panel()
     win.new_query(profile)
     win._update_active_panel()
-    assert _panel(win).ref is None
+    assert _panel(win) is None
 
 
 def test_the_properties_page_is_offered_in_every_context(window) -> None:
@@ -263,6 +275,127 @@ def test_a_properties_window_is_not_saved_with_the_workspace(
     )
     win._save_state()
     assert all(tab.kind != "properties" for tab in win.workspace.tabs)
+
+
+# Surfaces are per object (CORE-50)
+
+
+def _surfaces(win):
+    return win._properties_view
+
+
+def test_a_second_object_gets_its_own_surface(window) -> None:
+    win, profile, _store = window
+    win.open_table(profile, "orders")
+    win._update_active_panel()
+    first = _panel(win)
+    win.open_table(profile, "customers")
+    win._update_active_panel()
+    second = _panel(win)
+    assert first is not second
+    # A's surface is untouched by B being opened.
+    assert first.ref.name == "orders"
+    assert second.ref.name == "customers"
+
+
+def test_coming_back_to_an_object_focuses_its_surface(window) -> None:
+    win, profile, _store = window
+    win.open_table(profile, "orders")
+    win._update_active_panel()
+    first = _panel(win)
+    win.open_table(profile, "customers")
+    win._update_active_panel()
+    win._focus_tab(("table", profile.name, "orders"))
+    win._update_active_panel()
+    assert _panel(win) is first
+
+
+def test_two_detached_windows_show_different_objects(window) -> None:
+    from sqlide.backend.db import objects
+
+    win, profile, _store = window
+    win.open_properties_window(
+        profile, objects.ObjectRef(kind="table", name="orders")
+    )
+    win.open_properties_window(
+        profile, objects.ObjectRef(kind="table", name="customers")
+    )
+    views = [
+        popout.pane.view.get_nth_page(0).get_child()
+        for popout in win._popouts
+    ]
+    assert len(views) == 2
+    assert {view.ref.name for view in views} == {"orders", "customers"}
+    assert views[0] is not views[1]
+
+
+def test_closing_one_surface_leaves_the_other(window) -> None:
+    from sqlide.backend.db import objects
+
+    win, profile, _store = window
+    kept = win.open_properties_tab(
+        profile, objects.ObjectRef(kind="table", name="orders")
+    )
+    doomed = win.open_properties_tab(
+        profile, objects.ObjectRef(kind="table", name="customers")
+    )
+    pane = win._panes[0]
+    page = next(
+        pane.view.get_nth_page(i)
+        for i in range(pane.view.get_n_pages())
+        if pane.view.get_nth_page(i).get_child() is doomed
+    )
+    pane.view.close_page(page)
+    _drain()
+    assert kept.ref.name == "orders"
+    assert kept.get_parent() is not None
+
+
+def test_a_surface_is_released_when_its_tab_closes(window) -> None:
+    win, profile, _store = window
+    tab = win.open_table(profile, "orders")
+    win._update_active_panel()
+    assert _panel(win).ref.name == "orders"
+    pane = win._panes[0]
+    page = next(
+        pane.view.get_nth_page(i)
+        for i in range(pane.view.get_n_pages())
+        if pane.view.get_nth_page(i).get_child() is tab
+    )
+    pane.view.close_page(page)
+    _drain()
+    assert _surfaces(win)._views == {}
+
+
+def test_a_surface_is_kept_while_another_tab_is_about_it(window) -> None:
+    win, profile, _store = window
+    tab = win.open_table(profile, "orders")
+    win._update_active_panel()
+    kept = _panel(win)
+    win.open_definition(profile, "orders")  # same object, second tab
+    pane = win._panes[0]
+    page = next(
+        pane.view.get_nth_page(i)
+        for i in range(pane.view.get_n_pages())
+        if pane.view.get_nth_page(i).get_child() is tab
+    )
+    pane.view.close_page(page)
+    _drain()
+    assert kept in _surfaces(win)._views.values()
+
+
+def test_surfaces_do_not_grow_without_bound(window) -> None:
+    from sqlide.backend.db import objects
+
+    win, profile, _store = window
+    surfaces = _surfaces(win)
+    for i in range(surfaces._max + 4):
+        surfaces.set_target(
+            profile, objects.ObjectRef(kind="index", name=f"idx{i}")
+        )
+    assert len(surfaces._views) <= surfaces._max
+    # The one on screen is the newest, and still live.
+    assert surfaces.current.ref.name == f"idx{surfaces._max + 3}"
 
 
 # The panel's width is a preference

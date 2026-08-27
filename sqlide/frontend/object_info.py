@@ -689,3 +689,115 @@ class PropertiesView(Gtk.Box):
     def _open_link(self, ref: objects.ObjectRef) -> None:
         if self._on_open_object is not None and self.profile is not None:
             self._on_open_object(self.profile, ref)
+
+
+class PropertiesSurfaces(Gtk.Box):
+    """One properties surface per object, swapped rather than recycled
+    (CORE-50).
+
+    The side panel used to hold a single `PropertiesView` retargeted on
+    every tab switch, so opening B rewrote the surface that was showing
+    A. Here each object gets a `PropertiesView` of its own, kept in a
+    stack and brought to the front when that object is asked for: A is
+    still A when you come back to it, and coming back costs no catalog
+    read.
+
+    Surfaces are released when their object's tab closes
+    (`release`); what is left is bounded by `max_surfaces`, least
+    recently shown first, so a long session browsing the tree does not
+    grow without limit.
+    """
+
+    def __init__(
+        self,
+        make_view: Callable[
+            [ConnectionProfile, objects.ObjectRef], "PropertiesView"
+        ],
+        max_surfaces: int = 8,
+    ) -> None:
+        super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        self._make_view = make_view
+        self._max = max_surfaces
+        # Insertion order is recency: the least recently shown surface
+        # is the first key, and the first to go when the cap is hit.
+        self._views: dict[tuple, PropertiesView] = {}
+        self._key: tuple | None = None
+        self._stack = Gtk.Stack(vexpand=True, hexpand=True)
+        self._placeholder = Gtk.Label(
+            label="Open a tab, or pick an object in the tree, to see its "
+            "properties",
+            margin_top=24,
+            margin_start=12,
+            margin_end=12,
+            wrap=True,
+        )
+        self._placeholder.add_css_class("dim-label")
+        self._stack.add_named(self._placeholder, "")
+        self.append(self._stack)
+
+    # What is on screen
+
+    @property
+    def current(self) -> "PropertiesView | None":
+        """The surface showing now, or None when no object is shown."""
+        return self._views.get(self._key) if self._key else None
+
+    @property
+    def ref(self) -> objects.ObjectRef | None:
+        view = self.current
+        return view.ref if view is not None else None
+
+    @property
+    def profile(self) -> ConnectionProfile | None:
+        view = self.current
+        return view.profile if view is not None else None
+
+    def set_target(
+        self,
+        profile: ConnectionProfile | None,
+        ref: objects.ObjectRef | None,
+    ) -> None:
+        """Show this object's own surface, making one the first time.
+        Nothing already on screen is touched: the previous object's
+        surface stays as it was, ready to be shown again."""
+        if profile is None or ref is None:
+            self._key = None
+            self._stack.set_visible_child(self._placeholder)
+            return
+        key = properties_key(profile, ref)
+        view = self._views.get(key)
+        if view is None:
+            view = self._make_view(profile, ref)
+            self._views[key] = view
+            self._stack.add_named(view, repr(key))
+        else:
+            self._views[key] = self._views.pop(key)  # most recent last
+        self._key = key
+        self._stack.set_visible_child(view)
+        self._evict()
+
+    def select_section(self, slug: str) -> None:
+        """Deep links (CORE-05) land on the surface in front."""
+        view = self.current
+        if view is not None:
+            view.select_section(slug)
+
+    # Lifetime
+
+    def release(self, key: tuple) -> None:
+        """Drop one object's surface — what the window does when the
+        last tab about that object closes."""
+        view = self._views.pop(key, None)
+        if view is None:
+            return
+        if self._key == key:
+            self._key = None
+            self._stack.set_visible_child(self._placeholder)
+        self._stack.remove(view)
+
+    def _evict(self) -> None:
+        for key in list(self._views):
+            if len(self._views) <= self._max:
+                return
+            if key != self._key:
+                self.release(key)

@@ -40,6 +40,18 @@
 | CORE-21 | Aggregates: GROUP BY, HAVING, computed and aliased columns | CORE-17 |
 | CORE-22 | Builder layout: grouped filters, column search, room to grow | CORE-17 |
 
+### Table creator (from RS-02)
+
+| ID | Title | Depends on |
+|---|---|---|
+| CORE-23 | Table model and DDL renderer in the backend | — |
+| CORE-24 | Designer reads the MetadataProvider (schemas, types, capabilities) | CORE-02, CORE-23 |
+| CORE-25 | Constraints and indexes in the designer | CORE-23 |
+| CORE-26 | Alter mode: one designer for create and alter, over a diff | CORE-23, CORE-24 |
+| CORE-27 | Engine-specific table and column options | CORE-23, CORE-24 |
+| CORE-28 | Persist the designer's table model in the workspace | CORE-23 |
+| CORE-29 | Copy structure from an existing table, and saved templates | CORE-23, CORE-28 |
+
 ### Monitoring
 
 | ID | Title | Depends on |
@@ -75,6 +87,6 @@
 | ID | Title |
 |---|---|
 | RS-01 | Improve the Query Builder (done — see `docs/query-builder-research.md`, filed CORE-17…CORE-22) |
-| RS-02 | Improve the Table Creator |
+| RS-02 | Improve the Table Creator (done — see `docs/table-creator-research.md`, filed CORE-23…CORE-29) |
 | RS-03 | BI / charting support |
 | RS-04 | DBeaver Comparission |

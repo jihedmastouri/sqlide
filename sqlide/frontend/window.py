@@ -136,6 +136,28 @@ _SIDE_PANEL_MIN_WIDTH = 260
 _SEARCH_DEBOUNCE_MS = 180
 
 
+def _follow_target(child) -> tuple[str, str, str] | None:
+    """Which sidebar row a tab is about: (connection profile name, node
+    kind, object name), read off the tab key that already identifies
+    it (CORE-01) — so nothing has to carry a second identity for the
+    tree to follow it (CORE-55).
+
+    None means the tab has no object in the tree behind it — a query
+    console, the history, the backups tab — and the tree drops its
+    highlight rather than keeping the last one.
+    """
+    key = getattr(child, "tab_key", None)
+    if not key:
+        return None
+    if key[0] in ("table", "definition"):  # (kind, connection, table)
+        return (key[1], "table", key[2])
+    if key[0] == "function":
+        return (key[1], "function", key[2])
+    if key[0] == "object":  # (kind, connection, node kind, name, table)
+        return (key[1], key[2], key[3])
+    return None
+
+
 def _qualified(profile: ConnectionProfile, name: str) -> str:
     """`name` as this connection addresses it.
 
@@ -268,13 +290,24 @@ class _PopoutWindow(Adw.ApplicationWindow):
 
         main.install_tab_actions(self, self.pane)
         self.pane.view.connect(
-            "notify::selected-page", lambda *_: self._retitle()
+            "notify::selected-page", lambda *_: self._page_selected()
         )
         self.connect("close-request", self._on_close_request)
 
     @property
     def toasts(self) -> Adw.ToastOverlay:
         return self._toasts
+
+    def _page_selected(self) -> None:
+        """A tab switch in a pop-out is a tab switch: the title follows
+        it, and so does the main window's tree (CORE-55) — the sidebar
+        lives there, and a popped-out tab is still a tab of this
+        workspace."""
+        self._retitle()
+        page = self.pane.view.get_selected_page()
+        self.main.follow_in_sidebar(
+            page.get_child() if page is not None else None
+        )
 
     def _retitle(self) -> None:
         page = self.pane.view.get_selected_page()
@@ -1305,10 +1338,17 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self._side_panel.set_filter_target("", [])
         self._update_note_target(child)
+        self.follow_in_sidebar(child)
         if isinstance(child, (QueryConsole, CliConsole)):
             self._set_console_info(child)
         else:
             self._refresh_side_ddl()
+
+    def follow_in_sidebar(self, child) -> None:
+        """Point the object tree at whatever the given tab is showing
+        (CORE-55). One way only: the tree highlights, and never selects
+        a tab back."""
+        self._sidebar.follow_object(_follow_target(child))
 
     def _update_note_target(self, child) -> None:
         """Tell the side panel's Notes page which object the active tab

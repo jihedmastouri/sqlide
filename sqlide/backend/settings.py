@@ -59,6 +59,10 @@ Settings:
   so a drag survives a restart. Clamped to SIDEBAR_MIN_WIDTH ..
   SIDEBAR_MAX_WIDTH on the way in and out, and double-clicking the
   drag handle puts DEFAULT_SIDEBAR_WIDTH back.
+- sidebar_follow_active_tab: whether switching tabs highlights that
+  tab's object in the object tree, expanding the rows on the way to it
+  and scrolling to it only when it is off screen (CORE-55). Off leaves
+  the tree exactly where the user put it.
 - map_tiles_enabled: whether the geo viewer (PG-04) draws map tiles at
   all. Off gives geometries on a plain background and never makes a
   network request — the setting for an air-gapped machine, and what
@@ -135,6 +139,12 @@ class Settings:
     #: hidden: they are worth reading, just never the thing you came
     #: for (PG-03).
     show_system_schemas: bool = True
+    #: Highlight the active tab's object in the sidebar tree, expanding
+    #: the rows on the way to it (CORE-55). The ticket names the
+    #: setting `sidebar.follow_active_tab`; settings.toml is flat, so
+    #: it lives here under that name spelled the way its neighbours
+    #: are.
+    sidebar_follow_active_tab: bool = True
     map_tiles_enabled: bool = True
     map_tile_url: str = DEFAULT_TILE_URL
     map_attribution: str = DEFAULT_TILE_ATTRIBUTION
@@ -209,6 +219,9 @@ class Settings:
             ),
             lsp_enabled=flag("lsp_enabled", True),
             show_system_schemas=flag("show_system_schemas", True),
+            sidebar_follow_active_tab=flag(
+                "sidebar_follow_active_tab", True
+            ),
             map_tiles_enabled=flag("map_tiles_enabled", True),
             map_tile_url=text("map_tile_url", DEFAULT_TILE_URL),
             map_attribution=text(

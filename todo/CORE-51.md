@@ -1,6 +1,6 @@
 ## CORE-51 — Truncate the sidebar's secondary text instead of widening the tree
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-08
 
 ### Problem
@@ -23,9 +23,9 @@ Check this against the deepest indentation level, not just top-level rows.
 
 ### Acceptance criteria
 
-- [ ] Long secondary text ellipsizes; the sidebar keeps its configured width.
-- [ ] The node name is never truncated before the secondary text is.
-- [ ] The untruncated value is available on hover.
-- [ ] Resizing the sidebar narrower does not clip the name away entirely; there is
+- [x] Long secondary text ellipsizes; the sidebar keeps its configured width.
+- [x] The node name is never truncated before the secondary text is.
+- [x] The untruncated value is available on hover.
+- [x] Resizing the sidebar narrower does not clip the name away entirely; there is
       a sensible minimum.
-- [ ] Deeply nested rows behave the same as top-level ones.
+- [x] Deeply nested rows behave the same as top-level ones.

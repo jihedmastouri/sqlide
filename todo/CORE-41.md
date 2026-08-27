@@ -1,6 +1,6 @@
 ## CORE-41 — Per-connector catalog cache
 
-- **Status:** todo
+- **Status:** done
 - **From:** RS-04 (see `docs/dbeaver-comparison.md`)
 
 ### Problem
@@ -46,14 +46,14 @@ wrong write.
 
 ### Acceptance criteria
 
-- [ ] Paging a table N times issues one `list_tables` and at most one
+- [x] Paging a table N times issues one `list_tables` and at most one
       `list_columns`, asserted with a counting fake connector.
-- [ ] Saving M cell edits issues one `list_columns`, not M.
-- [ ] Any statement classified as DDL invalidates the connection's
+- [x] Saving M cell edits issues one `list_columns`, not M.
+- [x] Any statement classified as DDL invalidates the connection's
       cache; verified by adding a column in one statement and seeing
       it in the next `list_columns`.
-- [ ] A validation miss retries against the server once before
+- [x] A validation miss retries against the server once before
       raising `ConnectorError`.
-- [ ] The sidebar's Refresh clears the cache for that connection.
-- [ ] No behaviour change is observable other than fewer queries —
+- [x] The sidebar's Refresh clears the cache for that connection.
+- [x] No behaviour change is observable other than fewer queries —
       the existing metadata and tree tests pass unchanged.

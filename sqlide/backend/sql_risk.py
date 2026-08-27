@@ -80,6 +80,23 @@ _DESTRUCTIVE = frozenset(
 )
 # The top rung: irreversible, or reaching every row at once.
 _SEVERE = frozenset({"drop", "truncate"})
+# Actions that cannot change what the catalog says exists: reads, row
+# changes, and (below) transaction control. Everything else is treated
+# as catalog-changing, "other" included — see changes_catalog().
+_CATALOG_SAFE = frozenset({"read", "insert", "update", "delete"})
+# Transaction control, which classify() lumps into "other" but which
+# no catalog cache needs to fear.
+_TRANSACTION_WORDS = frozenset(
+    {
+        "BEGIN",
+        "START",
+        "COMMIT",
+        "END",
+        "ROLLBACK",
+        "SAVEPOINT",
+        "RELEASE",
+    }
+)
 
 # The action verbs, spelled for a dialog.
 _VERBS = {
@@ -143,6 +160,26 @@ def classify(sql: str) -> Risk:
         target=_target_after(found, 1),
         unfiltered=unfiltered,
     )
+
+
+def changes_catalog(sql: str) -> bool:
+    """Could this statement change what the catalog says exists?
+
+    Used by the connectors to decide whether a statement invalidates
+    their catalog cache (CORE-41), so it errs towards yes: a read, a
+    row change and transaction control keep the cache, and everything
+    else drops it — DDL, and equally the statements classify() can
+    only call "other" (COMMENT ON, RENAME TABLE, CALL, a dialect verb
+    nobody here has heard of). A needless invalidation costs one
+    catalog query; a missed one puts a dropped object's name into a
+    statement.
+    """
+    words = [t.word for t in tokens(sql) if not t.quoted]
+    if not words:
+        return False
+    if words[0] in _TRANSACTION_WORDS:
+        return False
+    return classify(sql).action not in _CATALOG_SAFE
 
 
 def worst(statements: list[str]) -> Risk:

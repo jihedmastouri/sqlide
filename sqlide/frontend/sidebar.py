@@ -384,6 +384,11 @@ class Sidebar(Gtk.ScrolledWindow):
         # however big the tree gets.
         self.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self._ensure = ensure_connector
+        # Profiles whose connector still has to drop its catalog cache
+        # (CORE-41). Refresh is a main-loop action and a connector may
+        # not even exist yet, so the invalidation is deferred to the
+        # worker thread that next asks for one — see _connector().
+        self._stale_catalogs: set[str] = set()
         self._on_open_table = on_open_table
         self._on_open_object = on_open_object
         self._on_open_section = on_open_section
@@ -732,6 +737,7 @@ class Sidebar(Gtk.ScrolledWindow):
                 continue
             node.loaded = False
             node.loading = False
+            self._mark_catalog_stale(name)
             if node.store is not None:
                 node.store.remove_all()
             row = self._tree.get_child_row(i)
@@ -745,6 +751,25 @@ class Sidebar(Gtk.ScrolledWindow):
         their cache; nothing reconnects behind the user's back."""
         for i in range(self._roots.get_n_items()):
             self.reload_connection(self._roots.get_item(i).label)
+
+    def _connector(self, profile) -> Connector:
+        """The connection for `profile`, with any Refresh the user
+        asked for since the last one applied to its catalog cache.
+
+        Called from worker threads only, like _ensure itself: dropping
+        the cache eagerly in refresh_node() would mean connecting on
+        the main loop just to invalidate a cache that may not exist.
+        """
+        connector = self._ensure(profile)
+        if profile.name in self._stale_catalogs:
+            self._stale_catalogs.discard(profile.name)
+            connector.invalidate_catalog()
+        return connector
+
+    def _mark_catalog_stale(self, name: str) -> None:
+        """Note that `name`'s cached catalog is not to be trusted after
+        this — the user pressed Refresh."""
+        self._stale_catalogs.add(name)
 
     def refresh_node(self, node: Node) -> None:
         """Refetch one row's children: the connection, one category, or
@@ -771,6 +796,8 @@ class Sidebar(Gtk.ScrolledWindow):
             return
         node.loaded = False
         node.loading = False
+        if node.profile is not None:
+            self._mark_catalog_stale(node.profile.name)
         node.ddl = None  # the hover DDL is stale too
         if node.store is not None:
             node.store.remove_all()
@@ -953,7 +980,7 @@ class Sidebar(Gtk.ScrolledWindow):
             wants_schemas = node.kind != "schema" and _has_schemas(node.profile)
 
             def work():
-                connector = self._ensure(node.profile)
+                connector = self._connector(node.profile)
                 databases = (
                     # The server's own databases come back too and are
                     # filtered (or not) below, exactly as its own
@@ -968,7 +995,7 @@ class Sidebar(Gtk.ScrolledWindow):
                     # filtered (or not) below: whether they are shown
                     # is a setting, and toggling it must not need a
                     # reconnect (PG-03).
-                    connector.list_schemas(include_system=True)
+                    connector.catalog_schemas(include_system=True)
                     if wants_schemas and not databases
                     else []
                 )
@@ -976,7 +1003,8 @@ class Sidebar(Gtk.ScrolledWindow):
                     connector.current_schema() if schemas else ""
                 )
                 return (
-                    [] if databases or schemas else connector.list_tables(),
+                    [] if databases or schemas
+                    else connector.catalog_tables(),
                     connector.ddl_kinds(),
                     connector.supports_drop,
                     databases,
@@ -1084,7 +1112,7 @@ class Sidebar(Gtk.ScrolledWindow):
             schema = node.profile.schema if node.profile is not None else ""
 
             def work():
-                connector = self._ensure(node.profile)
+                connector = self._connector(node.profile)
                 if slug in ("functions", "procedures"):
                     # Two folders where the engine has two kinds of
                     # routine, one listing where it has one (MY-01).
@@ -1130,9 +1158,9 @@ class Sidebar(Gtk.ScrolledWindow):
             slug = node.category
 
             def work():
-                connector = self._ensure(node.profile)
+                connector = self._connector(node.profile)
                 if slug == "columns":
-                    return connector.list_columns(table)
+                    return connector.catalog_columns(table)
                 if slug == "indexes":
                     return [
                         index for index in connector.list_indexes()
@@ -1552,7 +1580,7 @@ class Sidebar(Gtk.ScrolledWindow):
             self._show_error(str(exc))
 
         def work():
-            connector = self._ensure(node.profile)
+            connector = self._connector(node.profile)
             return connector.ddl_kinds(), connector.supports_drop
 
         run_async(work, done, failed)

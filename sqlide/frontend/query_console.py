@@ -71,6 +71,7 @@ from typing import Callable
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from sqlide.backend import placeholders as sql_placeholders
+from sqlide.backend import sql_risk
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import registry
 from sqlide.backend.db.base import Connector, ResultSet
@@ -610,7 +611,8 @@ class QueryConsole(Gtk.Box):
 
         run_async(
             lambda: {
-                t.name.lower() for t in self._ensure(profile).list_tables()
+                t.name.lower()
+                for t in self._ensure(profile).catalog_tables()
             },
             done,
             failed,
@@ -879,6 +881,13 @@ class QueryConsole(Gtk.Box):
                 return
             outcomes, in_transaction = work_result
             self._set_transaction_open(in_transaction)
+            # The connector dropped its catalog cache for these
+            # statements (CORE-41); this console's own hover cache is
+            # just as stale, so it goes with it.
+            if any(
+                sql_risk.changes_catalog(sql) for sql, _r, _e in outcomes
+            ):
+                self._reset_hover_cache()
             self._show_outcomes(
                 outcomes, planned=len(statements), explain=explain
             )

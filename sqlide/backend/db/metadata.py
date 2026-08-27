@@ -1009,6 +1009,74 @@ class MetadataProvider:
         GRANT cannot name. Dialect text, so each engine overrides."""
         return ""
 
+    #: The levels of the tree the permission editor always walks
+    #: through: a connection, a database or a schema is a container the
+    #: grantable objects hang under, and it is usually grantable in its
+    #: own right as well.
+    GRANT_LEVEL_KINDS = ("connection", "database", "schema")
+
+    @classmethod
+    def grantable_kinds(cls) -> frozenset[str]:
+        """The object kinds that can carry a grant on this engine.
+
+        Empty where the engine has no privilege system at all, which is
+        how the editor knows to explain itself instead of drawing a
+        tree with nothing in it (CORE-54).
+        """
+        if not cls.CAPABILITIES.permission_editor:
+            return frozenset()
+        return frozenset(
+            kind
+            for kind, privileges in cls.OBJECT_PRIVILEGES.items()
+            if privileges
+        )
+
+    @classmethod
+    def category_kind(cls, slug: str) -> str:
+        """The object kind one folder's rows are, empty for a folder
+        whose rows are not one kind (Administer holds more folders)."""
+        for name, _label, kind in CATEGORIES:
+            if name == slug:
+                return kind
+        label_kind = CATALOG_CATEGORIES.get(slug)
+        return label_kind[1] if label_kind else ""
+
+    def grantable_subtree(self, ref: NodeRef) -> bool:
+        """Whether `ref` — or anything under it — can carry a grant for
+        the engine's privilege model.
+
+        The permission editor's tree filter (CORE-54): a node that
+        answers False is left out of the tree entirely, so a folder of
+        indexes or a leaf nothing can be granted on never shows up, and
+        a folder whose whole subtree is ungrantable is hidden rather
+        than shown empty.
+        """
+        kinds = self.grantable_kinds()
+        if not kinds:
+            return False
+        if ref.kind in self.GRANT_LEVEL_KINDS:
+            # A level is a route to the objects under it even where the
+            # level itself takes no grant (a PostgreSQL connection).
+            return True
+        if ref.kind == "category":
+            kind = self.category_kind(ref.category or ref.name.lower())
+            if not kind:
+                return False
+            return kind in kinds or (
+                kind in ("table", "view") and "column" in kinds
+            )
+        if ref.kind in ("table", "view"):
+            return ref.kind in kinds or "column" in kinds
+        return ref.kind in kinds
+
+    def grantable_children(self, ref: NodeRef) -> list[NodeRef]:
+        """`list_children`, with everything ungrantable filtered out."""
+        return [
+            child
+            for child in self.list_children(ref)
+            if self.grantable_subtree(child)
+        ]
+
     def privilege_suffix(self, ref: NodeRef) -> str:
         """What each privilege carries in the statement — the column
         parenthetical of a column-level grant, empty everywhere else."""

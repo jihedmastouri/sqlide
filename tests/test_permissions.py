@@ -139,6 +139,73 @@ def test_sqlite_has_no_permission_editor() -> None:
     assert not SqliteMetadata.CAPABILITIES.grants
 
 
+# Scoping the tree (CORE-54)
+
+
+def test_grantable_kinds_come_from_the_privilege_model() -> None:
+    assert "table" in pg().grantable_kinds()
+    assert "column" not in pg().grantable_kinds()
+    assert "column" in my().grantable_kinds()
+    assert "index" not in my().grantable_kinds()
+    # No privilege system at all, so nothing is grantable and the
+    # editor has an explanation to show instead of an empty tree.
+    assert SqliteMetadata.grantable_kinds() == frozenset()
+
+
+def test_ungrantable_nodes_are_out_of_the_tree() -> None:
+    provider = pg()
+    assert provider.grantable_subtree(NodeRef("schema", "public"))
+    assert provider.grantable_subtree(
+        NodeRef("table", "orders", schema="public")
+    )
+    for ref in (
+        NodeRef("index", "orders_pkey", schema="public", table="orders"),
+        NodeRef("trigger", "audit", schema="public", table="orders"),
+        NodeRef("column", "total", schema="public", table="orders"),
+    ):
+        assert not provider.grantable_subtree(ref)
+
+
+def test_folders_are_hidden_when_their_whole_subtree_is_ungrantable(
+) -> None:
+    provider = pg()
+
+    def folder(slug: str) -> NodeRef:
+        return NodeRef("category", slug.title(), category=slug)
+
+    assert provider.grantable_subtree(folder("tables"))
+    assert provider.grantable_subtree(folder("functions"))
+    for slug in ("indexes", "triggers", "roles", "extensions", "storage"):
+        assert not provider.grantable_subtree(folder(slug))
+    # A folder of more folders is not one the editor can grant on.
+    assert not provider.grantable_subtree(folder("administer"))
+
+
+def test_a_table_leads_somewhere_only_where_columns_take_grants() -> None:
+    table = NodeRef("table", "orders", database="sales")
+    # MySQL grants on columns, so a table is worth opening there; on
+    # PostgreSQL the editor stops at the table.
+    assert "column" in my().grantable_kinds()
+    assert "column" not in pg().grantable_kinds()
+    assert my().grantable_subtree(table)
+    assert pg().grantable_subtree(table)
+
+
+def test_grantable_children_filters_the_listing() -> None:
+    class Tree(type(pg())):
+        def list_children(self, ref: NodeRef) -> list[NodeRef]:
+            return [
+                NodeRef("category", "Tables", category="tables"),
+                NodeRef("category", "Indexes", category="indexes"),
+                NodeRef("category", "Roles", category="roles"),
+            ]
+
+    children = Tree(FakeConnector()).grantable_children(
+        NodeRef("schema", "public")
+    )
+    assert [child.name for child in children] == ["Tables"]
+
+
 def test_grant_targets_are_the_dialects_own() -> None:
     assert pg().grant_target(
         NodeRef("table", "orders", schema="public")

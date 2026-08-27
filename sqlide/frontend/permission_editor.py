@@ -31,8 +31,17 @@ A row of an object's Permissions section (CORE-11) opens this screen
 too, on the principal that row names and already scoped to the object
 it was read from — the same editor, entered from the other end.
 
+The tree is scoped to what can actually be granted on (CORE-54): the
+provider answers `grantable_subtree` for every node, so a folder of
+indexes, a trigger, or a table on an engine with no column grants is
+left out rather than scrolled past, and a folder whose whole subtree is
+ungrantable is hidden instead of shown empty. A header above the split
+view names the principal and stays there while the tree scrolls.
+
 Engines with no privilege system never get here: SQLite leaves the
 `permission_editor` capability off and the users tab hides the button.
+Reached anyway, the screen says the engine grants nothing rather than
+showing a tree with nothing in it.
 """
 
 from __future__ import annotations
@@ -165,9 +174,10 @@ class PermissionEditor(Gtk.Box):
         self._pending_label.add_css_class("dim-label")
         header.pack_start(self._pending_label)
 
-        view = Adw.ToolbarView(content=paned)
-        view.add_top_bar(header)
-        self.append(view)
+        self._view = Adw.ToolbarView(content=paned)
+        self._view.add_top_bar(header)
+        self._view.add_top_bar(_subject_bar(user))
+        self.append(self._view)
         self._update_pending_state()
         self._load_root()
 
@@ -178,11 +188,14 @@ class PermissionEditor(Gtk.Box):
             connector = self._ensure(self.profile)
             provider = registry.create_provider(self.profile.kind, connector)
             root = provider.root(self.profile.name)
-            return provider, root, provider.list_children(root)
+            return provider, root, provider.grantable_children(root)
 
         def done(loaded) -> None:
             provider, root, children = loaded
             self._provider = provider
+            if not provider.grantable_kinds():
+                self._no_grants()
+                return
             self._roots.remove_all()
             self._roots.append(_Node(root))
             node = self._roots.get_item(0)
@@ -195,10 +208,29 @@ class PermissionEditor(Gtk.Box):
 
         run_async(work, done, lambda exc: self._show_error(str(exc)))
 
+    def _no_grants(self) -> None:
+        """The engine has no privilege system: say so where the tree
+        would have been, rather than leaving an empty one (CORE-54)."""
+        self._save.set_visible(False)
+        self._revert.set_visible(False)
+        self._view.set_content(
+            Adw.StatusPage(
+                icon_name="dialog-information-symbolic",
+                title="No permissions to edit",
+                description=(
+                    f"{self.profile.name} runs an engine with no "
+                    "privilege system: it grants nothing to anyone, so "
+                    f"there is nothing here to set for {_label(self.user)}."
+                ),
+            )
+        )
+
     def _children_of(self, node: _Node) -> Gio.ListStore | None:
         # Called on expansion and by is-expandable probes, so it does no
         # I/O of its own: it hands back the store and fills it after.
         if node.ref.kind not in _EXPANDABLE:
+            return None
+        if self._provider is not None and not self._expandable(node.ref):
             return None
         if node.store is None:
             node.store = Gio.ListStore(item_type=_Node)
@@ -212,7 +244,7 @@ class PermissionEditor(Gtk.Box):
         provider = self._provider
 
         def work():
-            return provider.list_children(node.ref)
+            return provider.grantable_children(node.ref)
 
         def done(children) -> None:
             if node.store is None:
@@ -222,6 +254,16 @@ class PermissionEditor(Gtk.Box):
                 node.store.append(_Node(child))
 
         run_async(work, done, lambda exc: self._show_error(str(exc)))
+
+    def _expandable(self, ref: NodeRef) -> bool:
+        """Whether the tree should offer to open `ref`. A table is only
+        worth opening where the engine grants on columns."""
+        provider = self._provider
+        if provider is None:
+            return False
+        if ref.kind in ("table", "view"):
+            return "column" in provider.grantable_kinds()
+        return provider.grantable_subtree(ref)
 
     def _setup_row(self, _factory, item: Gtk.ListItem) -> None:
         expander = Gtk.TreeExpander()
@@ -501,6 +543,33 @@ class PermissionEditor(Gtk.Box):
                 self._show(self._current)
 
         run_async(work, done, lambda exc: self._show_error(str(exc)))
+
+
+def _subject_bar(user: UserInfo) -> Gtk.Widget:
+    """The header naming whose permissions these are, pinned above the
+    split view so the subject stays on screen while the tree scrolls
+    (CORE-54)."""
+    box = Gtk.Box(
+        orientation=Gtk.Orientation.VERTICAL,
+        margin_top=6, margin_bottom=6, margin_start=12, margin_end=12,
+    )
+    title = Gtk.Label(label=_label(user), xalign=0)
+    title.add_css_class("title-4")
+    subtitle = Gtk.Label(label=_subject_detail(user), xalign=0)
+    subtitle.add_css_class("dim-label")
+    subtitle.add_css_class("caption")
+    box.append(title)
+    box.append(subtitle)
+    describe(box, f"Editing the permissions of {_label(user)}")
+    box.add_css_class("toolbar")
+    return box
+
+
+def _subject_detail(user: UserInfo) -> str:
+    """The line under the name: what kind of principal it is, and
+    whether it can log in."""
+    kind = (user.kind or "user").capitalize()
+    return f"{kind} · {'can log in' if user.can_login else 'no login'}"
 
 
 def _label(user: UserInfo) -> str:

@@ -75,6 +75,17 @@ tree without naming it. Their rows come from `Connector.list_catalog`,
 one shapeless listing per folder, and each row resolves to the same
 generic info view every other node opens.
 
+Where a node opens is decided by shape, not by a list of screens
+(CORE-56). `objects.shape_of(kind)` answers "tabular" for a collection
+— a folder, or one properties section of a table — and "scalar" for a
+single record; `objects.grid_listing(kind, info)` turns that into the
+listing a tab should draw in the shared `ResultGrid`, or None for the
+info view. A kind that declares neither shape falls back to the
+descriptor: it opens as a grid only where its whole body is one
+tabular section with no summary and no DDL to lose. Nothing here
+touches the right side panel, which keeps following the active tab
+(CORE-47).
+
 One implementation per engine, in that engine's folder
 (`postgres/metadata.py`, …). PostgreSQL nests `connection → database →
 schema → object`, MySQL `connection → database → object`, SQLite

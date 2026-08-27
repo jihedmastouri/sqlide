@@ -123,7 +123,74 @@ TYPE_LABELS = {
     "tablespace": "Tablespace",
     "setting": "Setting",
     "principal": "Account",
+    "section": "Listing",
 }
+
+
+#: How an object's content is shaped, for the frontend's choice of
+#: where to open it (CORE-56). A kind declared "tabular" is a
+#: collection — a folder, or one section of a table's properties — and
+#: opens as a grid of its rows; a kind declared "scalar" is a single
+#: record and opens as the info view.
+#:
+#: This is the capability answer: it needs no connection, so the
+#: destination is decided before the catalog is read.
+TABULAR_KINDS = frozenset(("category", "section"))
+
+SCALAR_KINDS = frozenset((
+    "connection", "database", "table", "view", "column", "function",
+    "procedure", "index", "trigger", "event", "sequence", "data_type",
+    "aggregate", "event_trigger", "extension", "tablespace", "setting",
+    "principal",
+))
+
+
+def shape_of(kind: str) -> str:
+    """"tabular", "scalar", or "" for a kind that declares neither."""
+    if kind in TABULAR_KINDS:
+        return "tabular"
+    if kind in SCALAR_KINDS:
+        return "scalar"
+    return ""
+
+
+def listing(info: "ObjectInfo") -> "DetailTable | None":
+    """The one listing that *is* this descriptor's content, or None.
+
+    A descriptor whose whole body is a single tabular section is a
+    collection however it was built; one carrying a definition, or
+    several sections, is an object being described and reads as the
+    info view.
+    """
+    if info.ddl or len(info.tables) != 1:
+        return None
+    table = info.tables[0]
+    return table if table.tabular else None
+
+
+def grid_listing(kind: str, info: "ObjectInfo") -> "DetailTable | None":
+    """The rows to open in the result grid for `kind`, or None to open
+    the info view instead (CORE-56).
+
+    A kind the capability layer calls scalar always opens as the info
+    view, whatever came back. A kind it calls tabular opens as a grid
+    as soon as the descriptor really is one listing.
+
+    **Fallback** — a kind that declares neither shape (a new adapter's
+    own kind, anything `_generic` describes) is decided by the
+    descriptor: it opens as a grid only where its whole body is one
+    tabular listing and there is nothing else to lose — no summary, no
+    definition. Anything less certain opens the info view, which shows
+    every section including the listing, so an undeclared kind is
+    never worse off than before.
+    """
+    shape = shape_of(kind)
+    if shape == "scalar":
+        return None
+    table = listing(info)
+    if table is None or shape == "tabular":
+        return table
+    return table if not info.summary else None
 
 
 @dataclass(frozen=True)
@@ -819,6 +886,16 @@ def _generic(
     )
 
 
+def _section(connector, kind, name, *, table, category, path, schema):
+    """A table's Indexes/Columns/Constraints row, described as the
+    listing it is. `category` is the section slug, `table` its
+    table."""
+    slug = category or name.lower()
+    if not table:
+        return _generic(connector, kind, name, path=path)
+    return table_section(connector, table, slug, path=path)
+
+
 _BUILDERS = {
     "connection": _connection,
     "database": _database,
@@ -830,6 +907,7 @@ _BUILDERS = {
     "trigger": _trigger,
     "function": _function,
     "event": _event,
+    "section": _section,
 }
 
 
@@ -916,6 +994,37 @@ def table_properties(
     return ObjectInfo(
         kind=kind, name=name, type_label=_label(kind), path=path,
         summary=summary, tables=tables, ddl=ddl,
+    )
+
+
+def table_section(
+    connector: Connector,
+    table: str,
+    slug: str,
+    *,
+    path: str = "",
+) -> ObjectInfo:
+    """One section of a table's properties on its own (CORE-56).
+
+    Clicking Indexes under a table opens that listing as a tab of its
+    own rather than a page of the side panel, so the section is built
+    by itself here instead of being picked out of the whole
+    `table_properties` read. The rows and their links are the same
+    ones the properties view would have shown.
+    """
+    label = PROPERTY_SECTION_LABELS.get(slug, slug.capitalize())
+    columns = _safe(lambda: connector.list_columns(table), [])
+    detail = replace(
+        _property_table(connector, table, slug, columns),
+        tabular=True,
+        slug=slug,
+    )
+    return ObjectInfo(
+        kind="section",
+        name=label,
+        type_label=_label("section"),
+        path=path,
+        tables=[detail],
     )
 
 

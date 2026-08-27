@@ -660,6 +660,8 @@ class MetadataProvider:
         this kind of object have one (CORE-11)."""
         if ref.kind in self.PRINCIPAL_KINDS:
             return self.principal_properties(ref)
+        if ref.kind == "section":
+            return self.section_listing(ref)
         info = objects.describe(
             self.connector,
             ref.kind,
@@ -677,6 +679,41 @@ class MetadataProvider:
             # search path happened to find (PG-01).
             info = replace(info, name=qualified)
         return self._with_permissions(info, ref)
+
+    def section_listing(self, ref: NodeRef) -> objects.ObjectInfo:
+        """One properties section of a table, on its own (CORE-56).
+
+        Clicking Indexes (or Columns, or Permissions) under a table
+        opens that listing as a tab rather than a page of the side
+        panel, so the section is described by itself. Most sections
+        the plain connector can fill; the provider-only ones
+        (`PROVIDER_SECTIONS` — who holds a grant is a question about
+        accounts, not about the table) are assembled here, the same
+        way `_with_permissions` assembles them into a full descriptor.
+        """
+        slug = ref.category or ref.name.lower()
+        label = objects.PROPERTY_SECTION_LABELS.get(slug, ref.name)
+        if slug in objects.PROVIDER_SECTIONS and ref.table:
+            owner = NodeRef(kind="table", name=ref.table, schema=ref.schema)
+            table = replace(
+                _grant_table(self.object_grants(owner), owner),
+                tabular=True,
+                slug=slug,
+            )
+            return objects.ObjectInfo(
+                kind="section",
+                name=label,
+                type_label=objects.TYPE_LABELS["section"],
+                tables=[table],
+            )
+        return objects.describe(
+            self.connector,
+            "section",
+            ref.name,
+            table=ref.table,
+            category=slug,
+            schema=ref.schema,
+        )
 
     @classmethod
     def property_sections(cls) -> tuple[str, ...]:

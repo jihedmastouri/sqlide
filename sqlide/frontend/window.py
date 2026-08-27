@@ -177,6 +177,14 @@ def _properties_target(child) -> tuple:
     if isinstance(child, PropertiesView):
         return (profile, child.ref)
     if isinstance(child, ObjectInfoTab):
+        # A listing tab (CORE-56) is about one section of a table, and
+        # the panel beside it is best pointed at that table: the
+        # summary belongs to the object the listing came out of.
+        if child.ref.kind == "section" and child.ref.table:
+            return (
+                profile,
+                objects.ObjectRef(kind="table", name=child.ref.table),
+            )
         return (profile, child.ref)
     table = getattr(child, "table", "")
     if table:
@@ -2856,12 +2864,16 @@ class MainWindow(Adw.ApplicationWindow):
             path=path,
         )
         label = objects.TYPE_LABELS.get(ref.kind, "object").lower()
-        self._append_tab(
-            tab,
-            key,
-            f"{ref.name} · {label}",
-            f"{label.capitalize()} {ref.name} on {profile.name}",
-        )
+        if ref.kind == "section" and ref.table:
+            # A listing is titled for the object it belongs to as well
+            # as for itself — "orders · indexes", not a lone "Indexes"
+            # among a row of them (CORE-56).
+            title = f"{ref.table} · {ref.name.lower()}"
+            tooltip = f"{ref.name} of {ref.table} on {profile.name}"
+        else:
+            title = f"{ref.name} · {label}"
+            tooltip = f"{label.capitalize()} {ref.name} on {profile.name}"
+        self._append_tab(tab, key, title, tooltip)
 
     def open_principal_permissions(
         self, profile: ConnectionProfile, ref: objects.ObjectRef

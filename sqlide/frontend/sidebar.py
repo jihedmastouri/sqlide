@@ -279,6 +279,12 @@ class Sidebar(Gtk.ScrolledWindow):
         on_remove_connection: Callable[[ConnectionProfile], None],
         on_add_connection: Callable[[], None],
         show_error: Callable[[str], None],
+        # (profile, "install"|"update"|"drop", extension name). Last and
+        # optional so a harness that only walks the tree need not supply
+        # one: the menu items simply do nothing without it (PG-05).
+        on_extension_action: (
+            Callable[[ConnectionProfile, str, str], None] | None
+        ) = None,
     ) -> None:
         super().__init__(vexpand=True)
         # Both scrollbars, on demand. Row labels are not ellipsized
@@ -301,6 +307,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_query_builder = on_query_builder
         self._on_drop_object = on_drop_object
         self._on_new_object = on_new_object
+        self._on_extension_action = on_extension_action
         self._on_mcp_server = on_mcp_server
         self._on_manage_users = on_manage_users
         self._on_monitor = on_monitor
@@ -371,6 +378,9 @@ class Sidebar(Gtk.ScrolledWindow):
             ("view-indexes", self._menu_view_indexes),
             ("query-builder", self._menu_query_builder),
             ("drop-object", self._menu_drop),
+            ("install-extension", self._menu_install_extension),
+            ("update-extension", self._menu_update_extension),
+            ("drop-extension", self._menu_drop_extension),
             ("refresh", self._menu_refresh),
             ("mcp-server", self._menu_mcp_server),
             ("manage-users", self._menu_manage_users),
@@ -1258,6 +1268,22 @@ class Sidebar(Gtk.ScrolledWindow):
             if can_drop:
                 menu.append("Drop…", "schema.drop-object")
             return menu
+        if node.kind == "extension" and node.profile is not None:
+            # Install / Update / Drop, per the folder the row came from
+            # (PG-05). Whether the account may actually run them is a
+            # catalog question, so it is asked when the item is chosen
+            # rather than while the menu is being built — the dialog
+            # says no, off the main loop, instead of the menu guessing.
+            menu = Gio.Menu()
+            menu.append("Object Info", "schema.object-info")
+            if node.category == "available_extensions":
+                menu.append("Install…", "schema.install-extension")
+            else:
+                if "update to" in node.detail:
+                    menu.append("Update…", "schema.update-extension")
+                menu.append("Drop…", "schema.drop-extension")
+            menu.append("Refresh", "schema.refresh")
+            return menu
         if node.kind in ("index", "event"):
             menu = Gio.Menu()
             menu.append("Object Info", "schema.object-info")
@@ -1407,6 +1433,22 @@ class Sidebar(Gtk.ScrolledWindow):
         if node is None or node.profile is None:
             return
         self._on_drop_object(node.profile, node.kind, node.label, node.table)
+
+    def _extension_action(self, action: str) -> None:
+        node = self._menu_node
+        if node is None or node.profile is None:
+            return
+        if self._on_extension_action is not None:
+            self._on_extension_action(node.profile, action, node.label)
+
+    def _menu_install_extension(self, *_args) -> None:
+        self._extension_action("install")
+
+    def _menu_update_extension(self, *_args) -> None:
+        self._extension_action("update")
+
+    def _menu_drop_extension(self, *_args) -> None:
+        self._extension_action("drop")
 
     def _menu_new_object(self, _action, param) -> None:
         node = self._menu_node

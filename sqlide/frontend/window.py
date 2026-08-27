@@ -98,6 +98,7 @@ from sqlide.frontend.definition_tab import DefinitionTab, FunctionTab
 from sqlide.frontend.indexes_tab import IndexesTab
 from sqlide.frontend import identity as identity_ui
 from sqlide.frontend.drop_dialog import present_drop_dialog
+from sqlide.frontend.extension_dialog import present_extension_dialog
 from sqlide.frontend.backups_tab import BackupsTab
 from sqlide.frontend.mcp_tab import McpServerTab
 from sqlide.frontend.object_info import ObjectInfoTab, tab_key
@@ -379,6 +380,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_monitor=self.open_monitor,
             on_query_builder=self.open_query_builder,
             on_drop_object=self._drop_object,
+            on_extension_action=self._extension_action,
             on_new_object=self._new_object,
             on_mcp_server=self.open_mcp_server,
             on_open_schema=self._open_schema,
@@ -2375,6 +2377,26 @@ class MainWindow(Adw.ApplicationWindow):
 
         present_drop_dialog(
             self, profile, kind, name, table,
+            self.ensure_connector, self.show_error, executed,
+        )
+
+    def _extension_action(
+        self, profile: ConnectionProfile, action: str, name: str
+    ) -> None:
+        """Install, update or drop an extension from the Extensions
+        folder's context menu (PG-05). Review-then-run like every other
+        DDL action here, and the sidebar reloads so the folders show
+        what the server now has."""
+
+        def executed(sql: str, ok: bool) -> None:
+            self._query_ran(
+                f"{profile.name} ▸ {action} extension", sql, profile.name, ok
+            )
+            if ok:
+                self._sidebar.reload_connection(profile.name)
+
+        present_extension_dialog(
+            self, profile, action, name,
             self.ensure_connector, self.show_error, executed,
         )
 

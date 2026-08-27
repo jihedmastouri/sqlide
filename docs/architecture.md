@@ -123,7 +123,9 @@ running both ways between the map and the grid.
 
 Two gates keep it honest. The engine declares the `geometry`
 capability, and the provider's `spatial_extension()` asks the server
-whether PostGIS is actually installed; a connection that answers "no"
+whether a spatial extension is actually installed (since PG-05 that is
+the extension registry's `spatial` feature, not a PostGIS lookup of
+its own); a connection that answers "no"
 never grows a Map toggle. And `backend/tiles.py` owns everything about
 fetching somebody else's tiles: the URL template is a setting
 (`map_tile_url`), the attribution travels with it and is always drawn,
@@ -132,6 +134,37 @@ tiles are cached on disk and re-used, and being offline is decided
 plain background and a one-line notice instead of a hang. Nothing in
 the test suite touches the network: the loader's transport and its
 online probe are arguments.
+
+## Extensions
+
+`backend/db/extensions.py` is the registry: extension name -> what it
+is called, what it is for, the *features* it unlocks and the types it
+introduces. Everything above reads a feature (`spatial`, `statements`,
+`hypertables`, `vectors`, `jobs`, `types`) and never an extension's
+name, so a second spatial extension would be a registry entry and
+nothing else. An extension nobody registered gets the generic trait:
+it lists, it opens its info view, and it turns nothing on — no errors,
+no special case.
+
+One listing feeds all of it. `Connector.list_extensions()` returns
+every extension the server has, installed or merely available, and the
+provider splits it: the **Extensions** folder shows what is installed
+with its version, schema and whether a newer version is on disk, and
+**Available Extensions** shows the rest. The install/update/drop
+actions build plain CREATE/ALTER/DROP EXTENSION for the confirmation
+dialog to show (`frontend/extension_dialog.py`) and are offered only
+where `can_manage_extensions()` says the account could run them —
+review-then-run, like every other DDL surface here.
+
+Extension-owned objects are attributed rather than mysterious: a
+descriptor asks `Connector.extension_owner()` and an object that
+belongs to an extension says so in its summary.
+
+The per-extension UIs beyond that — TimescaleDB's chunks in the tree,
+pg_cron's job list, vector columns rendered as vectors — are each
+their own follow-up; the registry already declares which extension
+brings which, so they hang off a feature flag rather than a new
+mechanism.
 
 ## Workspaces and connections
 
@@ -176,6 +209,7 @@ sqlide/
 │       ├── objects.py      # per-node object descriptors (the info view)
 │       ├── metadata.py     # per-engine metadata providers (hierarchy, caps)
 │       ├── geo.py          # WKB/EWKB -> drawable geometries (no PostGIS needed)
+│       ├── extensions.py   # extension registry: features, types, DDL
 │       ├── monitoring.py   # which monitoring sources a connection may read
 │       ├── metrics.py      # sampling those sources: counters, sessions, sizes
 │       ├── sqlite/
@@ -197,6 +231,7 @@ sqlide/
     ├── backup_destinations.py  # destination list + per-kind editor
     ├── backup_restore.py    # pick artifact -> pick target -> confirm -> run
     ├── notes_panel.py       # side panel Notes page + Markdown editor
+    ├── extension_dialog.py  # install/update/drop an extension, confirmed
     ├── data_grid.py         # ResultGrid + TableTab (Data | Properties | Map)
     ├── map_view.py          # geometries drawn on OpenStreetMap tiles
     ├── query_console.py

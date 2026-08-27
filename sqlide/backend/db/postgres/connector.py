@@ -61,6 +61,7 @@ from sqlide.backend.db.base import (
     UserInfo,
     build_filter_clauses,
 )
+from sqlide.backend.db.extensions import ExtensionState
 from sqlide.backend.settings import session_time_zone
 
 _TEMPLATES = {
@@ -1012,6 +1013,7 @@ class PostgresConnector(Connector):
             "data_types": self._catalog_data_types,
             "aggregates": self._catalog_aggregates,
             "extensions": self._catalog_extensions,
+            "available_extensions": self._catalog_available_extensions,
             "event_triggers": self._catalog_event_triggers,
             "storage": self._catalog_storage,
             "system_info": self._catalog_system_info,
@@ -1088,20 +1090,112 @@ class PostgresConnector(Connector):
             for name, args, returns in rows
         ]
 
-    def _catalog_extensions(self, _schema: str) -> list[ObjectSummary]:
+    def list_extensions(self) -> list[ExtensionState]:
+        """Every extension this server has, installed or not (PG-05).
+
+        pg_available_extensions is the outer side: it holds one row per
+        extension the server has files for, with the version it would
+        install and the comment it ships with, and `installed_version`
+        for the ones already in this database. pg_extension is joined
+        for the schema, which only an installed extension has.
+
+        A server that refuses the view (or is too old for a column of
+        it) raises like any other catalog query; the callers wrap this
+        in `_safe` and show an empty folder rather than an error.
+        """
         _, rows, _ = self._run(
-            "SELECT e.extname, e.extversion, n.nspname "
-            "FROM pg_extension e "
-            "JOIN pg_namespace n ON n.oid = e.extnamespace "
-            "ORDER BY e.extname"
+            "SELECT a.name, COALESCE(a.installed_version, ''), "
+            "COALESCE(n.nspname, ''), COALESCE(a.default_version, ''), "
+            "COALESCE(a.comment, '') "
+            "FROM pg_available_extensions a "
+            "LEFT JOIN pg_extension e ON e.extname = a.name "
+            "LEFT JOIN pg_namespace n ON n.oid = e.extnamespace "
+            "ORDER BY a.name"
         )
         return [
-            ObjectSummary(
+            ExtensionState(
                 name=name,
-                kind="extension",
-                detail=f"{version} in {schema}",
+                version=version,
+                schema=schema,
+                default_version=default_version,
+                comment=comment,
             )
-            for name, version, schema in rows
+            for name, version, schema, default_version, comment in rows
+        ]
+
+    def can_manage_extensions(self) -> bool:
+        """CREATE EXTENSION is a superuser action on every supported
+        version — trusted extensions (PostgreSQL 13+) also need CREATE
+        on the target schema, which is more than the catalog can say
+        for the schema the user has not chosen yet. Superuser is
+        therefore the gate the actions are offered behind; a role that
+        is refused anyway gets the server's error, not a silent
+        no-op."""
+        _, rows, _ = self._run(
+            "SELECT rolsuper FROM pg_roles WHERE rolname = current_user"
+        )
+        return bool(rows and rows[0][0])
+
+    def extension_owner(self, name: str, schema: str = "") -> str:
+        """The extension an object belongs to, "" for a user object.
+
+        pg_depend records extension membership as a dependency of type
+        'e' from the object to its extension; asked by name across the
+        catalogs a tree row can come from (relations, routines, types),
+        so one query answers for every kind the info view describes.
+        """
+        _, rows, _ = self._run(
+            "SELECT e.extname FROM pg_depend d "
+            "JOIN pg_extension e ON e.oid = d.refobjid "
+            "WHERE d.deptype = 'e' AND d.refclassid = 'pg_extension'::regclass "
+            "AND ("
+            " (d.classid = 'pg_class'::regclass AND d.objid IN ("
+            "  SELECT c.oid FROM pg_class c"
+            "  JOIN pg_namespace n ON n.oid = c.relnamespace"
+            "  WHERE c.relname = %(name)s"
+            "  AND (%(schema)s = '' OR n.nspname = %(schema)s)))"
+            " OR (d.classid = 'pg_proc'::regclass AND d.objid IN ("
+            "  SELECT p.oid FROM pg_proc p"
+            "  JOIN pg_namespace n ON n.oid = p.pronamespace"
+            "  WHERE p.proname = %(name)s"
+            "  AND (%(schema)s = '' OR n.nspname = %(schema)s)))"
+            " OR (d.classid = 'pg_type'::regclass AND d.objid IN ("
+            "  SELECT t.oid FROM pg_type t"
+            "  JOIN pg_namespace n ON n.oid = t.typnamespace"
+            "  WHERE t.typname = %(name)s"
+            "  AND (%(schema)s = '' OR n.nspname = %(schema)s)))"
+            ") LIMIT 1",
+            {"name": name, "schema": schema or ""},
+        )
+        return rows[0][0] if rows else ""
+
+    def _catalog_extensions(self, _schema: str) -> list[ObjectSummary]:
+        return [
+            ObjectSummary(
+                name=state.name,
+                kind="extension",
+                detail=state.detail(),
+                definition=state.comment,
+            )
+            for state in self.list_extensions()
+            if state.installed
+        ]
+
+    def _catalog_available_extensions(
+        self, _schema: str
+    ) -> list[ObjectSummary]:
+        """The other half of the same listing: what could be installed
+        and is not. Kept a folder of its own so the Extensions folder
+        stays "what this database has" (PG-05)."""
+        return [
+            ObjectSummary(
+                name=state.name,
+                kind="extension",
+                detail=state.detail(),
+                definition=state.comment,
+            )
+            for state in self.list_extensions()
+            if not state.installed
         ]
 
     def _catalog_event_triggers(self, _schema: str) -> list[ObjectSummary]:

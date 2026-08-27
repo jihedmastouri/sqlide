@@ -68,16 +68,17 @@ functions, procedures and events — so creating an object never
 depends on knowing that the row has a right-click menu.
 
 A single click selects a row and toggles its expansion — a leaf row
-just selects, and nothing opens (CORE-52). A double click (or Enter)
-opens it, and every kind opens something: a table/view opens a data
-tab, a function opens its definition in an editable tab, and
-everything else — categories, columns, indexes, triggers, events, and
-any kind added later — opens the read-only object info view
-(frontend/object_info.py, "Object Info" on every context menu).
-Opening something already open focuses its tab (CORE-01). A container
-row expands as well as opening, so double-clicking a connection still
-reveals what is under it; the caret does the same toggle a click on
-the row does.
+just selects, and nothing opens (CORE-52). Because a double click
+delivers that press too, the toggle waits out the double-click
+interval and a second press cancels it (CORE-58): a double click (or
+Enter) opens the row and leaves expansion exactly as it was. Every
+kind opens something: a table/view opens a data tab, a function opens
+its definition in an editable tab, and everything else — categories,
+columns, indexes, triggers, events, and any kind added later — opens
+the read-only object info view (frontend/object_info.py, "Object Info"
+on every context menu). Opening something already open focuses its tab
+(CORE-01). The caret does the same toggle a click on the row does, at
+once and with no wait, since it can only mean expansion.
 
 Every menu of a row that opens something starts with Open and Open
 (Window); a row that opens nothing — a "Loading…" placeholder — has
@@ -233,6 +234,15 @@ _LAZY_CATEGORIES = {
 # resolving it, so holding Ctrl+Tab through ten tabs walks one path,
 # not ten.
 _FOLLOW_DELAY = 180
+
+# A single click toggles a row's expansion (CORE-52), but a double
+# click delivers that first press too, so acting on it immediately made
+# opening an object also expand or collapse it (CORE-58). The toggle
+# waits out the double-click interval instead: if a second press lands,
+# it is a double click and the pending toggle is dropped before
+# anything moves. Falls back to GTK's own default when no Gtk.Settings
+# is available (no display, a test harness).
+_DOUBLE_CLICK_TIME = 400
 
 # Which folders an object of a given kind can be sitting in, in the
 # order they are worth looking in. A relation is a table or a view and
@@ -429,6 +439,11 @@ class Sidebar(Gtk.ScrolledWindow):
         # whose load the walk is waiting on, and the tree rows GTK has
         # bound — which is what "already on screen" means when deciding
         # whether the reveal may move the scroll.
+        # The expansion toggle a single click has asked for, still
+        # waiting to see whether a second press turns it into a double
+        # click (CORE-58): the timer and the row it would toggle.
+        self._toggle_source = 0
+        self._toggle_row: Gtk.TreeListRow | None = None
         self._follow_target: tuple[str, str, str] | None = None
         self._follow_source = 0
         self._follow_wait: tuple[Gio.ListStore, int] | None = None
@@ -1852,40 +1867,67 @@ class Sidebar(Gtk.ScrolledWindow):
     def _row_pressed(
         self, _gesture, n_press: int, _x, _y, list_item: Gtk.ListItem
     ) -> None:
-        """A single left click on a row: select it (the ListView's own
-        job, so the press is never claimed) and toggle its expansion
-        (CORE-52). A leaf row only selects. The second press of a
-        double click is left alone — that one is row activation, which
-        opens the object."""
+        """A left click on a row: select it (the ListView's own job, so
+        the press is never claimed) and toggle its expansion (CORE-52).
+        A leaf row only selects.
+
+        A double click delivers its first press here as well, so the
+        toggle is not applied yet — it is held for the double-click
+        interval (CORE-58). The second press cancels it, and what the
+        user sees is the object opening with the tree exactly where it
+        was. Holding costs expansion a fraction of a second; undoing the
+        toggle afterwards would cost a visible flicker instead.
+        """
+        self._cancel_toggle()
         if n_press != 1:
             return
         row = list_item.get_item()
-        if row is None:
+        if row is None or row.get_item().kind not in _EXPANDABLE:
             return
-        if row.get_item().kind in _EXPANDABLE:
+        self._toggle_row = row
+        self._toggle_source = GLib.timeout_add(
+            self._double_click_time(), self._toggle_timeout
+        )
+
+    def _double_click_time(self) -> int:
+        """How long a second press may take to arrive, in
+        milliseconds — the desktop's own setting where there is one."""
+        settings = Gtk.Settings.get_default()
+        if settings is None:
+            return _DOUBLE_CLICK_TIME
+        return settings.get_property("gtk-double-click-time")
+
+    def _toggle_timeout(self) -> bool:
+        """No second press came: the click was a single one after all."""
+        self._toggle_source = 0
+        row, self._toggle_row = self._toggle_row, None
+        if row is not None:
             row.set_expanded(not row.get_expanded())
+        return GLib.SOURCE_REMOVE
+
+    def _cancel_toggle(self) -> None:
+        """Drop the toggle a press asked for without applying it: the
+        second press of a double click, or a click somewhere else."""
+        if self._toggle_source:
+            GLib.source_remove(self._toggle_source)
+            self._toggle_source = 0
+        self._toggle_row = None
 
     def _on_activate(self, _view, position: int) -> None:
         """Double-click or Enter on a row. Every kind opens something:
         a table or view opens its data, a function opens its editable
         definition, and everything else — categories, columns,
         indexes, triggers, events, and any kind added later — opens the
-        read-only info view (frontend/object_info.py). An expandable
-        row also expands, so double-clicking a connection still shows
-        what is inside it."""
+        read-only info view (frontend/object_info.py).
+
+        Activation only opens: expansion is left exactly as it was
+        (CORE-58), so the tree does not move under the pointer at the
+        moment the object arrives. Expanding is the caret's job, a
+        single click's, or the right arrow key's.
+        """
+        self._cancel_toggle()  # the press behind this one asked for a toggle
         row = self._view.get_model().get_item(position)
-        node = row.get_item()
-        if node.kind in (
-            "connection", "database", "schema", "category"
-        ) and not row.get_expanded():
-            row.set_expanded(True)
-        if node.kind == "section" and node.category in _SECTION_CHILD_KINDS:
-            # A section row is the table's Properties view, opened on
-            # that section (CORE-05) — and it still expands, so the
-            # objects inside it stay one click away in the tree.
-            if not row.get_expanded():
-                row.set_expanded(True)
-        self.open_node(node)
+        self.open_node(row.get_item())
 
     # Following the active tab (CORE-55)
 

@@ -1,8 +1,10 @@
 """Sidebar mouse behaviour: expand, open, and the Open menu (CORE-52).
 
-A single click selects and expands and opens nothing; a double click
-(or Enter) opens, focusing an already-open tab rather than stacking a
-second copy (CORE-01); and every row that opens something offers Open
+A single click selects and expands and opens nothing — after the
+double-click interval has passed, so the press a double click shares
+with it moves nothing (CORE-58); a double click (or Enter) opens,
+leaving expansion alone and focusing an already-open tab rather than
+stacking a second copy (CORE-01); and every row that opens something offers Open
 and Open (Window) at the top of its context menu. Open (Window) goes
 through the window's own tear-out path, so there is one way a tab ends
 up popped out.
@@ -119,12 +121,39 @@ def _node(bar, label: str = "", kind: str = "", **kwargs):
 # Clicking
 
 
+def _click(bar, row, presses: int = 1) -> None:
+    """One click on a row: the press, and the double-click interval
+    passing with nothing after it."""
+    item = _ListItem(row)
+    for press in range(1, presses + 1):
+        bar._row_pressed(None, press, 0.0, 0.0, item)
+    _wait_out_the_interval(bar)
+
+
+def _wait_out_the_interval(bar) -> None:
+    """Let the held toggle land, without sleeping for a real 400ms."""
+    if bar._toggle_source:
+        from gi.repository import GLib
+
+        GLib.source_remove(bar._toggle_source)
+        bar._toggle_timeout()
+
+
+def _double_click(bar, row) -> None:
+    """Both presses, then the activation GTK sends behind them."""
+    item = _ListItem(row)
+    bar._row_pressed(None, 1, 0.0, 0.0, item)
+    bar._row_pressed(None, 2, 0.0, 0.0, item)
+    bar._on_activate(bar._view, 0)
+    _wait_out_the_interval(bar)
+
+
 def test_a_single_click_expands_without_opening(sidebar) -> None:
     bar, _profile, opened, _windowed = sidebar
     row = bar._tree.get_item(0)
     assert not row.get_expanded()
 
-    bar._row_pressed(None, 1, 0.0, 0.0, _ListItem(row))
+    _click(bar, row)
 
     assert row.get_expanded()
     assert opened == []
@@ -133,21 +162,43 @@ def test_a_single_click_expands_without_opening(sidebar) -> None:
 def test_a_second_single_click_collapses_it_again(sidebar) -> None:
     bar, _profile, opened, _windowed = sidebar
     row = bar._tree.get_item(0)
-    item = _ListItem(row)
-    bar._row_pressed(None, 1, 0.0, 0.0, item)
-    bar._row_pressed(None, 1, 0.0, 0.0, item)
+    _click(bar, row)
+    _click(bar, row)
     assert not row.get_expanded()
     assert opened == []
 
 
-def test_the_second_press_of_a_double_click_is_left_alone(sidebar) -> None:
-    """That one is row activation; toggling again would undo the
-    expansion the first press just made."""
+def test_the_first_press_does_not_toggle_on_its_own(sidebar) -> None:
+    """It is held until the double-click interval has passed, so a
+    double click never expands anything on the way through (CORE-58)."""
     bar, _profile, _opened, _windowed = sidebar
     row = bar._tree.get_item(0)
     bar._row_pressed(None, 1, 0.0, 0.0, _ListItem(row))
-    bar._row_pressed(None, 2, 0.0, 0.0, _ListItem(row))
+    assert not row.get_expanded()  # nothing moved yet: no flicker to see
+    assert bar._toggle_source
+
+
+def test_a_double_click_leaves_a_collapsed_row_collapsed(sidebar) -> None:
+    bar, _profile, opened, _windowed = sidebar
+    row = bar._tree.get_item(0)
+    assert not row.get_expanded()
+
+    _double_click(bar, row)
+
+    assert not row.get_expanded()
+    assert opened and opened[0][0] == "object"
+
+
+def test_a_double_click_leaves_an_expanded_row_expanded(sidebar) -> None:
+    bar, _profile, opened, _windowed = sidebar
+    row = bar._tree.get_item(0)
+    _click(bar, row)
     assert row.get_expanded()
+
+    _double_click(bar, row)
+
+    assert row.get_expanded()
+    assert opened and opened[0][0] == "object"
 
 
 def test_a_double_click_opens_the_row(sidebar) -> None:

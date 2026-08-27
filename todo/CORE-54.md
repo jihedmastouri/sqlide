@@ -1,6 +1,6 @@
 ## CORE-54 — Users/roles page: scope the tree and name the subject
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-10, CORE-12
 
 ### Problem
@@ -27,8 +27,8 @@ visible.
 
 ### Acceptance criteria
 
-- [ ] Object types that cannot take a grant do not appear in the tree.
-- [ ] A folder whose children are all ungrantable is hidden too, not shown empty.
-- [ ] The filtering comes from provider capabilities; no engine names in the UI.
-- [ ] The selected principal is named at the top of the page at all times.
-- [ ] An engine with no grant support shows an explanation, not a blank tree.
+- [x] Object types that cannot take a grant do not appear in the tree.
+- [x] A folder whose children are all ungrantable is hidden too, not shown empty.
+- [x] The filtering comes from provider capabilities; no engine names in the UI.
+- [x] The selected principal is named at the top of the page at all times.
+- [x] An engine with no grant support shows an explanation, not a blank tree.

@@ -23,6 +23,9 @@
 | CORE-54 | Users/roles page: scope the tree and name the subject | CORE-10, CORE-12 |
 | CORE-55 | Follow the active tab in the sidebar | CORE-01, CORE-52 |
 | CORE-56 | Tabular objects open in their own tab, not the properties panel | CORE-49, CORE-50, CORE-52 |
+| CORE-57 | Sidebar rows are too short and clip their text | CORE-51 |
+| CORE-58 | Double-click must not toggle a tree node | CORE-52 |
+| CORE-59 | Unify the object info view and the properties view | CORE-47, CORE-49, CORE-56 |
 
 ### Cross-engine UI
 

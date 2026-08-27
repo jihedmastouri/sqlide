@@ -341,6 +341,7 @@ def _grant_table(
     return objects.DetailTable(
         title=objects.PROPERTY_SECTION_LABELS["permissions"],
         columns=["Principal", "Privilege", "Source", "Grantor", "Grant option"],
+        tabular=True,
         rows=rows,
         links=links,
         empty_note="(nobody holds a privilege here)",

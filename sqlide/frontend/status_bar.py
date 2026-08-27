@@ -23,6 +23,7 @@ from gi.repository import GLib, Gtk
 
 from sqlide.backend import identity
 from sqlide.frontend import identity as identity_ui
+from sqlide.i18n import _
 
 # How long a transient status message stays before the zone clears.
 STATUS_TIMEOUT_SECONDS = 8
@@ -50,13 +51,13 @@ class StatusBar(Gtk.Box):
         self._name = Gtk.Label(xalign=0)
         self._name.add_css_class("caption-heading")
         self._badge = identity_ui.environment_badge(identity.UNSET)
-        self._read_only = Gtk.Label(label="READ-ONLY", visible=False)
+        self._read_only = Gtk.Label(label=_("READ-ONLY"), visible=False)
         self._read_only.add_css_class("identity-badge")
         self._transaction = Gtk.Label(visible=False)
         self._transaction.add_css_class("caption")
         self._transaction.add_css_class("warning")
         self._connect_button = Gtk.Button(
-            label="Connect", visible=False, valign=Gtk.Align.CENTER
+            label=_("Connect"), visible=False, valign=Gtk.Align.CENTER
         )
         self._connect_button.add_css_class("flat")
         self._connect_button.add_css_class("caption")
@@ -118,7 +119,7 @@ class StatusBar(Gtk.Box):
         identity_ui.set_color(self._swatch, color)
         identity_ui.set_environment(self._badge, environment)
         if not connection:
-            self._name.set_text("No connection")
+            self._name.set_text(_("No connection"))
             self._name.add_css_class("dim-label")
             self._swatch.set_visible(False)
             self._connect_button.set_visible(False)

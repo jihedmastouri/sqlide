@@ -27,6 +27,7 @@ from sqlide.frontend.util import (
     main_menu_button,
     open_workspace_from,
 )
+from sqlide.i18n import _, ngettext
 
 
 def _unique_name(name: str, taken: list[str]) -> str:
@@ -49,13 +50,13 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
 
         header = Adw.HeaderBar()
         header.add_css_class("flat")
-        header.set_title_widget(Gtk.Label(label="Workspaces"))
+        header.set_title_widget(Gtk.Label(label=_("Workspaces")))
         new_button = Gtk.Button(icon_name="list-add-symbolic")
-        describe(new_button, "New workspace")
+        describe(new_button, _("New workspace"))
         new_button.connect("clicked", lambda *_: self._new_workspace())
         header.pack_start(new_button)
         import_button = Gtk.Button(icon_name="document-open-symbolic")
-        describe(import_button, "Import a workspace from an XML file")
+        describe(import_button, _("Import a workspace from an XML file"))
         import_button.connect("clicked", lambda *_: self._import_workspace())
         header.pack_start(import_button)
         header.pack_end(main_menu_button())
@@ -75,13 +76,13 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
         scroller = Gtk.ScrolledWindow(child=clamp, vexpand=True)
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
 
-        create_button = Gtk.Button(label="Create Workspace")
+        create_button = Gtk.Button(label=_("Create Workspace"))
         create_button.add_css_class("suggested-action")
         create_button.add_css_class("pill")
         create_button.connect("clicked", lambda *_: self._new_workspace())
         empty = Adw.StatusPage(
             icon_name="folder-symbolic",
-            title="No workspaces yet",
+            title=_("No workspaces yet"),
             child=create_button,
         )
 
@@ -111,8 +112,10 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
 
     def _workspace_row(self, workspace: Workspace) -> Adw.ActionRow:
         count = len(workspace.connections)
-        subtitle = "no connections" if count == 0 else (
-            "1 connection" if count == 1 else f"{count} connections"
+        subtitle = (
+            _("no connections")
+            if count == 0
+            else ngettext("%d connection", "%d connections", count) % count
         )
         row = Adw.ActionRow(
             title=workspace.name,
@@ -122,7 +125,7 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
         # Colour is never the only cue: the dot sits next to the name.
         row.add_prefix(identity_ui.dot(workspace.color))
         edit = Gtk.Button(icon_name="document-edit-symbolic")
-        describe(edit, "Edit workspace name and colour")
+        describe(edit, _("Edit workspace name and colour"))
         edit.add_css_class("flat")
         edit.set_valign(Gtk.Align.CENTER)
         edit.connect("clicked", lambda *_: self._edit_workspace(workspace))
@@ -132,11 +135,11 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
         return row
 
     def _edit_workspace(self, workspace: Workspace) -> None:
-        dialog = Adw.AlertDialog(heading="Edit Workspace")
+        dialog = Adw.AlertDialog(heading=_("Edit Workspace"))
         name, color = self._identity_fields(workspace.name, workspace.color)
         dialog.set_extra_child(self._identity_group(name, color))
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("save", "Save")
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("save", _("Save"))
         dialog.set_response_appearance(
             "save", Adw.ResponseAppearance.SUGGESTED
         )
@@ -163,11 +166,11 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
         self._refresh()
 
     def _new_workspace(self) -> None:
-        dialog = Adw.AlertDialog(heading="New Workspace")
+        dialog = Adw.AlertDialog(heading=_("New Workspace"))
         name, color = self._identity_fields("", identity.NONE)
         dialog.set_extra_child(self._identity_group(name, color))
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("create", "Create")
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("create", _("Create"))
         dialog.set_response_appearance(
             "create", Adw.ResponseAppearance.SUGGESTED
         )
@@ -195,8 +198,8 @@ class WorkspaceLauncher(Adw.ApplicationWindow):
     def _identity_fields(
         name: str, color: str
     ) -> tuple[Adw.EntryRow, identity_ui.ColorRow]:
-        name_row = Adw.EntryRow(title="Name", text=name)
-        color_row = identity_ui.ColorRow(subtitle="Window colour")
+        name_row = Adw.EntryRow(title=_("Name"), text=name)
+        color_row = identity_ui.ColorRow(subtitle=_("Window colour"))
         color_row.set_color(color)
         return name_row, color_row
 

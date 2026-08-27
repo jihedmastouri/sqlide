@@ -36,6 +36,7 @@ from sqlide.frontend.canvas import (
     text_size,
 )
 from sqlide.frontend.util import describe
+from sqlide.i18n import _, ngettext
 
 _ZOOM_STEPS = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)
 
@@ -232,20 +233,23 @@ class PlanGraph(Gtk.Box):
         zoom_box = Gtk.Box()
         zoom_box.add_css_class("linked")
         zoom_out = Gtk.Button(icon_name="zoom-out-symbolic")
-        describe(zoom_out, "Zoom out")
+        describe(zoom_out, _("Zoom out"))
         zoom_out.connect("clicked", lambda *_: self._step_zoom(-1))
         zoom_in = Gtk.Button(icon_name="zoom-in-symbolic")
-        describe(zoom_in, "Zoom in")
+        describe(zoom_in, _("Zoom in"))
         zoom_in.connect("clicked", lambda *_: self._step_zoom(1))
         zoom_box.append(zoom_out)
         zoom_box.append(zoom_in)
         self._zoom_label = Gtk.Label(label="100%")
         self._zoom_label.add_css_class("dim-label")
+        steps = sum(1 for root in roots for _node in root.walk())
         hint = Gtk.Label(xalign=1, hexpand=True)
         hint.add_css_class("dim-label")
         hint.set_text(
-            f"{sum(1 for root in roots for _ in root.walk())} step(s)"
-            " · hover a step for its full text"
+            _("%(steps)s · hover a step for its full text")
+            % {
+                "steps": ngettext("%d step", "%d steps", steps) % steps,
+            }
         )
         bar.append(zoom_box)
         bar.append(self._zoom_label)

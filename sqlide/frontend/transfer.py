@@ -17,6 +17,7 @@ from gi.repository import Adw, Gio, GLib, Gtk
 from sqlide.backend import exchange
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.workspaces import Workspace
+from sqlide.i18n import _
 
 _FILTER_NAME = "sqlide export (*.xml)"
 
@@ -45,7 +46,7 @@ def export_workspace(
 
     def ask_where(include_passwords: bool) -> None:
         dialog = Gtk.FileDialog(
-            title="Export Workspace",
+            title=_("Export Workspace"),
             initial_name=f"{_slug(workspace.name)}.xml",
         )
         dialog.set_filters(_xml_filters())
@@ -84,7 +85,7 @@ def export_connections(
 
     def ask_where(include_passwords: bool) -> None:
         dialog = Gtk.FileDialog(
-            title="Export Connections",
+            title=_("Export Connections"),
             initial_name=f"{_slug(workspace.name)}-connections.xml",
         )
         dialog.set_filters(_xml_filters())
@@ -172,14 +173,14 @@ def _ask_about_passwords(
         then(False)
         return
     dialog = Adw.AlertDialog(
-        heading="Include passwords?",
-        body="Passwords are stored in plain text in the exported file. "
+        heading=_("Include passwords?"),
+        body=_("Passwords are stored in plain text in the exported file. "
         "Without them the file is safe to send, and each connection "
-        "asks for its password once on the machine it lands on.",
+        "asks for its password once on the machine it lands on."),
     )
-    dialog.add_response("cancel", "Cancel")
-    dialog.add_response("without", "Without Passwords")
-    dialog.add_response("with", "Include Passwords")
+    dialog.add_response("cancel", _("Cancel"))
+    dialog.add_response("without", _("Without Passwords"))
+    dialog.add_response("with", _("Include Passwords"))
     dialog.set_response_appearance(
         "with", Adw.ResponseAppearance.DESTRUCTIVE
     )

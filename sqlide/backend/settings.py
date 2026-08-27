@@ -23,6 +23,11 @@ applies.
 
 Settings:
 - theme: "system" | "light" | "dark" (Adw color scheme override)
+- language: which language the UI is in — "system" (the default:
+  follow the environment's locale) or a code sqlide ships a catalogue
+  for, e.g. "fr". Overridden for one run by `--language CODE`. Takes
+  effect at startup: gettext binds before the first widget is built,
+  so a change here asks for a restart rather than retranslating live.
 - editor_font_size: SQL editor font size in points
 - vim_mode: modal Vim editing in SQL editors (GtkSourceView only)
 - confirm_destructive: when the destructive-action ladder engages —
@@ -107,11 +112,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
+from sqlide import i18n
 from sqlide.backend import config, tiles, tomlwrite
 from sqlide.backend.db import metrics
 from sqlide.backend.sql_risk import CONFIRM_MODES, DEFAULT_CONFIRM_MODE
 
 THEMES = ("system", "light", "dark")
+# "system" follows the environment's locale; any other value is a
+# language code sqlide ships a catalogue for (see sqlide/i18n.py).
+LANGUAGES = (i18n.SYSTEM,) + tuple(i18n.LANGUAGES)
+DEFAULT_LANGUAGE = i18n.SYSTEM
 TIME_ZONES = ("local", "utc", "server")
 DEFAULT_TIME_ZONE = "local"
 DEFAULT_FONT_SIZE = 11
@@ -157,6 +167,7 @@ def clamp_side_panel_width(width: int) -> int:
 @dataclass
 class Settings:
     theme: str = "system"
+    language: str = DEFAULT_LANGUAGE
     editor_font_size: int = DEFAULT_FONT_SIZE
     vim_mode: bool = False
     confirm_destructive: str = DEFAULT_CONFIRM_MODE
@@ -235,6 +246,7 @@ class Settings:
 
         return cls(
             theme=choice("theme", THEMES, "system"),
+            language=choice("language", LANGUAGES, DEFAULT_LANGUAGE),
             editor_font_size=number(
                 "editor_font_size", DEFAULT_FONT_SIZE, minimum=1
             ),
@@ -370,6 +382,22 @@ def apply_keyword_case(keyword: str, typed: str = "") -> str:
         else:  # a capital anywhere (SEL, Sel, sElect) -> SELECT
             mode = "upper"
     return keyword.lower() if mode == "lower" else keyword.upper()
+
+
+def configured_language() -> str:
+    """The `language` key as settings.toml has it, read without going
+    through the store. main() needs the language before the app object
+    exists — earlier than the store's own load(), which subscribes the
+    file watcher and would then do it twice. A missing or unreadable
+    file gives the default, "system"; do_startup()'s load reports the
+    error properly a moment later.
+    """
+    try:
+        data = config.load_toml(store.path)
+    except Exception:
+        return DEFAULT_LANGUAGE
+    got = data.get("language", DEFAULT_LANGUAGE)
+    return got if got in LANGUAGES else DEFAULT_LANGUAGE
 
 
 def result_row_cap() -> int | None:

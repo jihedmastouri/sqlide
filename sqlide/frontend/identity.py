@@ -19,6 +19,7 @@ from typing import Callable
 from gi.repository import Adw, Gdk, GLib, Gtk
 
 from sqlide.backend import identity
+from sqlide.i18n import _
 
 _provider: Gtk.CssProvider | None = None
 # Surfaces that cannot restyle themselves from CSS — currently the tab
@@ -166,9 +167,9 @@ class EnvironmentRow(Adw.ComboRow):
 
     def __init__(self) -> None:
         super().__init__(
-            title="Environment",
-            subtitle="Staging and production ask before destructive "
-            "statements run",
+            title=_("Environment"),
+            subtitle=_("Staging and production ask before destructive "
+            "statements run"),
             model=Gtk.StringList.new(
                 [identity.ENVIRONMENT_LABELS[e] for e in identity.ENVIRONMENTS]
             ),

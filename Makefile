@@ -20,9 +20,12 @@ UV := $(shell command -v uv 2>/dev/null)
 SERVERS ?= postgres16 mysql8
 DEMO_DB ?= demo.db
 
+# Where a translator is told to send a question about a string.
+BUGS_URL ?= https://github.com/jihedmastouri/sqlide/issues
+
 .DEFAULT_GOAL := help
 .PHONY: help venv install run run-fresh demo test test-sqlite lint fmt check \
-        servers servers-all servers-stop servers-clean init-db \
+        servers servers-all servers-stop servers-clean init-db i18n \
         flatpak web clean
 
 help:  ## List the targets
@@ -92,6 +95,28 @@ servers-clean:  ## Stop the servers and delete their data
 
 init-db: venv  ## Rebuild the demo database on every running server
 	$(BIN)/python scripts/init_databases.py --drop
+
+# Translations. `make i18n` is the whole pipeline: re-extract every
+# string marked with _() or ngettext() into po/sqlide.pot, merge the
+# new template into each po/<lang>.po (so a translator keeps their
+# work and sees what is new), and compile the catalogues into
+# sqlide/locale/, which is where sqlide/i18n.py looks for them. The
+# .mo files are committed so a plain `pip install .` ships them; run
+# this after touching a user-visible string.
+i18n:  ## Re-extract po/sqlide.pot, merge and compile the catalogues
+	xgettext --language=Python --from-code=UTF-8 \
+		--keyword=_ --keyword=N_ --keyword=ngettext:1,2 --keyword=pgettext:1c,2 \
+		--package-name=sqlide --package-version=0.1.0 \
+		--msgid-bugs-address=$(BUGS_URL) \
+		--add-comments=Translators --sort-by-file \
+		-o po/sqlide.pot $$(find sqlide -name '*.py' | sort)
+	@for po in po/*.po; do \
+		lang=$$(basename $$po .po); \
+		msgmerge --quiet --update --backup=none $$po po/sqlide.pot; \
+		mkdir -p sqlide/locale/$$lang/LC_MESSAGES; \
+		msgfmt --check --statistics \
+			-o sqlide/locale/$$lang/LC_MESSAGES/sqlide.mo $$po; \
+	done
 
 flatpak:  ## Build the Flatpak from build-aux/
 	flatpak-builder --force-clean build-dir \

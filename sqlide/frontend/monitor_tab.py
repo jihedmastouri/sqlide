@@ -49,6 +49,7 @@ from sqlide.backend.workspaces import TabState
 from sqlide.frontend import confirm
 from sqlide.frontend.canvas import palette, rgb
 from sqlide.frontend.util import describe, run_async
+from sqlide.i18n import _, format_size
 
 
 #: The sparkline itself. One colour, per theme, reaching 3:1 against
@@ -87,13 +88,13 @@ class MonitorTab(Gtk.Box):
         self._pause = Gtk.ToggleButton(
             icon_name="media-playback-pause-symbolic"
         )
-        describe(self._pause, "Pause polling")
+        describe(self._pause, _("Pause polling"))
         self._pause.connect("toggled", self._toggle_pause)
         header.pack_start(self._pause)
         header.pack_start(self._interval_control())
         refresh = Gtk.Button(icon_name="view-refresh-symbolic")
         refresh.add_css_class("flat")
-        describe(refresh, "Sample the server now")
+        describe(refresh, _("Sample the server now"))
         refresh.connect("clicked", lambda *_: self.refresh_now())
         header.pack_end(refresh)
         self._status = Gtk.Label(xalign=1)
@@ -115,7 +116,7 @@ class MonitorTab(Gtk.Box):
         body.append(self._blocked_group())
         body.append(self._storage_group())
         self._unavailable = Adw.PreferencesGroup(
-            title="Not available on this connection",
+            title=_("Not available on this connection"),
             description="Each of these is a panel this account, server "
             "version or installation cannot fill. Nothing is hidden: the "
             "reason is the panel.",
@@ -145,7 +146,7 @@ class MonitorTab(Gtk.Box):
 
     def _interval_control(self) -> Gtk.Widget:
         box = Gtk.Box(spacing=6)
-        label = Gtk.Label(label="Every")
+        label = Gtk.Label(label=_("Every"))
         label.add_css_class("dim-label")
         adjustment = Gtk.Adjustment(
             value=self._interval,
@@ -154,7 +155,7 @@ class MonitorTab(Gtk.Box):
             step_increment=1,
         )
         self._spin = Gtk.SpinButton(adjustment=adjustment, climb_rate=1)
-        describe(self._spin, "Seconds between samples")
+        describe(self._spin, _("Seconds between samples"))
         self._spin.connect("value-changed", self._interval_changed)
         box.append(label)
         box.append(self._spin)
@@ -165,7 +166,7 @@ class MonitorTab(Gtk.Box):
 
     def _charts_group(self) -> Gtk.Widget:
         group = Adw.PreferencesGroup(
-            title="Throughput and health",
+            title=_("Throughput and health"),
             description="Counters are cumulative on both engines, so every "
             "line is the change since the previous sample over the last "
             f"{int(metrics.WINDOW_SECONDS / 60)} minutes.",
@@ -186,21 +187,21 @@ class MonitorTab(Gtk.Box):
         return group
 
     def _sessions_group(self) -> Gtk.Widget:
-        group = Adw.PreferencesGroup(title="Sessions")
+        group = Adw.PreferencesGroup(title=_("Sessions"))
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
 
         controls = Gtk.Box(spacing=6)
         search = Gtk.SearchEntry(
-            placeholder_text="Filter sessions", hexpand=True
+            placeholder_text=_("Filter sessions"), hexpand=True
         )
         search.connect("search-changed", self._search_changed)
         controls.append(search)
-        self._cancel_button = Gtk.Button(label="Cancel Query")
+        self._cancel_button = Gtk.Button(label=_("Cancel Query"))
         self._cancel_button.set_sensitive(False)
         self._cancel_button.connect(
             "clicked", lambda *_: self._signal_selected(terminate=False)
         )
-        self._kill_button = Gtk.Button(label="End Session")
+        self._kill_button = Gtk.Button(label=_("End Session"))
         self._kill_button.add_css_class("destructive-action")
         self._kill_button.set_sensitive(False)
         self._kill_button.connect(
@@ -250,7 +251,7 @@ class MonitorTab(Gtk.Box):
 
     def _blocked_group(self) -> Gtk.Widget:
         self._blocked = Adw.PreferencesGroup(
-            title="Blocked sessions",
+            title=_("Blocked sessions"),
             description="Sessions waiting on a lock another session holds.",
             visible=False,
         )
@@ -259,14 +260,14 @@ class MonitorTab(Gtk.Box):
 
     def _storage_group(self) -> Gtk.Widget:
         self._storage = Adw.PreferencesGroup(
-            title="Storage",
+            title=_("Storage"),
             description="Sizes change slowly and cost the most to ask for, "
             f"so they are refreshed every {metrics.STORAGE_INTERVAL} "
             "seconds rather than with the panels above.",
         )
         self._storage_rows: list[Gtk.Widget] = []
         self._storage_note = Adw.ActionRow(
-            title="Loading sizes…", subtitle=""
+            title=_("Loading sizes…"), subtitle=""
         )
         self._storage.add(self._storage_note)
         self._storage_rows.append(self._storage_note)
@@ -275,7 +276,7 @@ class MonitorTab(Gtk.Box):
     # Opening: one probe, one connection, then the timers
 
     def _open(self) -> None:
-        self._status.set_text("Connecting…")
+        self._status.set_text(_("Connecting…"))
 
         def work():
             if not registry.driver_available(self.profile.kind):
@@ -306,7 +307,7 @@ class MonitorTab(Gtk.Box):
         run_async(work, done, self._failed)
 
     def _failed(self, exc: Exception) -> None:
-        self._status.set_text("Not sampling")
+        self._status.set_text(_("Not sampling"))
         self._banner.set_title(str(exc))
         self._banner.set_revealed(True)
         self._show_error(f"Monitoring {self.profile.name}: {exc}")
@@ -486,9 +487,9 @@ class MonitorTab(Gtk.Box):
         if storage.detail:
             add("About these sizes", storage.detail)
         for name, size in storage.databases:
-            add(name, f"database · {metrics.format_bytes(size)}")
+            add(name, _("database · %s") % format_size(size))
         for name, size in storage.tables[: metrics.TOP_TABLES]:
-            add(name, f"table · {metrics.format_bytes(size)}")
+            add(name, _("table · %s") % format_size(size))
         if not storage.databases and not storage.tables:
             add("No sizes reported", "This connection sees no databases "
                 "it may measure.")
@@ -518,7 +519,7 @@ class MonitorTab(Gtk.Box):
         if session is not None and session.is_self:
             describe(
                 self._kill_button,
-                "This is the dashboard's own connection",
+                _("This is the dashboard's own connection"),
             )
 
     def _signal_selected(self, *, terminate: bool) -> None:
@@ -575,10 +576,10 @@ class MonitorTab(Gtk.Box):
             "media-playback-start-symbolic" if paused
             else "media-playback-pause-symbolic"
         )
-        describe(button, "Resume polling" if paused else "Pause polling")
+        describe(button, _("Resume polling") if paused else _("Pause polling"))
         if paused:
             self._stop_timers()
-            self._status.set_text("Paused")
+            self._status.set_text(_("Paused"))
         else:
             self._start_timers()
             self.refresh_now()

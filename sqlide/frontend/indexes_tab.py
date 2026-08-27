@@ -26,6 +26,7 @@ from sqlide.backend.db.base import Connector
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend.data_grid import ResultGrid
 from sqlide.frontend.util import describe, run_async
+from sqlide.i18n import _
 
 
 class IndexesTab(Gtk.Box):
@@ -53,7 +54,7 @@ class IndexesTab(Gtk.Box):
         title.add_css_class("heading")
         refresh = Gtk.Button(icon_name="view-refresh-symbolic")
         refresh.add_css_class("flat")
-        describe(refresh, "Reload the index list")
+        describe(refresh, _("Reload the index list"))
         refresh.connect("clicked", lambda *_: self.reload())
         bar.append(title)
         bar.append(refresh)

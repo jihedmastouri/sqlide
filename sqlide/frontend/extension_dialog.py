@@ -26,6 +26,7 @@ from sqlide.backend.db import registry
 from sqlide.backend.db.base import Connector
 from sqlide.frontend import confirm
 from sqlide.frontend.util import run_async
+from sqlide.i18n import _
 
 #: Heading and button per action.
 _ACTIONS = {
@@ -103,7 +104,7 @@ def _present(
     cascade = None
     if cascade_sql:
         cascade = Gtk.CheckButton(
-            label="Also drop the objects the extension owns (CASCADE)"
+            label=_("Also drop the objects the extension owns (CASCADE)")
         )
         cascade.connect(
             "toggled",

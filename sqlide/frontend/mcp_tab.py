@@ -36,6 +36,7 @@ from sqlide.backend.mcp.server import (
     generate_token,
 )
 from sqlide.frontend.util import describe, run_async
+from sqlide.i18n import _
 
 
 class McpServerTab(Gtk.Box):
@@ -88,13 +89,13 @@ class McpServerTab(Gtk.Box):
         page = Adw.PreferencesPage()
 
         connections_group = Adw.PreferencesGroup(
-            title="Connections",
+            title=_("Connections"),
             description="Which connections this server exposes "
             "(read-only, regardless of what they allow elsewhere).",
         )
         if not self._connections:
             connections_group.add(Adw.ActionRow(
-                title="No connections in this workspace",
+                title=_("No connections in this workspace"),
             ))
         for profile in self._connections:
             check = Gtk.CheckButton(
@@ -109,13 +110,13 @@ class McpServerTab(Gtk.Box):
         page.add(connections_group)
 
         access_group = Adw.PreferencesGroup(
-            title="Access Control",
+            title=_("Access Control"),
             description="Port, bind address and what the query tool "
             "is allowed to touch.",
         )
         self._port_row = Adw.SpinRow(
-            title="Port",
-            subtitle="0 picks a free port automatically",
+            title=_("Port"),
+            subtitle=_("0 picks a free port automatically"),
             adjustment=Gtk.Adjustment(
                 lower=0, upper=65535, step_increment=1, value=0
             ),
@@ -130,17 +131,17 @@ class McpServerTab(Gtk.Box):
             "notify::active", lambda *_: self._update_public_warning()
         )
         public_row = Adw.ActionRow(
-            title="Listen on all interfaces",
-            subtitle="Off: 127.0.0.1 only (this machine). On: "
+            title=_("Listen on all interfaces"),
+            subtitle=_("Off: 127.0.0.1 only (this machine). On: "
             "0.0.0.0 — reachable from the network; requires a "
-            "bearer token.",
+            "bearer token."),
         )
         public_row.add_suffix(self._public_switch)
         public_row.set_activatable_widget(self._public_switch)
         access_group.add(public_row)
         self._public_warning = Adw.ActionRow(
-            title="⚠ Anyone reaching this port can query the "
-            "database(s) above without a token disabled.",
+            title=_("⚠ Anyone reaching this port can query the "
+            "database(s) above without a token disabled."),
         )
         self._public_warning.add_css_class("warning")
         access_group.add(self._public_warning)
@@ -150,17 +151,17 @@ class McpServerTab(Gtk.Box):
             active=defaults.get("allow_query", "1") != "0",
         )
         query_row = Adw.ActionRow(
-            title="Enable the query tool",
-            subtitle="Off: catalog only (list_tables/list_columns/"
-            "get_ddl) — no arbitrary SELECT",
+            title=_("Enable the query tool"),
+            subtitle=_("Off: catalog only (list_tables/list_columns/"
+            "get_ddl) — no arbitrary SELECT"),
         )
         query_row.add_suffix(self._query_switch)
         query_row.set_activatable_widget(self._query_switch)
         access_group.add(query_row)
 
         self._row_limit_row = Adw.SpinRow(
-            title="Row limit",
-            subtitle="Maximum rows the query tool returns at once",
+            title=_("Row limit"),
+            subtitle=_("Maximum rows the query tool returns at once"),
             adjustment=Gtk.Adjustment(
                 lower=1, upper=100000, step_increment=100,
                 value=int(defaults.get("row_limit", "500")),
@@ -170,7 +171,7 @@ class McpServerTab(Gtk.Box):
         page.add(access_group)
 
         auth_group = Adw.PreferencesGroup(
-            title="Authentication",
+            title=_("Authentication"),
             description="Checked on every request; a wrong or "
             "missing token gets a 401.",
         )
@@ -183,8 +184,8 @@ class McpServerTab(Gtk.Box):
             "notify::active", lambda *_: self._update_token_visibility()
         )
         auth_row = Adw.ActionRow(
-            title="Require a bearer token",
-            subtitle="Off: no authentication (127.0.0.1 only)",
+            title=_("Require a bearer token"),
+            subtitle=_("Off: no authentication (127.0.0.1 only)"),
         )
         auth_row.add_suffix(self._auth_switch)
         auth_row.set_activatable_widget(self._auth_switch)
@@ -196,7 +197,7 @@ class McpServerTab(Gtk.Box):
         self._token_entry.set_visibility(False)
         regenerate = Gtk.Button(icon_name="view-refresh-symbolic")
         regenerate.add_css_class("flat")
-        describe(regenerate, "Generate a new token")
+        describe(regenerate, _("Generate a new token"))
         regenerate.connect(
             "clicked",
             lambda *_: self._token_entry.set_text(generate_token()),
@@ -204,13 +205,13 @@ class McpServerTab(Gtk.Box):
         token_box = Gtk.Box(spacing=6)
         token_box.append(self._token_entry)
         token_box.append(regenerate)
-        self._token_row = Adw.ActionRow(title="Token")
+        self._token_row = Adw.ActionRow(title=_("Token"))
         self._token_row.add_suffix(token_box)
         auth_group.add(self._token_row)
         page.add(auth_group)
 
         self._start_button = Gtk.Button(
-            label="Start Server", margin_top=12, margin_bottom=24,
+            label=_("Start Server"), margin_top=12, margin_bottom=24,
             margin_start=24, margin_end=24, halign=Gtk.Align.CENTER,
         )
         self._start_button.add_css_class("suggested-action")
@@ -295,18 +296,18 @@ class McpServerTab(Gtk.Box):
             margin_top=12, margin_bottom=12, margin_start=12, margin_end=12,
         )
 
-        url_group = Adw.PreferencesGroup(title="Server URL")
+        url_group = Adw.PreferencesGroup(title=_("Server URL"))
         self._url_row = Adw.ActionRow(title="", selectable=True)
         copy_url = Gtk.Button(icon_name="edit-copy-symbolic")
         copy_url.add_css_class("flat")
-        describe(copy_url, "Copy URL")
+        describe(copy_url, _("Copy URL"))
         copy_url.connect("clicked", self._copy_url)
         self._url_row.add_suffix(copy_url)
         url_group.add(self._url_row)
         page.append(url_group)
 
         config_group = Adw.PreferencesGroup(
-            title="Client Configuration",
+            title=_("Client Configuration"),
             description="Paste into your MCP client's config "
             "(e.g. Claude Desktop/Code).",
         )
@@ -319,9 +320,9 @@ class McpServerTab(Gtk.Box):
         )
         config_scroller.add_css_class("card")
         config_buttons = Gtk.Box(spacing=6, margin_top=6)
-        copy_config = Gtk.Button(label="Copy JSON")
+        copy_config = Gtk.Button(label=_("Copy JSON"))
         copy_config.connect("clicked", self._copy_config)
-        save_config = Gtk.Button(label="Save JSON…")
+        save_config = Gtk.Button(label=_("Save JSON…"))
         save_config.connect("clicked", self._save_config)
         config_buttons.append(copy_config)
         config_buttons.append(save_config)
@@ -334,7 +335,7 @@ class McpServerTab(Gtk.Box):
         page.append(config_group)
 
         log_label = Gtk.Label(
-            label="Request log", xalign=0, margin_top=6
+            label=_("Request log"), xalign=0, margin_top=6
         )
         log_label.add_css_class("dim-label")
         log_label.add_css_class("caption")
@@ -350,7 +351,7 @@ class McpServerTab(Gtk.Box):
         page.append(log_scroller)
 
         stop_button = Gtk.Button(
-            label="Stop Server", margin_top=6, halign=Gtk.Align.CENTER,
+            label=_("Stop Server"), margin_top=6, halign=Gtk.Align.CENTER,
         )
         stop_button.add_css_class("destructive-action")
         stop_button.add_css_class("pill")
@@ -404,7 +405,7 @@ class McpServerTab(Gtk.Box):
 
     def _save_config(self, *_args) -> None:
         dialog = Gtk.FileDialog(
-            title="Save Client Configuration",
+            title=_("Save Client Configuration"),
             initial_name=f"sqlide-{self._workspace_name}-mcp.json",
         )
         dialog.save(self.get_root(), None, self._save_config_finished)

@@ -9,6 +9,16 @@ from typing import Any
 from gi.repository import Gio, GLib, Gtk
 
 from sqlide.backend.settings import DEFAULT_FONT_SIZE, store
+from sqlide.i18n import _, format_number, ngettext
+
+
+def row_count(count: int) -> str:
+    """"N rows" in the reader's language and digits — what a console
+    or a builder puts in its status line. The plural comes from the
+    catalogue, never from `if count == 1`: a language may have one
+    plural form or six, and only the catalogue knows which.
+    """
+    return ngettext("%s row", "%s rows", count) % format_number(count)
 
 
 def describe(widget: Gtk.Widget, label: str) -> Gtk.Widget:
@@ -63,8 +73,10 @@ def font_size_stepper() -> Gtk.Box:
     label = Gtk.Label(hexpand=True)
     label.add_css_class("font-stepper-value")
 
-    minus = icon_button("list-remove-symbolic", "Smaller Editor Font", flat=True)
-    plus = icon_button("list-add-symbolic", "Larger Editor Font", flat=True)
+    minus = icon_button(
+        "list-remove-symbolic", _("Smaller Editor Font"), flat=True
+    )
+    plus = icon_button("list-add-symbolic", _("Larger Editor Font"), flat=True)
     minus.add_css_class("circular")
     plus.add_css_class("circular")
 
@@ -91,10 +103,10 @@ def font_size_stepper() -> Gtk.Box:
 def _app_menu_items(menu: Gio.Menu) -> None:
     """The four items every window's menu ends with (application-level
     actions, see application.py)."""
-    menu.append("Preferences", "app.preferences")
-    menu.append("Keyboard Shortcuts", "app.shortcuts")
-    menu.append("Help", "app.help")
-    menu.append("About sqlide", "app.about")
+    menu.append(_("Preferences"), "app.preferences")
+    menu.append(_("Keyboard Shortcuts"), "app.shortcuts")
+    menu.append(_("Help"), "app.help")
+    menu.append(_("About sqlide"), "app.about")
 
 
 def main_menu_button() -> Gtk.MenuButton:
@@ -103,7 +115,7 @@ def main_menu_button() -> Gtk.MenuButton:
     menu = Gio.Menu()
     _app_menu_items(menu)
     button = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
-    describe(button, "Main menu")
+    describe(button, _("Main menu"))
     return button
 
 
@@ -117,7 +129,7 @@ def workspaces_button() -> Gtk.Button:
     button.connect(
         "clicked", lambda b: b.activate_action("app.show-launcher", None)
     )
-    describe(button, "Workspaces")
+    describe(button, _("Workspaces"))
     return button
 
 
@@ -133,13 +145,13 @@ def sidebar_menu_button() -> Gtk.MenuButton:
     else to go."""
     menu = Gio.Menu()
     tabs = Gio.Menu()
-    tabs.append("Query History", "win.history")
-    tabs.append("Backups", "win.backups")
-    tabs.append("Close All Tabs", "win.close-all-tabs")
+    tabs.append(_("Query History"), "win.history")
+    tabs.append(_("Backups"), "win.backups")
+    tabs.append(_("Close All Tabs"), "win.close-all-tabs")
     menu.append_section(None, tabs)
     _app_menu_items(menu)
     button = Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu)
-    describe(button, "Settings")
+    describe(button, _("Settings"))
     return button
 
 

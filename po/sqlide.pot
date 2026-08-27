@@ -1,0 +1,1967 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the sqlide package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: sqlide 0.1.0\n"
+"Report-Msgid-Bugs-To: https://github.com/jihedmastouri/sqlide/issues\n"
+"POT-Creation-Date: 2026-08-27 23:23+0100\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
+
+#: sqlide/frontend/backup_destinations.py:51
+msgid "Backup Destinations"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:63
+msgid "Destinations"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:70
+msgid "Add"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:87
+msgid "No destinations yet"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:89
+msgid "Add a folder, a bucket or a server to back up to."
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:105
+#: sqlide/frontend/backup_destinations.py:125 sqlide/frontend/window.py:2395
+msgid "Remove"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:120
+msgid ""
+"Jobs pointing at it keep their history but will need a new destination "
+"before they can run. Nothing already written there is deleted."
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:124
+#: sqlide/frontend/backup_restore.py:252 sqlide/frontend/backups_tab.py:612
+#: sqlide/frontend/confirm.py:116 sqlide/frontend/connection_dialog.py:612
+#: sqlide/frontend/data_grid.py:1581 sqlide/frontend/launcher.py:141
+#: sqlide/frontend/launcher.py:172 sqlide/frontend/notes_panel.py:170
+#: sqlide/frontend/notes_panel.py:388 sqlide/frontend/permission_editor.py:530
+#: sqlide/frontend/query_console.py:179 sqlide/frontend/query_console.py:1322
+#: sqlide/frontend/side_panel.py:97 sqlide/frontend/transfer.py:181
+#: sqlide/frontend/users_tab.py:541 sqlide/frontend/window.py:2004
+#: sqlide/frontend/window.py:2302 sqlide/frontend/window.py:2394
+msgid "Cancel"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:168
+#: sqlide/frontend/backup_restore.py:71 sqlide/frontend/backups_tab.py:330
+msgid "Destination"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:181
+#: sqlide/frontend/connection_dialog.py:84 sqlide/frontend/launcher.py:201
+#: sqlide/frontend/users_tab.py:336
+msgid "Name"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:184
+msgid "Kind"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:197
+msgid "Folder"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:199
+msgid "Directory"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:211
+#: sqlide/frontend/backup_destinations.py:215
+msgid "Bucket"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:217
+msgid "Endpoint URL"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:219
+msgid "Region"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:221
+msgid "Access key"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:224
+msgid "Secret key"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:227
+msgid "Key prefix"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:236
+#: sqlide/frontend/connection_dialog.py:157
+msgid "Server"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:237
+#: sqlide/frontend/connection_dialog.py:147 sqlide/frontend/users_tab.py:337
+msgid "Host"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:239 sqlide/frontend/mcp_tab.py:118
+msgid "Port"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:240
+msgid "0 uses the default (22 for SFTP, 21 for FTP)"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:245
+#: sqlide/frontend/connection_dialog.py:149
+#: sqlide/frontend/connection_dialog.py:215
+msgid "User"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:247
+#: sqlide/frontend/connection_dialog.py:150
+#: sqlide/frontend/connection_dialog.py:216 sqlide/frontend/users_tab.py:338
+msgid "Password"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:250
+msgid "Private key file"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:254
+msgid "Use TLS (FTPS)"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:255
+msgid ""
+"Plain FTP sends the password and the dump in the clear. Leave this on unless "
+"the server cannot do TLS."
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:260
+msgid "Remote directory"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:273
+msgid "Test"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:275
+#: sqlide/frontend/backups_tab.py:426 sqlide/frontend/connection_dialog.py:614
+#: sqlide/frontend/definition_tab.py:102 sqlide/frontend/definition_tab.py:485
+#: sqlide/frontend/launcher.py:142 sqlide/frontend/notes_panel.py:173
+#: sqlide/frontend/side_panel.py:98 sqlide/frontend/window.py:2304
+msgid "Save"
+msgstr ""
+
+#: sqlide/frontend/backup_destinations.py:308
+msgid "Backup Folder"
+msgstr ""
+
+#: sqlide/frontend/backup_dialog.py:26
+msgid "Backup & Restore"
+msgstr ""
+
+#: sqlide/frontend/backup_dialog.py:35 sqlide/frontend/backup_restore.py:81
+#: sqlide/frontend/preferences.py:249
+msgid "Backup"
+msgstr ""
+
+#: sqlide/frontend/backup_dialog.py:40
+msgid "Back Up Everything"
+msgstr ""
+
+#: sqlide/frontend/backup_dialog.py:41
+msgid "Choose where to write the zip file"
+msgstr ""
+
+#: sqlide/frontend/backup_dialog.py:50 sqlide/frontend/backup_restore.py:253
+msgid "Restore"
+msgstr ""
+
+#: sqlide/frontend/backup_dialog.py:56
+msgid "Restore From Backup…"
+msgstr ""
+
+#: sqlide/frontend/backup_dialog.py:57
+msgid "Takes effect after restarting sqlide"
+msgstr ""
+
+#: sqlide/frontend/backup_dialog.py:96
+msgid "Save Backup"
+msgstr ""
+
+#: sqlide/frontend/backup_dialog.py:122 sqlide/frontend/backup_restore.py:50
+msgid "Restore Backup"
+msgstr ""
+
+#: sqlide/frontend/backup_restore.py:65
+msgid "What to restore"
+msgstr ""
+
+#: sqlide/frontend/backup_restore.py:85
+msgid "Use a file instead…"
+msgstr ""
+
+#: sqlide/frontend/backup_restore.py:86
+msgid "Any .sql or .sql.gz dump"
+msgstr ""
+
+#: sqlide/frontend/backup_restore.py:95
+msgid "Where to restore it"
+msgstr ""
+
+#: sqlide/frontend/backup_restore.py:101 sqlide/frontend/backups_tab.py:297
+msgid "Connection"
+msgstr ""
+
+#: sqlide/frontend/backup_restore.py:111
+msgid "Database (leave empty for the connection's own)"
+msgstr ""
+
+#: sqlide/frontend/backup_restore.py:129 sqlide/frontend/backups_tab.py:96
+#: sqlide/frontend/backups_tab.py:431
+msgid "Restore…"
+msgstr ""
+
+#: sqlide/frontend/backup_restore.py:200
+msgid "Open Dump File"
+msgstr ""
+
+#: sqlide/frontend/backup_restore.py:226
+msgid "This workspace has no connections."
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:87 sqlide/frontend/util.py:149
+msgid "Backups"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:90
+msgid "New Job"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:93
+msgid "Destinations…"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:140
+msgid "No backup job selected"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:288
+msgid "What to back up"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:289
+msgid "Job name"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:292
+msgid "Contents"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:303 sqlide/frontend/connection_dialog.py:151
+msgid "Database"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:308
+msgid "Schema (PostgreSQL)"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:311
+msgid "Include"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:317
+msgid "Tables"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:318
+msgid "Every table"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:321
+msgid "Choose…"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:329
+msgid "Where it goes"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:331
+msgid "Manage…"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:336
+msgid "Compression"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:344
+msgid "Keep"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:345
+msgid "How many of this job's backups to keep there. 0 keeps every one."
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:356
+msgid "When it runs"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:363
+msgid "Job enabled"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:364
+msgid "Off pauses the schedule; the job can still be run by hand."
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:370
+msgid "Schedule"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:376
+msgid "Every (minutes)"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:383
+msgid "Minutes past the hour"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:389
+msgid "At (HH:MM)"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:392
+msgid "Day"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:396
+msgid "Install a system timer"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:397
+msgid ""
+"Runs this job through systemd, so it happens even when sqlide is closed."
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:407 sqlide/frontend/permission_editor.py:531
+#: sqlide/frontend/pragmas_tab.py:231 sqlide/frontend/query_builder.py:280
+#: sqlide/frontend/query_console.py:158 sqlide/frontend/query_console.py:1324
+msgid "Run"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:415
+msgid "Command"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:416
+msgid "Exactly what sqlide will run"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:429
+msgid "Back Up Now"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:436
+msgid "Delete This Job"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:445
+msgid "History"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:547
+msgid "Pick a connection."
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:609
+msgid ""
+"The job and its run history go away. Backups already written to the "
+"destination are left alone."
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:613 sqlide/frontend/notes_panel.py:348
+#: sqlide/frontend/notes_panel.py:389 sqlide/frontend/side_panel.py:182
+#: sqlide/frontend/side_panel.py:282
+msgid "Delete"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:675
+msgid "No runs yet"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:676
+msgid "Back Up Now runs this job straight away."
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:765
+msgid "Choose Tables"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:785
+msgid "All Tables"
+msgstr ""
+
+#: sqlide/frontend/backups_tab.py:787
+msgid "Use Selection"
+msgstr ""
+
+#: sqlide/frontend/cli_console.py:57
+msgid "Connection this session talks to"
+msgstr ""
+
+#: sqlide/frontend/cli_console.py:58
+msgid "CLI client"
+msgstr ""
+
+#: sqlide/frontend/cli_console.py:62
+msgid "Clear the scrollback"
+msgstr ""
+
+#: sqlide/frontend/cli_console.py:158
+msgid "(no connection) "
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:86
+msgid "Type"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:98
+msgid "Marks this connection's rows, tabs and status bar"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:108
+msgid "Set Production"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:114
+msgid "Dismiss this suggestion"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:119
+msgid "Identity"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:130
+msgid "Database file"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:132
+msgid "New database file…"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:137
+#: sqlide/frontend/connection_dialog.py:371
+msgid "Browse…"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:143
+msgid "SQLite"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:148
+msgid "Port (blank for default)"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:156
+msgid "Schema (blank for the default)"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:174
+msgid "SSL mode"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:175
+msgid "Default keeps the driver's behaviour"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:181
+msgid "SSL"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:186
+msgid "SSH tunnel"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:187
+msgid "Connect through an SSH host"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:191
+msgid "SSH host"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:192
+msgid "SSH port (blank for 22)"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:193
+msgid "SSH user"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:195
+msgid "SSH password (needs the sshtunnel package)"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:206
+msgid "SSH"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:210
+msgid "JDBC URL (jdbc:…)"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:212
+msgid "Driver class (e.g. org.h2.Driver)"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:214
+msgid "Driver jar path"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:217
+msgid "JDBC"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:227
+msgid "Test connection"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:251
+msgid "Create demo database"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:256
+msgid "Nothing to connect to?"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:337
+msgid "This looks like production"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:379
+msgid "Select database file"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:385
+msgid "New SQLite database"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:600
+msgid "Edit Connection"
+msgstr ""
+
+#: sqlide/frontend/connection_dialog.py:602
+msgid "New Connection"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:1386
+msgid "Remove condition"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:1390
+msgid "Close filters"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:1485
+msgid "Sort by this column earlier"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:1489
+msgid "Sort by this column later"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:1493
+msgid "Remove sort column"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:1497
+msgid "Close sort"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:1583
+msgid "Execute"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:1731
+msgid "Previous page"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:1734
+msgid "Next page"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:1742
+msgid "Refresh (discards unsaved edits)"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:1745
+msgid "Filter rows"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:1750
+msgid "Sort rows"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:1753
+msgid "Unlock editing"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:1797
+msgid "Data"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:1798
+msgid "The table's rows"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:1799 sqlide/frontend/preferences.py:280
+msgid "Map"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:1802
+msgid "The rows' geometries drawn on a map"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:2108 sqlide/frontend/query_builder.py:249
+msgid "Add condition"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:2113 sqlide/frontend/data_grid.py:2149
+msgid "Clear"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:2116 sqlide/frontend/data_grid.py:2152
+msgid "Apply"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:2145 sqlide/frontend/query_builder.py:260
+msgid "Add sort column"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:2394
+#, python-format
+msgid "Edit “%s” on production?"
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:2396
+#, python-format
+msgid "Cells you change here are written to %s when you save."
+msgstr ""
+
+#: sqlide/frontend/definition_tab.py:111
+msgid "Reload the definition (discards edits)"
+msgstr ""
+
+#: sqlide/frontend/definition_tab.py:494
+msgid "Reload the stored definition"
+msgstr ""
+
+#: sqlide/frontend/definition_tab.py:558
+msgid "Saved"
+msgstr ""
+
+#: sqlide/frontend/drop_dialog.py:78
+msgid "Also drop dependent objects (CASCADE)"
+msgstr ""
+
+#: sqlide/frontend/extension_dialog.py:107
+msgid "Also drop the objects the extension owns (CASCADE)"
+msgstr ""
+
+#: sqlide/frontend/feedback.py:104
+msgid "Copy Error"
+msgstr ""
+
+#: sqlide/frontend/feedback.py:111
+msgid "Copied"
+msgstr ""
+
+#: sqlide/frontend/help.py:106 sqlide/frontend/util.py:108
+msgid "Help"
+msgstr ""
+
+#: sqlide/frontend/help.py:147 sqlide/frontend/shortcuts.py:48
+#: sqlide/frontend/util.py:107
+msgid "Keyboard Shortcuts"
+msgstr ""
+
+#: sqlide/frontend/history_panel.py:52
+msgid "Which queries to list"
+msgstr ""
+
+#: sqlide/frontend/history_panel.py:56
+msgid "Clear history"
+msgstr ""
+
+#: sqlide/frontend/history_panel.py:66
+msgid "No queries yet"
+msgstr ""
+
+#: sqlide/frontend/history_panel.py:119
+msgid "This run failed"
+msgstr ""
+
+#: sqlide/frontend/identity.py:170
+msgid "Environment"
+msgstr ""
+
+#: sqlide/frontend/identity.py:171
+msgid "Staging and production ask before destructive statements run"
+msgstr ""
+
+#: sqlide/frontend/indexes_tab.py:57
+msgid "Reload the index list"
+msgstr ""
+
+#: sqlide/frontend/launcher.py:53 sqlide/frontend/util.py:132
+msgid "Workspaces"
+msgstr ""
+
+#: sqlide/frontend/launcher.py:55
+msgid "New workspace"
+msgstr ""
+
+#: sqlide/frontend/launcher.py:59
+msgid "Import a workspace from an XML file"
+msgstr ""
+
+#: sqlide/frontend/launcher.py:79
+msgid "Create Workspace"
+msgstr ""
+
+#: sqlide/frontend/launcher.py:85
+msgid "No workspaces yet"
+msgstr ""
+
+#: sqlide/frontend/launcher.py:116
+msgid "no connections"
+msgstr ""
+
+#: sqlide/frontend/launcher.py:118
+#, python-format
+msgid "%d connection"
+msgid_plural "%d connections"
+msgstr[0] ""
+msgstr[1] ""
+
+#: sqlide/frontend/launcher.py:128
+msgid "Edit workspace name and colour"
+msgstr ""
+
+#: sqlide/frontend/launcher.py:138
+msgid "Edit Workspace"
+msgstr ""
+
+#: sqlide/frontend/launcher.py:169
+msgid "New Workspace"
+msgstr ""
+
+#: sqlide/frontend/launcher.py:173 sqlide/frontend/table_designer.py:254
+msgid "Create"
+msgstr ""
+
+#: sqlide/frontend/launcher.py:202 sqlide/frontend/welcome.py:167
+msgid "Window colour"
+msgstr ""
+
+#: sqlide/frontend/map_view.py:119
+msgid "Nothing to Map"
+msgstr ""
+
+#: sqlide/frontend/map_view.py:141 sqlide/frontend/plan_graph.py:239
+#: sqlide/frontend/relation_graph.py:111
+msgid "Zoom in"
+msgstr ""
+
+#: sqlide/frontend/map_view.py:144 sqlide/frontend/plan_graph.py:236
+#: sqlide/frontend/relation_graph.py:108
+msgid "Zoom out"
+msgstr ""
+
+#: sqlide/frontend/map_view.py:147
+msgid "Fit every feature"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:92 sqlide/frontend/window.py:428
+msgid "Connections"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:98
+msgid "No connections in this workspace"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:113
+msgid "Access Control"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:119
+msgid "0 picks a free port automatically"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:134
+msgid "Listen on all interfaces"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:135
+msgid ""
+"Off: 127.0.0.1 only (this machine). On: 0.0.0.0 — reachable from the "
+"network; requires a bearer token."
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:143
+msgid ""
+"⚠ Anyone reaching this port can query the database(s) above without a token "
+"disabled."
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:154
+msgid "Enable the query tool"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:155
+msgid ""
+"Off: catalog only (list_tables/list_columns/get_ddl) — no arbitrary SELECT"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:163
+msgid "Row limit"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:164
+msgid "Maximum rows the query tool returns at once"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:174
+msgid "Authentication"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:187
+msgid "Require a bearer token"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:188
+msgid "Off: no authentication (127.0.0.1 only)"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:200
+msgid "Generate a new token"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:208
+msgid "Token"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:214
+msgid "Start Server"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:299
+msgid "Server URL"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:303
+msgid "Copy URL"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:310
+msgid "Client Configuration"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:323
+msgid "Copy JSON"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:325
+msgid "Save JSON…"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:338
+msgid "Request log"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:354
+msgid "Stop Server"
+msgstr ""
+
+#: sqlide/frontend/mcp_tab.py:408
+msgid "Save Client Configuration"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:91 sqlide/frontend/monitor_tab.py:579
+msgid "Pause polling"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:97
+msgid "Sample the server now"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:119
+msgid "Not available on this connection"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:149
+msgid "Every"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:158
+msgid "Seconds between samples"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:169
+msgid "Throughput and health"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:190
+msgid "Sessions"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:195
+msgid "Filter sessions"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:199
+msgid "Cancel Query"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:204
+msgid "End Session"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:254
+msgid "Blocked sessions"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:263
+msgid "Storage"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:270
+msgid "Loading sizes…"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:279
+msgid "Connecting…"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:310
+msgid "Not sampling"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:490
+#, python-format
+msgid "database · %s"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:492
+#, python-format
+msgid "table · %s"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:522
+msgid "This is the dashboard's own connection"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:579
+msgid "Resume polling"
+msgstr ""
+
+#: sqlide/frontend/monitor_tab.py:582
+msgid "Paused"
+msgstr ""
+
+#: sqlide/frontend/notes_panel.py:62
+msgid "Edit Note"
+msgstr ""
+
+#: sqlide/frontend/notes_panel.py:62
+msgid "New Note"
+msgstr ""
+
+#: sqlide/frontend/notes_panel.py:89
+msgid "Title"
+msgstr ""
+
+#: sqlide/frontend/notes_panel.py:94
+msgid "Scope"
+msgstr ""
+
+#: sqlide/frontend/notes_panel.py:95
+msgid "What this note is about"
+msgstr ""
+
+#: sqlide/frontend/notes_panel.py:153
+msgid "Markdown"
+msgstr ""
+
+#: sqlide/frontend/notes_panel.py:244
+msgid "Which notes to list"
+msgstr ""
+
+#: sqlide/frontend/notes_panel.py:249
+msgid "Add a note"
+msgstr ""
+
+#: sqlide/frontend/notes_panel.py:255
+msgid "Filter title and body"
+msgstr ""
+
+#: sqlide/frontend/notes_panel.py:268
+msgid "No notes yet — the + button writes one"
+msgstr ""
+
+#: sqlide/frontend/notes_panel.py:385
+msgid "Delete note?"
+msgstr ""
+
+#: sqlide/frontend/object_info.py:221
+msgid "Open"
+msgstr ""
+
+#: sqlide/frontend/object_info.py:263
+msgid "Definition"
+msgstr ""
+
+#: sqlide/frontend/object_info.py:266
+msgid "Copy the definition to the clipboard"
+msgstr ""
+
+#: sqlide/frontend/object_info.py:312
+msgid "Reload this object's information"
+msgstr ""
+
+#: sqlide/frontend/object_info.py:590
+msgid "Re-read this object's properties"
+msgstr ""
+
+#: sqlide/frontend/object_info.py:728
+msgid "Open a tab, or pick an object in the tree, to see its properties"
+msgstr ""
+
+#: sqlide/frontend/permission_editor.py:143
+msgid "Pick an object"
+msgstr ""
+
+#: sqlide/frontend/permission_editor.py:165
+msgid "Save…"
+msgstr ""
+
+#: sqlide/frontend/permission_editor.py:168
+msgid "Review and run the pending permission changes"
+msgstr ""
+
+#: sqlide/frontend/permission_editor.py:171
+msgid "Revert"
+msgstr ""
+
+#: sqlide/frontend/permission_editor.py:172
+msgid "Discard every pending change"
+msgstr ""
+
+#: sqlide/frontend/permission_editor.py:222
+msgid "No permissions to edit"
+msgstr ""
+
+#: sqlide/frontend/permission_editor.py:293
+msgid "This object has permission changes waiting to be saved"
+msgstr ""
+
+#: sqlide/frontend/permission_editor.py:334
+#: sqlide/frontend/relation_graph.py:167
+msgid "Loading…"
+msgstr ""
+
+#: sqlide/frontend/permission_editor.py:346
+msgid "Nothing to grant here"
+msgstr ""
+
+#: sqlide/frontend/permission_editor.py:368
+msgid "changed — not saved yet"
+msgstr ""
+
+#: sqlide/frontend/permission_editor.py:374
+msgid "May pass this privilege on to others"
+msgstr ""
+
+#: sqlide/frontend/permission_editor.py:376
+msgid "grant option"
+msgstr ""
+
+#: sqlide/frontend/permission_editor.py:442
+#, python-format
+msgid "%(changes)s on %(objects)s"
+msgstr ""
+
+#: sqlide/frontend/permission_editor.py:445
+#, python-format
+msgid "%d pending change"
+msgid_plural "%d pending changes"
+msgstr[0] ""
+msgstr[1] ""
+
+#: sqlide/frontend/permission_editor.py:449
+#, python-format
+msgid "%d object"
+msgid_plural "%d objects"
+msgstr[0] ""
+msgstr[1] ""
+
+#: sqlide/frontend/permission_editor.py:508
+#, python-format
+msgid "Apply %d statement?"
+msgid_plural "Apply %d statements?"
+msgstr[0] ""
+msgstr[1] ""
+
+#: sqlide/frontend/plan_graph.py:249
+#, python-format
+msgid "%(steps)s · hover a step for its full text"
+msgstr ""
+
+#: sqlide/frontend/plan_graph.py:251
+#, python-format
+msgid "%d step"
+msgid_plural "%d steps"
+msgstr[0] ""
+msgstr[1] ""
+
+#: sqlide/frontend/pragmas_tab.py:132
+msgid "Save as Defaults"
+msgstr ""
+
+#: sqlide/frontend/pragmas_tab.py:136
+msgid ""
+"Store the settings that differ from SQLite's defaults on this connection, "
+"and apply them on every connect"
+msgstr ""
+
+#: sqlide/frontend/pragmas_tab.py:140
+msgid "Advanced"
+msgstr ""
+
+#: sqlide/frontend/pragmas_tab.py:143
+msgid ""
+"Also list the pragmas that can corrupt a database rather than only slow it "
+"down"
+msgstr ""
+
+#: sqlide/frontend/pragmas_tab.py:150
+msgid "Re-read every value from the database"
+msgstr ""
+
+#: sqlide/frontend/pragmas_tab.py:367
+msgid "Saved as connection defaults"
+msgstr ""
+
+#: sqlide/frontend/pragmas_tab.py:375
+msgid "OK"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:39
+msgid "Dark"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:39
+msgid "Follow System"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:39
+msgid "Light"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:42
+msgid "Always"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:43
+msgid "Outside Development"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:44
+msgid "Never"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:48
+msgid "UPPER CASE"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:49
+msgid "lower case"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:50
+msgid "Follow What You Type"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:54
+msgid "This Computer"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:55
+msgid "UTC"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:56
+msgid "Server Default"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:78
+msgid "Language applies when sqlide restarts"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:84
+msgid "General"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:86
+msgid "Appearance"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:96
+msgid "Interface Language"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:98
+msgid ""
+"Follow the system, or pick one of the shipped translations. Takes effect at "
+"the next start."
+msgstr ""
+
+#: sqlide/frontend/preferences.py:102
+msgid "System"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:113
+msgid "Theme"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:123
+msgid "Editor Font Size"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:124
+msgid "In points, for the SQL editor"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:135
+msgid "Vim Mode"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:136
+msgid "Modal Vim editing in SQL editors (needs GtkSourceView)"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:147
+msgid "Show System Schemas"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:148
+msgid ""
+"Keep information_schema and the server's own catalog in the object tree, "
+"dimmed and last"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:161
+msgid "Follow the Active Tab"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:162
+msgid ""
+"Highlight the object the current tab is showing in the tree, expanding the "
+"rows on the way to it"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:175
+msgid "Keyword Completion Case"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:176
+msgid ""
+"How completion spells a keyword. Table and column names always keep the case "
+"the database reports."
+msgstr ""
+
+#: sqlide/frontend/preferences.py:192 sqlide/frontend/results_panel.py:33
+msgid "Results"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:199
+msgid "Maximum Rows Fetched"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:200
+msgid "Per statement in a console or query builder. 0 fetches everything."
+msgstr ""
+
+#: sqlide/frontend/preferences.py:210
+msgid "Session Time Zone"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:211
+msgid ""
+"What a new connection asks the server to report timestamps in. Takes effect "
+"on the next connect."
+msgstr ""
+
+#: sqlide/frontend/preferences.py:226
+msgid "Safety"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:232
+msgid "Confirm Destructive Statements"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:255
+msgid "Backup &amp; Restore…"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:256
+msgid "Export or restore settings and workspaces"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:287
+msgid "Show Map Tiles"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:288
+msgid "Fetch background tiles from the tile server below"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:297
+msgid "Tile URL"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:306
+msgid "Attribution"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:318
+msgid "Maximum Features Drawn"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:341
+msgid "Workspace Transfer"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:386
+msgid "Shortcuts"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:409
+msgid "Language Servers"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:415
+msgid "Enable Language Servers"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:416
+msgid "Schema-aware completion in query consoles"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:427
+msgid "Default Server"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:479
+msgid "Reset to default"
+msgstr ""
+
+#: sqlide/frontend/preferences.py:487
+msgid "Set Shortcut"
+msgstr ""
+
+#: sqlide/frontend/query_builder.py:80
+msgid "Remove join"
+msgstr ""
+
+#: sqlide/frontend/query_builder.py:208 sqlide/frontend/table_designer.py:246
+msgid "Table"
+msgstr ""
+
+#: sqlide/frontend/query_builder.py:214
+msgid "Distinct"
+msgstr ""
+
+#: sqlide/frontend/query_builder.py:218
+msgid "Limit"
+msgstr ""
+
+#: sqlide/frontend/query_builder.py:230
+msgid "Add join"
+msgstr ""
+
+#: sqlide/frontend/query_builder.py:284
+msgid "Open in Console"
+msgstr ""
+
+#: sqlide/frontend/query_builder.py:285
+msgid "Edit this SQL in a new query console"
+msgstr ""
+
+#: sqlide/frontend/query_builder.py:316
+msgid "Loading schema…"
+msgstr ""
+
+#: sqlide/frontend/query_builder.py:592
+msgid "Running…"
+msgstr ""
+
+#: sqlide/frontend/query_builder.py:605
+#, python-format
+msgid "first %s of a larger result"
+msgstr ""
+
+#: sqlide/frontend/query_builder.py:611 sqlide/frontend/query_console.py:1124
+#, python-format
+msgid "%s affected"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:164
+msgid "Run All"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:171
+msgid "Explain"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:187
+msgid "Connection to run against"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:189
+msgid "Database on the server"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:192
+msgid "Schema within the database"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:213 sqlide/frontend/query_console.py:372
+msgid "Completion language server"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:214
+msgid "Ctrl+Enter"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:250
+msgid "Open a file in the editor"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:255
+msgid "Save the editor to a file (the first save asks where)"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:262
+msgid "Open the editor's contents in the system text editor (saves first)"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:367
+msgid "Editor font size"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:380
+msgid "Console settings (this console only)"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:1009
+msgid "Open File"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:1031
+msgid "Save File"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:1110
+#, python-format
+msgid "first %s"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:1204
+#, python-format
+msgid "OK · first %s of a larger result"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:1206
+#, python-format
+msgid "OK · %s"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:1209
+#, python-format
+msgid "Failed · %s"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:1211
+#, python-format
+msgid "OK · %s affected"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:1315
+msgid "Placeholder Values"
+msgstr ""
+
+#: sqlide/frontend/query_console.py:1340
+msgid ""
+"Values go into the SQL as literals (numbers, NULL, TRUE and FALSE go in "
+"bare, everything else quoted) and are remembered in this workspace's file, "
+"so the next run is prefilled."
+msgstr ""
+
+#: sqlide/frontend/relation_graph.py:102
+msgid "Reload tables and relations (recomputes the layout)"
+msgstr ""
+
+#: sqlide/frontend/relation_graph.py:141
+msgid "No Relations"
+msgstr ""
+
+#: sqlide/frontend/results_panel.py:40
+msgid "Minimize or expand the results"
+msgstr ""
+
+#: sqlide/frontend/side_panel.py:235
+msgid "Save the table's current filter"
+msgstr ""
+
+#: sqlide/frontend/side_panel.py:248
+msgid "No saved filters for this table"
+msgstr ""
+
+#: sqlide/frontend/side_panel.py:317
+msgid "No properties to show"
+msgstr ""
+
+#: sqlide/frontend/side_panel.py:345
+msgid "Open a tab to see its details"
+msgstr ""
+
+#: sqlide/frontend/side_panel.py:390
+msgid "Select cells in a grid to summarise them"
+msgstr ""
+
+#: sqlide/frontend/sidebar.py:462 sqlide/frontend/window.py:856
+#: sqlide/frontend/window.py:1018
+msgid "Add Connection"
+msgstr ""
+
+#: sqlide/frontend/sidebar.py:469
+msgid "No connections yet"
+msgstr ""
+
+#: sqlide/frontend/sidebar.py:1206
+msgid "PK"
+msgstr ""
+
+#: sqlide/frontend/sidebar.py:1779
+msgid "Loading DDL…"
+msgstr ""
+
+#: sqlide/frontend/status_bar.py:54
+msgid "READ-ONLY"
+msgstr ""
+
+#: sqlide/frontend/status_bar.py:60
+msgid "Connect"
+msgstr ""
+
+#: sqlide/frontend/status_bar.py:122
+msgid "No connection"
+msgstr ""
+
+#: sqlide/frontend/table_designer.py:76
+msgid "Column type"
+msgstr ""
+
+#: sqlide/frontend/table_designer.py:91
+msgid "Move this column up"
+msgstr ""
+
+#: sqlide/frontend/table_designer.py:95
+msgid "Move this column down"
+msgstr ""
+
+#: sqlide/frontend/table_designer.py:99
+msgid "Remove this column"
+msgstr ""
+
+#: sqlide/frontend/table_designer.py:109
+msgid "Primary key"
+msgstr ""
+
+#: sqlide/frontend/table_designer.py:113
+msgid "Not null"
+msgstr ""
+
+#: sqlide/frontend/table_designer.py:115
+msgid "Default"
+msgstr ""
+
+#: sqlide/frontend/table_designer.py:118
+msgid "SQL expression"
+msgstr ""
+
+#: sqlide/frontend/table_designer.py:252
+msgid "Add Column"
+msgstr ""
+
+#: sqlide/frontend/table_designer.py:271
+msgid "Generated statement"
+msgstr ""
+
+#: sqlide/frontend/table_designer.py:277
+msgid "Copy the generated statement"
+msgstr ""
+
+#: sqlide/frontend/transfer.py:49
+msgid "Export Workspace"
+msgstr ""
+
+#: sqlide/frontend/transfer.py:88
+msgid "Export Connections"
+msgstr ""
+
+#: sqlide/frontend/transfer.py:176
+msgid "Include passwords?"
+msgstr ""
+
+#: sqlide/frontend/transfer.py:177
+msgid ""
+"Passwords are stored in plain text in the exported file. Without them the "
+"file is safe to send, and each connection asks for its password once on the "
+"machine it lands on."
+msgstr ""
+
+#: sqlide/frontend/transfer.py:182
+msgid "Without Passwords"
+msgstr ""
+
+#: sqlide/frontend/transfer.py:183
+msgid "Include Passwords"
+msgstr ""
+
+#: sqlide/frontend/users_tab.py:95
+msgid "No accounts reported"
+msgstr ""
+
+#: sqlide/frontend/users_tab.py:104
+msgid "Filter accounts"
+msgstr ""
+
+#: sqlide/frontend/users_tab.py:113
+msgid "New User…"
+msgstr ""
+
+#: sqlide/frontend/users_tab.py:118
+msgid "Reload the account list"
+msgstr ""
+
+#: sqlide/frontend/users_tab.py:363
+msgid "New password"
+msgstr ""
+
+#: sqlide/frontend/users_tab.py:412
+msgid "On"
+msgstr ""
+
+#: sqlide/frontend/users_tab.py:418
+msgid "Privileges"
+msgstr ""
+
+#: sqlide/frontend/util.py:21
+#, python-format
+msgid "%s row"
+msgid_plural "%s rows"
+msgstr[0] ""
+msgstr[1] ""
+
+#: sqlide/frontend/util.py:77
+msgid "Smaller Editor Font"
+msgstr ""
+
+#: sqlide/frontend/util.py:79
+msgid "Larger Editor Font"
+msgstr ""
+
+#: sqlide/frontend/util.py:106
+msgid "Preferences"
+msgstr ""
+
+#: sqlide/frontend/util.py:109
+msgid "About sqlide"
+msgstr ""
+
+#: sqlide/frontend/util.py:118
+msgid "Main menu"
+msgstr ""
+
+#: sqlide/frontend/util.py:148
+msgid "Query History"
+msgstr ""
+
+#: sqlide/frontend/util.py:150 sqlide/frontend/window.py:251
+msgid "Close All Tabs"
+msgstr ""
+
+#: sqlide/frontend/util.py:154
+msgid "Settings"
+msgstr ""
+
+#: sqlide/frontend/welcome.py:72
+msgid "Welcome to sqlide"
+msgstr ""
+
+#: sqlide/frontend/welcome.py:109
+msgid "Import…"
+msgstr ""
+
+#: sqlide/frontend/welcome.py:115
+msgid "Import a workspace exported from another machine (XML)"
+msgstr ""
+
+#: sqlide/frontend/welcome.py:138
+msgid "Welcome"
+msgstr ""
+
+#: sqlide/frontend/welcome.py:163
+msgid "Create your first workspace"
+msgstr ""
+
+#: sqlide/frontend/welcome.py:164
+msgid "Workspace name"
+msgstr ""
+
+#: sqlide/frontend/welcome.py:173
+msgid "Continue"
+msgstr ""
+
+#: sqlide/frontend/welcome.py:196
+msgid "Add a connection"
+msgstr ""
+
+#: sqlide/frontend/window.py:244
+msgid "Properties"
+msgstr ""
+
+#: sqlide/frontend/window.py:245
+msgid "Properties (Window)"
+msgstr ""
+
+#: sqlide/frontend/window.py:247
+msgid "Close Tab"
+msgstr ""
+
+#: sqlide/frontend/window.py:249
+msgid "Close Other Tabs"
+msgstr ""
+
+#: sqlide/frontend/window.py:250
+msgid "Close Tabs to the Right"
+msgstr ""
+
+#: sqlide/frontend/window.py:254
+msgid "Move to New Window"
+msgstr ""
+
+#: sqlide/frontend/window.py:256
+msgid "Move Back to Main Window"
+msgstr ""
+
+#: sqlide/frontend/window.py:489
+msgid "Nothing Open"
+msgstr ""
+
+#: sqlide/frontend/window.py:506
+msgid "Query Console"
+msgstr ""
+
+#: sqlide/frontend/window.py:507
+msgid "CLI Client"
+msgstr ""
+
+#: sqlide/frontend/window.py:508
+msgid "Query Builder"
+msgstr ""
+
+#: sqlide/frontend/window.py:511
+msgid "MCP Server"
+msgstr ""
+
+#: sqlide/frontend/window.py:514
+msgid "New"
+msgstr ""
+
+#: sqlide/frontend/window.py:516
+msgid "New query console"
+msgstr ""
+
+#: sqlide/frontend/window.py:529
+msgid "Split View"
+msgstr ""
+
+#: sqlide/frontend/window.py:535
+msgid "View open tabs"
+msgstr ""
+
+#: sqlide/frontend/window.py:597
+msgid "Toggle side panel"
+msgstr ""
+
+#: sqlide/frontend/window.py:796
+msgid "Find objects…"
+msgstr ""
+
+#: sqlide/frontend/window.py:817
+msgid "Filter search by object kind"
+msgstr ""
+
+#: sqlide/frontend/window.py:831
+msgid "Exit search"
+msgstr ""
+
+#: sqlide/frontend/window.py:866
+msgid "Search objects"
+msgstr ""
+
+#: sqlide/frontend/window.py:880
+msgid "Refresh schemas"
+msgstr ""
+
+#: sqlide/frontend/window.py:921
+msgid "All"
+msgstr ""
+
+#: sqlide/frontend/window.py:1010
+msgid "New Query Console"
+msgstr ""
+
+#: sqlide/frontend/window.py:1614
+msgid "Open Transaction"
+msgstr ""
+
+#: sqlide/frontend/window.py:1618 sqlide/frontend/window.py:1645
+msgid "Keep Open"
+msgstr ""
+
+#: sqlide/frontend/window.py:1619 sqlide/frontend/window.py:2006
+msgid "Roll Back and Close"
+msgstr ""
+
+#: sqlide/frontend/window.py:1641
+msgid "MCP Server Running"
+msgstr ""
+
+#: sqlide/frontend/window.py:1642
+msgid "This server is still running. Close the tab anyway and stop it?"
+msgstr ""
+
+#: sqlide/frontend/window.py:1646
+msgid "Stop and Close"
+msgstr ""
+
+#: sqlide/frontend/window.py:2003
+msgid "Close Workspace?"
+msgstr ""
+
+#: sqlide/frontend/window.py:2006
+msgid "Close"
+msgstr ""
+
+#: sqlide/frontend/window.py:2164
+#, python-format
+msgid "Disconnect “%s”?"
+msgstr ""
+
+#: sqlide/frontend/window.py:2166
+#, python-format
+msgid ""
+"%d query is still running on this connection. Disconnecting cancels the run "
+"and closes the session."
+msgid_plural ""
+"%d queries are still running on this connection. Disconnecting cancels the "
+"runs and closes the session."
+msgstr[0] ""
+msgstr[1] ""
+
+#: sqlide/frontend/window.py:2174
+msgid "Keep Connected"
+msgstr ""
+
+#: sqlide/frontend/window.py:2175
+msgid "Disconnect Anyway"
+msgstr ""
+
+#: sqlide/frontend/window.py:2294
+#, python-format
+msgid "Close %(count)d tab on “%(name)s”?"
+msgid_plural "Close %(count)d tabs on “%(name)s”?"
+msgstr[0] ""
+msgstr[1] ""
+
+#: sqlide/frontend/window.py:2299
+#, python-format
+msgid ""
+"These tabs have work that was never written:\n"
+"\n"
+"%s"
+msgstr ""
+
+#: sqlide/frontend/window.py:2303
+msgid "Discard"
+msgstr ""
+
+#: sqlide/frontend/window.py:2343
+#, python-format
+msgid "Closed %(count)d tab on %(name)s"
+msgid_plural "Closed %(count)d tabs on %(name)s"
+msgstr[0] ""
+msgstr[1] ""
+
+#: sqlide/frontend/window.py:2390
+msgid ""
+"This removes the connection from this workspace. Tabs already open on it are "
+"left as-is and will show an error next time they run."
+msgstr ""
+
+#: sqlide/i18n.py:218
+msgid "B"
+msgstr ""
+
+#: sqlide/i18n.py:219
+msgid "kB"
+msgstr ""
+
+#: sqlide/i18n.py:220
+msgid "MB"
+msgstr ""
+
+#: sqlide/i18n.py:221
+msgid "GB"
+msgstr ""
+
+#: sqlide/i18n.py:222
+msgid "TB"
+msgstr ""
+
+#: sqlide/i18n.py:229
+#, python-format
+msgid "%(size)s %(unit)s"
+msgstr ""

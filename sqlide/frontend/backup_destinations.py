@@ -28,6 +28,7 @@ from sqlide.backend.backups.jobs import (
     Destination,
 )
 from sqlide.frontend.util import run_async
+from sqlide.i18n import _
 
 _KIND_LABELS = {
     LOCAL: "This machine",
@@ -47,7 +48,7 @@ class DestinationsWindow(Adw.Window):
         **kwargs,
     ) -> None:
         super().__init__(
-            title="Backup Destinations",
+            title=_("Backup Destinations"),
             default_width=520,
             default_height=560,
             **kwargs,
@@ -59,14 +60,14 @@ class DestinationsWindow(Adw.Window):
         self._rows: list[Gtk.Widget] = []
 
         self._group = Adw.PreferencesGroup(
-            title="Destinations",
+            title=_("Destinations"),
             description="Where backup files are written. A destination "
             "can be shared by any number of jobs.",
         )
         page = Adw.PreferencesPage()
         page.add(self._group)
 
-        add = Gtk.Button(icon_name="list-add-symbolic", tooltip_text="Add")
+        add = Gtk.Button(icon_name="list-add-symbolic", tooltip_text=_("Add"))
         add.connect("clicked", lambda *_: self._edit(None))
         header = Adw.HeaderBar()
         header.pack_start(add)
@@ -83,8 +84,10 @@ class DestinationsWindow(Adw.Window):
         self._rows = []
         if not self._store.destinations:
             empty = Adw.ActionRow(
-                title="No destinations yet",
-                subtitle="Add a folder, a bucket or a server to back up to.",
+                title=_("No destinations yet"),
+                subtitle=_(
+                    "Add a folder, a bucket or a server to back up to."
+                ),
             )
             self._group.add(empty)
             self._rows.append(empty)
@@ -99,7 +102,7 @@ class DestinationsWindow(Adw.Window):
             remove = Gtk.Button(
                 icon_name="user-trash-symbolic",
                 valign=Gtk.Align.CENTER,
-                tooltip_text="Remove",
+                tooltip_text=_("Remove"),
             )
             remove.add_css_class("flat")
             remove.connect(
@@ -114,12 +117,12 @@ class DestinationsWindow(Adw.Window):
         dialog = Adw.MessageDialog(
             transient_for=self,
             heading=f"Remove {destination.name}?",
-            body="Jobs pointing at it keep their history but will need a "
+            body=_("Jobs pointing at it keep their history but will need a "
             "new destination before they can run. Nothing already "
-            "written there is deleted.",
+            "written there is deleted."),
         )
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("remove", "Remove")
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("remove", _("Remove"))
         dialog.set_response_appearance(
             "remove", Adw.ResponseAppearance.DESTRUCTIVE
         )
@@ -162,7 +165,10 @@ class DestinationEditor(Adw.Window):
         **kwargs,
     ) -> None:
         super().__init__(
-            title="Destination", default_width=480, default_height=560, **kwargs
+            title=_("Destination"),
+            default_width=480,
+            default_height=560,
+            **kwargs,
         )
         self._store = store
         self._on_saved = on_saved
@@ -172,10 +178,10 @@ class DestinationEditor(Adw.Window):
         page = Adw.PreferencesPage()
 
         general = Adw.PreferencesGroup()
-        self._name = Adw.EntryRow(title="Name", text=self._destination.name)
+        self._name = Adw.EntryRow(title=_("Name"), text=self._destination.name)
         general.add(self._name)
         self._kind = Adw.ComboRow(
-            title="Kind",
+            title=_("Kind"),
             model=Gtk.StringList.new(
                 [_KIND_LABELS[k] for k in DESTINATION_KINDS]
             ),
@@ -188,9 +194,9 @@ class DestinationEditor(Adw.Window):
         page.add(general)
 
         d = self._destination
-        self._local = Adw.PreferencesGroup(title="Folder")
+        self._local = Adw.PreferencesGroup(title=_("Folder"))
         self._path_local = Adw.EntryRow(
-            title="Directory", text=d.path if d.kind == LOCAL else ""
+            title=_("Directory"), text=d.path if d.kind == LOCAL else ""
         )
         browse = Gtk.Button(
             icon_name="folder-open-symbolic", valign=Gtk.Align.CENTER
@@ -202,21 +208,23 @@ class DestinationEditor(Adw.Window):
         page.add(self._local)
 
         self._s3 = Adw.PreferencesGroup(
-            title="Bucket",
+            title=_("Bucket"),
             description="Any S3-compatible service: AWS, MinIO, Backblaze "
             "B2, Cloudflare R2, Wasabi. Leave the endpoint empty for AWS.",
         )
-        self._bucket = Adw.EntryRow(title="Bucket", text=d.bucket)
+        self._bucket = Adw.EntryRow(title=_("Bucket"), text=d.bucket)
         self._endpoint = Adw.EntryRow(
-            title="Endpoint URL", text=d.endpoint_url
+            title=_("Endpoint URL"), text=d.endpoint_url
         )
-        self._region = Adw.EntryRow(title="Region", text=d.region)
-        self._access_key = Adw.EntryRow(title="Access key", text=d.access_key)
+        self._region = Adw.EntryRow(title=_("Region"), text=d.region)
+        self._access_key = Adw.EntryRow(
+            title=_("Access key"), text=d.access_key
+        )
         self._secret_key = Adw.PasswordEntryRow(
-            title="Secret key", text=d.secret_key
+            title=_("Secret key"), text=d.secret_key
         )
         self._prefix = Adw.EntryRow(
-            title="Key prefix", text=d.path if d.kind != LOCAL else ""
+            title=_("Key prefix"), text=d.path if d.kind != LOCAL else ""
         )
         for row in (
             self._bucket, self._endpoint, self._region,
@@ -225,31 +233,31 @@ class DestinationEditor(Adw.Window):
             self._s3.add(row)
         page.add(self._s3)
 
-        self._server = Adw.PreferencesGroup(title="Server")
-        self._host = Adw.EntryRow(title="Host", text=d.host)
+        self._server = Adw.PreferencesGroup(title=_("Server"))
+        self._host = Adw.EntryRow(title=_("Host"), text=d.host)
         self._port = Adw.SpinRow(
-            title="Port",
-            subtitle="0 uses the default (22 for SFTP, 21 for FTP)",
+            title=_("Port"),
+            subtitle=_("0 uses the default (22 for SFTP, 21 for FTP)"),
             adjustment=Gtk.Adjustment(
                 lower=0, upper=65535, step_increment=1, value=d.port
             ),
         )
-        self._user = Adw.EntryRow(title="User", text=d.user)
+        self._user = Adw.EntryRow(title=_("User"), text=d.user)
         self._password = Adw.PasswordEntryRow(
-            title="Password", text=d.password
+            title=_("Password"), text=d.password
         )
         self._key_path = Adw.EntryRow(
-            title="Private key file",
+            title=_("Private key file"),
             text=d.key_path,
         )
         self._tls = Adw.SwitchRow(
-            title="Use TLS (FTPS)",
-            subtitle="Plain FTP sends the password and the dump in the "
-            "clear. Leave this on unless the server cannot do TLS.",
+            title=_("Use TLS (FTPS)"),
+            subtitle=_("Plain FTP sends the password and the dump in the "
+            "clear. Leave this on unless the server cannot do TLS."),
             active=d.tls,
         )
         self._remote_dir = Adw.EntryRow(
-            title="Remote directory", text=d.path if d.kind != LOCAL else ""
+            title=_("Remote directory"), text=d.path if d.kind != LOCAL else ""
         )
         for row in (
             self._host, self._port, self._user, self._password,
@@ -262,9 +270,9 @@ class DestinationEditor(Adw.Window):
                                  margin_end=12, margin_bottom=12)
         self._status.add_css_class("dim-label")
 
-        test = Gtk.Button(label="Test")
+        test = Gtk.Button(label=_("Test"))
         test.connect("clicked", lambda *_: self._test())
-        save = Gtk.Button(label="Save")
+        save = Gtk.Button(label=_("Save"))
         save.add_css_class("suggested-action")
         save.connect("clicked", lambda *_: self._save())
         header = Adw.HeaderBar()
@@ -297,7 +305,7 @@ class DestinationEditor(Adw.Window):
             self._set_status("")
 
     def _browse(self) -> None:
-        dialog = Gtk.FileDialog(title="Backup Folder")
+        dialog = Gtk.FileDialog(title=_("Backup Folder"))
 
         def picked(dialog: Gtk.FileDialog, result) -> None:
             try:

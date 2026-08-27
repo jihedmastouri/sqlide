@@ -60,6 +60,7 @@ from sqlide.frontend.history_panel import HistoryPanel
 from sqlide.frontend.notes_panel import NotesPage
 from sqlide.frontend.sql_editor import SqlEditor
 from sqlide.frontend.util import describe
+from sqlide.i18n import _
 
 _CONTEXT_PAGES = {
     "console": (
@@ -93,8 +94,8 @@ def ask_name(
     """Small name prompt used when saving snippets/queries/filters."""
     entry = Gtk.Entry(text=initial, activates_default=True)
     dialog = Adw.AlertDialog(heading=heading, extra_child=entry)
-    dialog.add_response("cancel", "Cancel")
-    dialog.add_response("save", "Save")
+    dialog.add_response("cancel", _("Cancel"))
+    dialog.add_response("save", _("Save"))
     dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
     dialog.set_default_response("save")
     dialog.set_close_response("cancel")
@@ -178,7 +179,7 @@ class _SavedSqlList(Gtk.Box):
             row.set_tooltip_text(item.sql)
             delete = Gtk.Button(icon_name="user-trash-symbolic")
             delete.add_css_class("flat")
-            describe(delete, "Delete")
+            describe(delete, _("Delete"))
             delete.connect(
                 "clicked", lambda _b, it=item: self._store.remove(it)
             )
@@ -231,7 +232,7 @@ class _FiltersPage(Gtk.Box):
         controls.append(self._target_label)
         add = Gtk.Button(icon_name="list-add-symbolic")
         add.add_css_class("flat")
-        describe(add, "Save the table's current filter")
+        describe(add, _("Save the table's current filter"))
         add.connect(
             "clicked",
             lambda *_: ask_name(self, "Save Filter As", "", on_save),
@@ -244,7 +245,9 @@ class _FiltersPage(Gtk.Box):
         self._list.add_css_class("navigation-sidebar")
         self._list.connect("row-activated", self._row_activated)
         placeholder = Gtk.Label(
-            label="No saved filters for this table", margin_top=24, wrap=True
+            label=_("No saved filters for this table"),
+            margin_top=24,
+            wrap=True,
         )
         placeholder.add_css_class("dim-label")
         self._list.set_placeholder(placeholder)
@@ -276,7 +279,7 @@ class _FiltersPage(Gtk.Box):
             row.set_subtitle_lines(2)
             delete = Gtk.Button(icon_name="user-trash-symbolic")
             delete.add_css_class("flat")
-            describe(delete, "Delete")
+            describe(delete, _("Delete"))
             delete.connect(
                 "clicked", lambda _b, e=entry: self._on_delete(e)
             )
@@ -311,7 +314,7 @@ class SidePanel(Gtk.Box):
         self._properties = properties
         if self._properties is None:
             placeholder = Gtk.Label(
-                label="No properties to show", margin_top=24, wrap=True
+                label=_("No properties to show"), margin_top=24, wrap=True
             )
             placeholder.add_css_class("dim-label")
             self._properties = placeholder
@@ -339,7 +342,7 @@ class SidePanel(Gtk.Box):
         )
         self._ddl_view = SqlEditor(editable=False)
         self._info_placeholder = Gtk.Label(
-            label="Open a tab to see its details", margin_top=24
+            label=_("Open a tab to see its details"), margin_top=24
         )
         self._info_placeholder.add_css_class("dim-label")
         info_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -384,7 +387,7 @@ class SidePanel(Gtk.Box):
         )
         self._agg_label.add_css_class("aggregate-summary")
         self._agg_placeholder = Gtk.Label(
-            label="Select cells in a grid to summarise them",
+            label=_("Select cells in a grid to summarise them"),
             margin_top=24,
             wrap=True,
         )

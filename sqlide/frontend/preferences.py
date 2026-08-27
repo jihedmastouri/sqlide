@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from gi.repository import Adw, Gdk, GObject, Gtk
 
-from sqlide import APP_ID, __version__
+from sqlide import APP_ID, __version__, i18n
 from sqlide.backend.settings import (
     KEYWORD_CASES,
     THEMES,
@@ -23,6 +23,7 @@ from sqlide.backend.settings import (
 from sqlide.backend.sql_risk import CONFIRM_MODES
 from sqlide.frontend import feedback, keymap
 from sqlide.frontend.backup_dialog import BackupWindow
+from sqlide.i18n import _, N_
 from sqlide.lsp import servers as lsp_servers
 
 # Connection kinds that get a default-LSP row, with display titles.
@@ -32,25 +33,34 @@ _LSP_KINDS = (
     ("postgres", "PostgreSQL"),
     ("jdbc", "JDBC"),
 )
-_THEME_LABELS = ("Follow System", "Light", "Dark")
+# These tables are built at import time, before install() has bound
+# the catalogue, so they are marked with N_ and translated where they
+# are read (see _labels).
+_THEME_LABELS = (N_("Follow System"), N_("Light"), N_("Dark"))
 # Parallel to sql_risk.CONFIRM_MODES.
 _CONFIRM_LABELS = (
-    "Always",
-    "Outside Development",
-    "Never",
+    N_("Always"),
+    N_("Outside Development"),
+    N_("Never"),
 )
 # Parallel to settings.KEYWORD_CASES.
 _KEYWORD_CASE_LABELS = (
-    "UPPER CASE",
-    "lower case",
-    "Follow What You Type",
+    N_("UPPER CASE"),
+    N_("lower case"),
+    N_("Follow What You Type"),
 )
 # Parallel to settings.TIME_ZONES.
 _TIME_ZONE_LABELS = (
-    "This Computer",
-    "UTC",
-    "Server Default",
+    N_("This Computer"),
+    N_("UTC"),
+    N_("Server Default"),
 )
+
+
+def _labels(labels: tuple[str, ...]) -> Gtk.StringList:
+    """A combo row's model, with every label translated now — the
+    strings themselves were marked with N_ at import time."""
+    return Gtk.StringList.new([_(label) for label in labels])
 
 
 class PreferencesDialog(Adw.PreferencesDialog):
@@ -60,16 +70,47 @@ class PreferencesDialog(Adw.PreferencesDialog):
         self.add(self._shortcuts_page())
         self.add(self._lsp_page(store.settings))
 
+    def _on_language_selected(self, row, *_args) -> None:
+        code = self._language_codes[row.get_selected()]
+        if code == store.settings.language:
+            return
+        store.update(language=code)
+        feedback.toast(self, _("Language applies when sqlide restarts"))
+
     # General: appearance
 
     def _general_page(self, settings: Settings) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage(
-            title="General", icon_name="preferences-system-symbolic"
+            title=_("General"), icon_name="preferences-system-symbolic"
         )
-        group = Adw.PreferencesGroup(title="Appearance")
+        group = Adw.PreferencesGroup(title=_("Appearance"))
+
+        # Only the languages with a compiled catalogue behind them —
+        # offering one we do not ship would be a promise the app
+        # cannot keep. "System" first, then each language named in
+        # itself. The catalogue binds at startup, before the first
+        # widget exists, so a change here asks for a restart rather
+        # than retranslating the running UI.
+        self._language_codes = [i18n.SYSTEM, *i18n.available_languages()]
+        language_row = Adw.ComboRow(
+            title=_("Interface Language"),
+            subtitle=_(
+                "Follow the system, or pick one of the shipped "
+                "translations. Takes effect at the next start."
+            ),
+            model=Gtk.StringList.new(
+                [_("System"), *i18n.available_languages().values()]
+            ),
+        )
+        if settings.language in self._language_codes:
+            language_row.set_selected(
+                self._language_codes.index(settings.language)
+            )
+        language_row.connect("notify::selected", self._on_language_selected)
+        group.add(language_row)
 
         theme_row = Adw.ComboRow(
-            title="Theme", model=Gtk.StringList.new(list(_THEME_LABELS))
+            title=_("Theme"), model=_labels(_THEME_LABELS)
         )
         theme_row.set_selected(THEMES.index(settings.theme))
         theme_row.connect(
@@ -79,8 +120,8 @@ class PreferencesDialog(Adw.PreferencesDialog):
         group.add(theme_row)
 
         font_row = Adw.SpinRow.new_with_range(6, 32, 1)
-        font_row.set_title("Editor Font Size")
-        font_row.set_subtitle("In points, for the SQL editor")
+        font_row.set_title(_("Editor Font Size"))
+        font_row.set_subtitle(_("In points, for the SQL editor"))
         font_row.set_value(settings.editor_font_size)
         font_row.connect(
             "notify::value",
@@ -91,9 +132,9 @@ class PreferencesDialog(Adw.PreferencesDialog):
         group.add(font_row)
 
         vim_row = Adw.SwitchRow(
-            title="Vim Mode",
-            subtitle="Modal Vim editing in SQL editors "
-            "(needs GtkSourceView)",
+            title=_("Vim Mode"),
+            subtitle=_("Modal Vim editing in SQL editors "
+            "(needs GtkSourceView)"),
         )
         vim_row.set_active(settings.vim_mode)
         vim_row.connect(
@@ -103,9 +144,9 @@ class PreferencesDialog(Adw.PreferencesDialog):
         group.add(vim_row)
 
         system_row = Adw.SwitchRow(
-            title="Show System Schemas",
-            subtitle="Keep information_schema and the server's own "
-            "catalog in the object tree, dimmed and last",
+            title=_("Show System Schemas"),
+            subtitle=_("Keep information_schema and the server's own "
+            "catalog in the object tree, dimmed and last"),
         )
         system_row.set_active(settings.show_system_schemas)
         system_row.connect(
@@ -117,9 +158,9 @@ class PreferencesDialog(Adw.PreferencesDialog):
         group.add(system_row)
 
         follow_row = Adw.SwitchRow(
-            title="Follow the Active Tab",
-            subtitle="Highlight the object the current tab is showing "
-            "in the tree, expanding the rows on the way to it",
+            title=_("Follow the Active Tab"),
+            subtitle=_("Highlight the object the current tab is showing "
+            "in the tree, expanding the rows on the way to it"),
         )
         follow_row.set_active(settings.sidebar_follow_active_tab)
         follow_row.connect(
@@ -131,10 +172,10 @@ class PreferencesDialog(Adw.PreferencesDialog):
         group.add(follow_row)
 
         case_row = Adw.ComboRow(
-            title="Keyword Completion Case",
-            subtitle="How completion spells a keyword. Table and "
-            "column names always keep the case the database reports.",
-            model=Gtk.StringList.new(list(_KEYWORD_CASE_LABELS)),
+            title=_("Keyword Completion Case"),
+            subtitle=_("How completion spells a keyword. Table and "
+            "column names always keep the case the database reports."),
+            model=_labels(_KEYWORD_CASE_LABELS),
         )
         case_row.set_selected(KEYWORD_CASES.index(settings.sql_keyword_case))
         case_row.connect(
@@ -148,16 +189,16 @@ class PreferencesDialog(Adw.PreferencesDialog):
         page.add(group)
 
         results = Adw.PreferencesGroup(
-            title="Results",
+            title=_("Results"),
             description="A statement that returns more rows than the "
             "cap is fetched only up to it, and the result is marked as "
             "truncated. Without a cap, one SELECT over a large table "
             "pulls the whole thing into memory.",
         )
         rows_row = Adw.SpinRow.new_with_range(0, 1_000_000, 500)
-        rows_row.set_title("Maximum Rows Fetched")
-        rows_row.set_subtitle("Per statement in a console or query "
-                              "builder. 0 fetches everything.")
+        rows_row.set_title(_("Maximum Rows Fetched"))
+        rows_row.set_subtitle(_("Per statement in a console or query "
+                              "builder. 0 fetches everything."))
         rows_row.set_value(settings.max_result_rows)
         rows_row.connect(
             "notify::value",
@@ -166,10 +207,10 @@ class PreferencesDialog(Adw.PreferencesDialog):
         results.add(rows_row)
 
         zone_row = Adw.ComboRow(
-            title="Session Time Zone",
-            subtitle="What a new connection asks the server to report "
-            "timestamps in. Takes effect on the next connect.",
-            model=Gtk.StringList.new(list(_TIME_ZONE_LABELS)),
+            title=_("Session Time Zone"),
+            subtitle=_("What a new connection asks the server to report "
+            "timestamps in. Takes effect on the next connect."),
+            model=_labels(_TIME_ZONE_LABELS),
         )
         zone_row.set_selected(TIME_ZONES.index(settings.time_zone))
         zone_row.connect(
@@ -182,14 +223,14 @@ class PreferencesDialog(Adw.PreferencesDialog):
         page.add(results)
 
         safety = Adw.PreferencesGroup(
-            title="Safety",
+            title=_("Safety"),
             description="How much friction a DROP, TRUNCATE, DELETE or "
             "UPDATE gets before it runs. Production connections always "
             "ask for the object's name on the destructive ones.",
         )
         confirm_row = Adw.ComboRow(
-            title="Confirm Destructive Statements",
-            model=Gtk.StringList.new(list(_CONFIRM_LABELS)),
+            title=_("Confirm Destructive Statements"),
+            model=_labels(_CONFIRM_LABELS),
         )
         confirm_row.set_selected(
             CONFIRM_MODES.index(settings.confirm_destructive)
@@ -205,14 +246,14 @@ class PreferencesDialog(Adw.PreferencesDialog):
         page.add(self._map_group(settings))
 
         backup_group = Adw.PreferencesGroup(
-            title="Backup",
+            title=_("Backup"),
             description="Settings and workspaces only. Database backups —"
             " scheduled dumps to disk, S3, SFTP or FTP — live in the "
             "Backups tab.",
         )
         backup_row = Adw.ActionRow(
-            title="Backup &amp; Restore…",
-            subtitle="Export or restore settings and workspaces",
+            title=_("Backup &amp; Restore…"),
+            subtitle=_("Export or restore settings and workspaces"),
             activatable=True,
         )
         backup_row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
@@ -236,15 +277,15 @@ class PreferencesDialog(Adw.PreferencesDialog):
         instead of drawing them uncredited.
         """
         group = Adw.PreferencesGroup(
-            title="Map",
+            title=_("Map"),
             description="How the geo viewer draws geometry columns. "
             "Tiles are cached on disk and re-used offline; with tiles "
             "off, geometries are drawn on a plain background and no "
             "request leaves the machine.",
         )
         enable_row = Adw.SwitchRow(
-            title="Show Map Tiles",
-            subtitle="Fetch background tiles from the tile server below",
+            title=_("Show Map Tiles"),
+            subtitle=_("Fetch background tiles from the tile server below"),
         )
         enable_row.set_active(settings.map_tiles_enabled)
         enable_row.connect(
@@ -253,7 +294,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
         )
         group.add(enable_row)
 
-        url_row = Adw.EntryRow(title="Tile URL")
+        url_row = Adw.EntryRow(title=_("Tile URL"))
         url_row.set_text(settings.map_tile_url)
         url_row.set_show_apply_button(True)
         url_row.connect(
@@ -262,7 +303,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
         )
         group.add(url_row)
 
-        credit_row = Adw.EntryRow(title="Attribution")
+        credit_row = Adw.EntryRow(title=_("Attribution"))
         credit_row.set_text(settings.map_attribution)
         credit_row.set_show_apply_button(True)
         credit_row.connect(
@@ -274,7 +315,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
         group.add(credit_row)
 
         cap_row = Adw.SpinRow.new_with_range(1, 100_000, 100)
-        cap_row.set_title("Maximum Features Drawn")
+        cap_row.set_title(_("Maximum Features Drawn"))
         cap_row.set_subtitle(
             "Past this many geometries the map says \"showing N of M\""
         )
@@ -297,7 +338,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
         The root is only known once the dialog is on screen, hence the
         check on map rather than in the constructor."""
         group = Adw.PreferencesGroup(
-            title="Workspace Transfer",
+            title=_("Workspace Transfer"),
             description="Portable XML files. Passwords are left out "
             "unless you ask for them, and importing never overwrites a "
             "connection that is already there.",
@@ -342,7 +383,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
         with a button that captures the next keypress as its new
         binding."""
         page = Adw.PreferencesPage(
-            title="Shortcuts", icon_name="input-keyboard-symbolic"
+            title=_("Shortcuts"), icon_name="input-keyboard-symbolic"
         )
         groups: dict[str, Adw.PreferencesGroup] = {}
         for action in keymap.ACTIONS:
@@ -365,14 +406,14 @@ class PreferencesDialog(Adw.PreferencesDialog):
 
     def _lsp_page(self, settings: Settings) -> Adw.PreferencesPage:
         page = Adw.PreferencesPage(
-            title="Language Servers",
+            title=_("Language Servers"),
             icon_name="utilities-terminal-symbolic",
         )
 
         toggle_group = Adw.PreferencesGroup()
         enable_row = Adw.SwitchRow(
-            title="Enable Language Servers",
-            subtitle="Schema-aware completion in query consoles",
+            title=_("Enable Language Servers"),
+            subtitle=_("Schema-aware completion in query consoles"),
         )
         enable_row.set_active(settings.lsp_enabled)
         enable_row.connect(
@@ -383,7 +424,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
         page.add(toggle_group)
 
         defaults_group = Adw.PreferencesGroup(
-            title="Default Server",
+            title=_("Default Server"),
             description="What a console set to “LSP: auto” uses, per "
             "database kind. Automatic keeps the built-in choice "
             "(plugins, then known servers).",
@@ -435,7 +476,7 @@ class _ShortcutRow(Adw.ActionRow):
 
         self._reset = Gtk.Button(
             icon_name="edit-undo-symbolic", css_classes=["flat"],
-            valign=Gtk.Align.CENTER, tooltip_text="Reset to default",
+            valign=Gtk.Align.CENTER, tooltip_text=_("Reset to default"),
         )
         self._reset.connect(
             "clicked", lambda *_: self._apply(action.default)
@@ -443,7 +484,7 @@ class _ShortcutRow(Adw.ActionRow):
         self.add_suffix(self._reset)
 
         self._capture = Gtk.ToggleButton(
-            label="Set Shortcut", css_classes=["flat"],
+            label=_("Set Shortcut"), css_classes=["flat"],
             valign=Gtk.Align.CENTER,
         )
         self._capture.connect("toggled", self._on_toggled)

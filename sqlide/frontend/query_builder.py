@@ -41,7 +41,8 @@ from sqlide.frontend.data_grid import (
     _SortRow,
 )
 from sqlide.frontend.results_panel import ResultsPanel
-from sqlide.frontend.util import describe, run_async
+from sqlide.frontend.util import describe, row_count, run_async
+from sqlide.i18n import _
 
 JOIN_KINDS = ("INNER JOIN", "LEFT JOIN", "RIGHT JOIN")
 DEFAULT_LIMIT = 500
@@ -76,7 +77,7 @@ class _JoinRow(Gtk.Box):
         )
         remove = Gtk.Button(icon_name="list-remove-symbolic")
         remove.add_css_class("flat")
-        describe(remove, "Remove join")
+        describe(remove, _("Remove join"))
         remove.connect("clicked", lambda *_: on_remove(self))
         for widget in (self._kind, self._table):
             self.append(widget)
@@ -204,17 +205,17 @@ class QueryBuilderTab(Gtk.Box):
         )
 
         top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        top.append(Gtk.Label(label="Table"))
+        top.append(Gtk.Label(label=_("Table")))
         self._table_dropdown = Gtk.DropDown(model=Gtk.StringList.new([]))
         self._table_dropdown.connect(
             "notify::selected", lambda *_: self._base_changed()
         )
         top.append(self._table_dropdown)
-        self._distinct = Gtk.CheckButton(label="Distinct")
+        self._distinct = Gtk.CheckButton(label=_("Distinct"))
         self._distinct.connect("toggled", lambda *_: self._refresh_sql())
         top.append(self._distinct)
         top.append(Gtk.Box(hexpand=True))
-        top.append(Gtk.Label(label="Limit"))
+        top.append(Gtk.Label(label=_("Limit")))
         self._limit = Gtk.SpinButton.new_with_range(1, 1_000_000, 100)
         self._limit.set_value(DEFAULT_LIMIT)
         self._limit.connect("value-changed", lambda *_: self._refresh_sql())
@@ -226,7 +227,7 @@ class QueryBuilderTab(Gtk.Box):
             orientation=Gtk.Orientation.VERTICAL, spacing=6
         )
         box.append(self._joins_box)
-        add_join = Gtk.Button(label="Add join", halign=Gtk.Align.START)
+        add_join = Gtk.Button(label=_("Add join"), halign=Gtk.Align.START)
         add_join.connect("clicked", lambda *_: self._add_join_row())
         box.append(add_join)
 
@@ -244,7 +245,9 @@ class QueryBuilderTab(Gtk.Box):
             orientation=Gtk.Orientation.VERTICAL, spacing=6
         )
         box.append(self._filters_box)
-        add_filter = Gtk.Button(label="Add condition", halign=Gtk.Align.START)
+        add_filter = Gtk.Button(
+            label=_("Add condition"), halign=Gtk.Align.START
+        )
         add_filter.connect("clicked", lambda *_: self._add_filter_row())
         box.append(add_filter)
 
@@ -253,7 +256,9 @@ class QueryBuilderTab(Gtk.Box):
             orientation=Gtk.Orientation.VERTICAL, spacing=6
         )
         box.append(self._sorts_box)
-        add_sort = Gtk.Button(label="Add sort column", halign=Gtk.Align.START)
+        add_sort = Gtk.Button(
+            label=_("Add sort column"), halign=Gtk.Align.START
+        )
         add_sort.connect("clicked", lambda *_: self._add_sort_row())
         box.append(add_sort)
 
@@ -272,12 +277,12 @@ class QueryBuilderTab(Gtk.Box):
         box.append(sql_frame)
 
         actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        run = Gtk.Button(label="Run")
+        run = Gtk.Button(label=_("Run"))
         run.add_css_class("suggested-action")
         run.connect("clicked", lambda *_: self.run_query())
         actions.append(run)
-        console = Gtk.Button(label="Open in Console")
-        console.set_tooltip_text("Edit this SQL in a new query console")
+        console = Gtk.Button(label=_("Open in Console"))
+        console.set_tooltip_text(_("Edit this SQL in a new query console"))
         console.connect("clicked", self._open_in_console)
         actions.append(console)
         self._status = Gtk.Label(xalign=1, hexpand=True)
@@ -308,7 +313,7 @@ class QueryBuilderTab(Gtk.Box):
     # Catalog
 
     def _load_catalog(self) -> None:
-        self._status.set_text("Loading schema…")
+        self._status.set_text(_("Loading schema…"))
 
         def work():
             connector = self._ensure(self.profile)
@@ -584,7 +589,7 @@ class QueryBuilderTab(Gtk.Box):
             self._show_error("Pick a table first")
             return
         self._refresh_sql()
-        self._status.set_text("Running…")
+        self._status.set_text(_("Running…"))
 
         max_rows = result_row_cap()
 
@@ -597,12 +602,14 @@ class QueryBuilderTab(Gtk.Box):
                 self._results_panel.reveal()
                 self._grid.set_result(result.columns, result.rows)
                 self._status.set_text(
-                    f"first {len(result)} row(s) of a larger result"
+                    _("first %s of a larger result") % row_count(len(result))
                     if result.truncated
-                    else f"{len(result)} row(s)"
+                    else row_count(len(result))
                 )
             else:
-                self._status.set_text(f"{result} row(s) affected")
+                self._status.set_text(
+                    _("%s affected") % row_count(result)
+                )
             if self.on_ran is not None:
                 self.on_ran(sql, True)
 

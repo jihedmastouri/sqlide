@@ -184,6 +184,8 @@ colour), `connections.toml` (the connection definitions) and
 
 ```
 sqlide/
+├── i18n.py                # gettext domain + locale-aware formatting
+├── locale/                # compiled catalogues (built from po/ by `make i18n`)
 ├── backend/               # NO GTK in here
 │   ├── config.py          # config dir resolution, TOML load, errors, watch
 │   ├── tomlwrite.py       # comment-preserving TOML writer
@@ -240,3 +242,15 @@ sqlide/
     ├── sql_editor.py        # GtkSourceView 5 with TextView fallback
     └── completion.py        # completion popup + keyword provider
 ```
+
+## Translations
+
+Every user-visible string in `frontend/` is marked with `_()` (or
+`ngettext()` when it is counted, `N_()` when it has to be written
+before the catalogue is bound). `sqlide/i18n.py` owns the gettext
+domain and the locale-aware number, date and size formatters; `main()`
+calls `install()` before the first widget exists, resolving the
+language from `--language`, then `settings.toml`, then the system
+locale, then English. Catalogues are edited in `po/` and compiled by
+`make i18n`. See [Configuration Files](configuration#languages) for
+how to add a language.

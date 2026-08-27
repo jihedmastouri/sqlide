@@ -29,6 +29,7 @@ from sqlide.backend.db.base import ConnectorError
 from sqlide.backend.db.sqlite import connector as sqlite
 from sqlide.frontend import identity as identity_ui
 from sqlide.frontend.util import describe, run_async
+from sqlide.i18n import _
 
 KIND_LABELS = ["SQLite", "MySQL", "PostgreSQL", "JDBC (generic)"]
 KIND_IDS = ["sqlite", "mysql", "postgres", "jdbc"]
@@ -80,9 +81,9 @@ class ConnectionForm:
         header of its own to put a Save button in."""
         self._toast = toast
 
-        self._name = Adw.EntryRow(title="Name")
+        self._name = Adw.EntryRow(title=_("Name"))
         self._kind = Adw.ComboRow(
-            title="Type", model=Gtk.StringList.new(KIND_LABELS)
+            title=_("Type"), model=Gtk.StringList.new(KIND_LABELS)
         )
         self._kind.connect("notify::selected", self._on_kind_changed)
         general = Adw.PreferencesGroup()
@@ -94,7 +95,7 @@ class ConnectionForm:
         # get. Above the credentials on purpose — it is the first thing
         # you set, not an afterthought buried under SSL.
         self._color = identity_ui.ColorRow(
-            subtitle="Marks this connection's rows, tabs and status bar"
+            subtitle=_("Marks this connection's rows, tabs and status bar")
         )
         self._environment = identity_ui.EnvironmentRow()
         self._environment.connect(
@@ -104,18 +105,18 @@ class ConnectionForm:
         self._suggestion.add_prefix(
             Gtk.Image(icon_name="dialog-warning-symbolic")
         )
-        accept = Gtk.Button(label="Set Production", valign=Gtk.Align.CENTER)
+        accept = Gtk.Button(label=_("Set Production"), valign=Gtk.Align.CENTER)
         accept.connect("clicked", self._accept_suggestion)
         dismiss = Gtk.Button(
             icon_name="window-close-symbolic", valign=Gtk.Align.CENTER
         )
         dismiss.add_css_class("flat")
-        describe(dismiss, "Dismiss this suggestion")
+        describe(dismiss, _("Dismiss this suggestion"))
         dismiss.connect("clicked", self._dismiss_suggestion)
         self._suggestion.add_suffix(accept)
         self._suggestion.add_suffix(dismiss)
         self._suggestion_dismissed = False
-        identity_group = Adw.PreferencesGroup(title="Identity")
+        identity_group = Adw.PreferencesGroup(title=_("Identity"))
         identity_group.add(self._color)
         identity_group.add(self._environment)
         identity_group.add(self._suggestion)
@@ -126,34 +127,34 @@ class ConnectionForm:
         # SQLite. Two ways in, because "point at a file" and "start a
         # database" are different intentions and connect() deliberately
         # refuses to create a file for the first one.
-        self._file = Adw.EntryRow(title="Database file")
+        self._file = Adw.EntryRow(title=_("Database file"))
         create_file = Gtk.Button(icon_name="document-new-symbolic")
-        describe(create_file, "New database file…")
+        describe(create_file, _("New database file…"))
         create_file.add_css_class("flat")
         create_file.set_valign(Gtk.Align.CENTER)
         create_file.connect("clicked", self._create_database)
         browse = Gtk.Button(icon_name="document-open-symbolic")
-        describe(browse, "Browse…")
+        describe(browse, _("Browse…"))
         browse.add_css_class("flat")
         browse.set_valign(Gtk.Align.CENTER)
         browse.connect("clicked", self._browse)
         self._file.add_suffix(create_file)
         self._file.add_suffix(browse)
-        self._sqlite_group = Adw.PreferencesGroup(title="SQLite")
+        self._sqlite_group = Adw.PreferencesGroup(title=_("SQLite"))
         self._sqlite_group.add(self._file)
 
         # MySQL / PostgreSQL
-        self._host = Adw.EntryRow(title="Host", text="localhost")
-        self._port = Adw.EntryRow(title="Port (blank for default)")
-        self._user = Adw.EntryRow(title="User")
-        self._password = Adw.PasswordEntryRow(title="Password")
-        self._database = Adw.EntryRow(title="Database")
+        self._host = Adw.EntryRow(title=_("Host"), text="localhost")
+        self._port = Adw.EntryRow(title=_("Port (blank for default)"))
+        self._user = Adw.EntryRow(title=_("User"))
+        self._password = Adw.PasswordEntryRow(title=_("Password"))
+        self._database = Adw.EntryRow(title=_("Database"))
         # PostgreSQL only: a database there holds many schemas, and the
         # app browses one at a time. Blank keeps the server's own
         # search_path. MySQL has no row of its own because its schemas
         # *are* its databases — the field above already picks one.
-        self._schema = Adw.EntryRow(title="Schema (blank for the default)")
-        self._server_group = Adw.PreferencesGroup(title="Server")
+        self._schema = Adw.EntryRow(title=_("Schema (blank for the default)"))
+        self._server_group = Adw.PreferencesGroup(title=_("Server"))
         for row in (
             self._host,
             self._port,
@@ -170,28 +171,28 @@ class ConnectionForm:
 
         # Advanced (MySQL / PostgreSQL): SSL and SSH tunnel
         self._ssl_mode = Adw.ComboRow(
-            title="SSL mode",
-            subtitle="Default keeps the driver's behaviour",
+            title=_("SSL mode"),
+            subtitle=_("Default keeps the driver's behaviour"),
             model=Gtk.StringList.new(list(SSL_MODE_LABELS)),
         )
         self._ssl_ca = self._file_entry_row("CA certificate (PEM)")
         self._ssl_cert = self._file_entry_row("Client certificate (PEM)")
         self._ssl_key = self._file_entry_row("Client key (PEM)")
-        self._ssl_group = Adw.PreferencesGroup(title="SSL")
+        self._ssl_group = Adw.PreferencesGroup(title=_("SSL"))
         for row in (self._ssl_mode, self._ssl_ca, self._ssl_cert, self._ssl_key):
             self._ssl_group.add(row)
 
         self._ssh_enable = Adw.ExpanderRow(
-            title="SSH tunnel",
-            subtitle="Connect through an SSH host",
+            title=_("SSH tunnel"),
+            subtitle=_("Connect through an SSH host"),
             show_enable_switch=True,
             enable_expansion=False,
         )
-        self._ssh_host = Adw.EntryRow(title="SSH host")
-        self._ssh_port = Adw.EntryRow(title="SSH port (blank for 22)")
-        self._ssh_user = Adw.EntryRow(title="SSH user")
+        self._ssh_host = Adw.EntryRow(title=_("SSH host"))
+        self._ssh_port = Adw.EntryRow(title=_("SSH port (blank for 22)"))
+        self._ssh_user = Adw.EntryRow(title=_("SSH user"))
         self._ssh_password = Adw.PasswordEntryRow(
-            title="SSH password (needs the sshtunnel package)"
+            title=_("SSH password (needs the sshtunnel package)")
         )
         self._ssh_key = self._file_entry_row("SSH private key file")
         for row in (
@@ -202,16 +203,18 @@ class ConnectionForm:
             self._ssh_key,
         ):
             self._ssh_enable.add_row(row)
-        self._ssh_group = Adw.PreferencesGroup(title="SSH")
+        self._ssh_group = Adw.PreferencesGroup(title=_("SSH"))
         self._ssh_group.add(self._ssh_enable)
 
         # JDBC
-        self._jdbc_url = Adw.EntryRow(title="JDBC URL (jdbc:…)")
-        self._driver_class = Adw.EntryRow(title="Driver class (e.g. org.h2.Driver)")
-        self._jar_path = Adw.EntryRow(title="Driver jar path")
-        self._jdbc_user = Adw.EntryRow(title="User")
-        self._jdbc_password = Adw.PasswordEntryRow(title="Password")
-        self._jdbc_group = Adw.PreferencesGroup(title="JDBC")
+        self._jdbc_url = Adw.EntryRow(title=_("JDBC URL (jdbc:…)"))
+        self._driver_class = Adw.EntryRow(
+            title=_("Driver class (e.g. org.h2.Driver)")
+        )
+        self._jar_path = Adw.EntryRow(title=_("Driver jar path"))
+        self._jdbc_user = Adw.EntryRow(title=_("User"))
+        self._jdbc_password = Adw.PasswordEntryRow(title=_("Password"))
+        self._jdbc_group = Adw.PreferencesGroup(title=_("JDBC"))
         for row in (
             self._jdbc_url,
             self._driver_class,
@@ -221,7 +224,7 @@ class ConnectionForm:
         ):
             self._jdbc_group.add(row)
 
-        self._test_button = Gtk.Button(label="Test connection")
+        self._test_button = Gtk.Button(label=_("Test connection"))
         self._test_button.add_css_class("pill")
         self._test_button.connect("clicked", self._test)
         test_row = Gtk.Box(
@@ -245,12 +248,12 @@ class ConnectionForm:
         # database of the same shape on any engine that has a dialect
         # file for it, and points the fields at what it built.
         self._demo_button = Gtk.Button(
-            label="Create demo database", valign=Gtk.Align.CENTER
+            label=_("Create demo database"), valign=Gtk.Align.CENTER
         )
         self._demo_button.add_css_class("flat")
         self._demo_button.connect("clicked", self._create_demo)
         self._demo_group = Adw.PreferencesGroup(
-            title="Nothing to connect to?",
+            title=_("Nothing to connect to?"),
             description="Fills this form in with a small sample database.",
         )
         self._demo_group.set_header_suffix(self._demo_button)
@@ -331,7 +334,7 @@ class ConnectionForm:
         )
         self._suggestion.set_visible(bool(reason))
         if reason:
-            self._suggestion.set_title("This looks like production")
+            self._suggestion.set_title(_("This looks like production"))
             self._suggestion.set_subtitle(
                 f"Suggested because {reason}. Marking it production asks "
                 "before destructive statements run."
@@ -365,7 +368,7 @@ class ConnectionForm:
         """An EntryRow holding a file path, with a browse button."""
         row = Adw.EntryRow(title=title)
         browse = Gtk.Button(icon_name="document-open-symbolic")
-        describe(browse, "Browse…")
+        describe(browse, _("Browse…"))
         browse.add_css_class("flat")
         browse.set_valign(Gtk.Align.CENTER)
         browse.connect("clicked", lambda *_: self._browse_into(row))
@@ -373,13 +376,13 @@ class ConnectionForm:
         return row
 
     def _browse(self, *_args) -> None:
-        self._browse_into(self._file, title="Select database file")
+        self._browse_into(self._file, title=_("Select database file"))
 
     def _create_database(self, *_args) -> None:
         """Pick a path for a database that doesn't exist yet, and make
         it. Picking an existing file adopts it rather than wiping it."""
         dialog = Gtk.FileDialog(
-            title="New SQLite database", initial_name="database.db"
+            title=_("New SQLite database"), initial_name="database.db"
         )
         root = self.page.get_root()
         parent = root if isinstance(root, Gtk.Window) else None
@@ -593,7 +596,11 @@ class ConnectionDialog(Adw.Dialog):
         profile: ConnectionProfile | None = None,
     ) -> None:
         super().__init__(
-            title="Edit Connection" if profile is not None else "New Connection",
+            title=(
+                _("Edit Connection")
+                if profile is not None
+                else _("New Connection")
+            ),
             content_width=460,
             content_height=600,
         )
@@ -602,9 +609,9 @@ class ConnectionDialog(Adw.Dialog):
         header = Adw.HeaderBar()
         header.set_show_start_title_buttons(False)
         header.set_show_end_title_buttons(False)
-        cancel = Gtk.Button(label="Cancel")
+        cancel = Gtk.Button(label=_("Cancel"))
         cancel.connect("clicked", lambda *_: self.close())
-        save = Gtk.Button(label="Save")
+        save = Gtk.Button(label=_("Save"))
         save.add_css_class("suggested-action")
         save.connect("clicked", self._save)
         header.pack_start(cancel)

@@ -47,6 +47,7 @@ from sqlide.backend.workspaces import TabState
 from sqlide.frontend.data_grid import ResultGrid
 from sqlide.frontend.permission_editor import PermissionEditor
 from sqlide.frontend.util import describe, run_async
+from sqlide.i18n import _
 
 
 class UsersTab(Gtk.Box):
@@ -91,7 +92,7 @@ class UsersTab(Gtk.Box):
         self._columns: tuple[str, ...] = ()
         self._empty = Adw.StatusPage(
             icon_name="system-users-symbolic",
-            title="No accounts reported",
+            title=_("No accounts reported"),
             description="This connection sees no accounts on the server.",
         )
         self._stack = Gtk.Stack()
@@ -100,7 +101,7 @@ class UsersTab(Gtk.Box):
         )
         self._stack.add_named(self._empty, "empty")
 
-        search = Gtk.SearchEntry(placeholder_text="Filter accounts")
+        search = Gtk.SearchEntry(placeholder_text=_("Filter accounts"))
         search.set_hexpand(True)
         search.connect("search-changed", self._search_changed)
         search_bar = Gtk.Box(
@@ -109,12 +110,12 @@ class UsersTab(Gtk.Box):
         search_bar.append(search)
 
         header = Adw.HeaderBar()
-        new_user = Gtk.Button(label="New User…")
+        new_user = Gtk.Button(label=_("New User…"))
         new_user.connect("clicked", lambda *_: self._new_user())
         header.pack_start(new_user)
         refresh = Gtk.Button(icon_name="view-refresh-symbolic")
         refresh.add_css_class("flat")
-        describe(refresh, "Reload the account list")
+        describe(refresh, _("Reload the account list"))
         refresh.connect("clicked", lambda *_: self.reload())
         header.pack_end(refresh)
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -332,9 +333,9 @@ class UsersTab(Gtk.Box):
         )
 
     def _new_user(self) -> None:
-        name = Adw.EntryRow(title="Name")
-        host = Adw.EntryRow(title="Host", text="%")
-        password = Adw.PasswordEntryRow(title="Password")
+        name = Adw.EntryRow(title=_("Name"))
+        host = Adw.EntryRow(title=_("Host"), text="%")
+        password = Adw.PasswordEntryRow(title=_("Password"))
         group = Adw.PreferencesGroup()
         group.add(name)
         # Only some engines make the host part of the account (MySQL);
@@ -359,7 +360,7 @@ class UsersTab(Gtk.Box):
         _prompt(self, "New User", group, "Build Statement", create)
 
     def _set_password(self, user: UserInfo) -> None:
-        password = Adw.PasswordEntryRow(title="New password")
+        password = Adw.PasswordEntryRow(title=_("New password"))
         group = Adw.PreferencesGroup()
         group.add(password)
 
@@ -408,13 +409,13 @@ class UsersTab(Gtk.Box):
             return
         verb = "Revoke" if revoke else "Grant"
         scope_row = Adw.ComboRow(
-            title="On",
+            title=_("On"),
             model=Gtk.StringList.new([s.label for s in scopes]),
         )
         group = Adw.PreferencesGroup()
         group.add(scope_row)
         checks: list[tuple[str, Gtk.CheckButton]] = []
-        privileges = Adw.PreferencesGroup(title="Privileges")
+        privileges = Adw.PreferencesGroup(title=_("Privileges"))
         box = Gtk.FlowBox(
             selection_mode=Gtk.SelectionMode.NONE,
             max_children_per_line=3,
@@ -537,7 +538,7 @@ def _prompt(
     statement itself is reviewed and run in a console afterwards, so
     the default response here is safe to be the confirming one."""
     dialog = Adw.AlertDialog(heading=heading, extra_child=child)
-    dialog.add_response("cancel", "Cancel")
+    dialog.add_response("cancel", _("Cancel"))
     dialog.add_response("confirm", confirm_label)
     dialog.set_response_appearance(
         "confirm", Adw.ResponseAppearance.SUGGESTED

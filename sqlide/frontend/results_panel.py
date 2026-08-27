@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from gi.repository import Gtk
 
+from sqlide.i18n import _
+
 
 class ResultsPanel(Gtk.Box):
     """Starts hidden; call reveal() when there is something to show."""
@@ -28,14 +30,14 @@ class ResultsPanel(Gtk.Box):
             spacing=6, margin_start=8, margin_end=6,
             margin_top=2, margin_bottom=2,
         )
-        title = Gtk.Label(label="Results", xalign=0, hexpand=True)
+        title = Gtk.Label(label=_("Results"), xalign=0, hexpand=True)
         title.add_css_class("dim-label")
         title.add_css_class("caption-heading")
         self._toggle = Gtk.ToggleButton(
             icon_name="go-down-symbolic", active=True
         )
         self._toggle.add_css_class("flat")
-        self._toggle.set_tooltip_text("Minimize or expand the results")
+        self._toggle.set_tooltip_text(_("Minimize or expand the results"))
         self._toggle.connect("toggled", self._on_toggled)
         header.append(title)
         header.append(self._toggle)

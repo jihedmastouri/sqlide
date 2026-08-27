@@ -38,6 +38,7 @@ from sqlide.backend import settings as settings_module
 from sqlide.backend import tiles
 from sqlide.backend.db import geo
 from sqlide.frontend.util import describe, run_async
+from sqlide.i18n import _
 
 #: Feature colours, drawn over tiles so they have to hold up on both a
 #: light and a dark basemap.
@@ -115,7 +116,7 @@ class MapView(Gtk.Box):
 
         self._empty = Adw.StatusPage(
             icon_name="mark-location-symbolic",
-            title="Nothing to Map",
+            title=_("Nothing to Map"),
             description="No geometry values in this result.",
             vexpand=True,
         )
@@ -137,13 +138,13 @@ class MapView(Gtk.Box):
         )
         box.add_css_class("linked")
         zoom_in = Gtk.Button(icon_name="zoom-in-symbolic")
-        describe(zoom_in, "Zoom in")
+        describe(zoom_in, _("Zoom in"))
         zoom_in.connect("clicked", lambda *_: self._step_zoom(1))
         zoom_out = Gtk.Button(icon_name="zoom-out-symbolic")
-        describe(zoom_out, "Zoom out")
+        describe(zoom_out, _("Zoom out"))
         zoom_out.connect("clicked", lambda *_: self._step_zoom(-1))
         fit = Gtk.Button(icon_name="zoom-fit-best-symbolic")
-        describe(fit, "Fit every feature")
+        describe(fit, _("Fit every feature"))
         fit.connect("clicked", lambda *_: self.fit_to_features())
         for button in (zoom_in, zoom_out, fit):
             button.add_css_class("osd")

@@ -122,6 +122,7 @@ from sqlide.frontend.monitor_tab import MonitorTab
 from sqlide.frontend.pragmas_tab import PragmasTab
 from sqlide.frontend.users_tab import UsersTab
 from sqlide.frontend import transfer
+from sqlide.i18n import _, ngettext
 
 
 # How long a sidebar drag must be still before its width is written
@@ -240,19 +241,19 @@ def _tab_menu(popped_out: bool = False) -> Gio.Menu:
     # Properties first: the tab's object, beside it in the panel or in
     # a window of its own (CORE-47).
     properties = Gio.Menu()
-    properties.append("Properties", "win.tab-properties")
-    properties.append("Properties (Window)", "win.tab-properties-window")
+    properties.append(_("Properties"), "win.tab-properties")
+    properties.append(_("Properties (Window)"), "win.tab-properties-window")
     menu.append_section(None, properties)
-    menu.append("Close Tab", "win.close-tab")
+    menu.append(_("Close Tab"), "win.close-tab")
     section = Gio.Menu()
-    section.append("Close Other Tabs", "win.close-other-tabs")
-    section.append("Close Tabs to the Right", "win.close-tabs-right")
-    section.append("Close All Tabs", "win.close-all-tabs")
+    section.append(_("Close Other Tabs"), "win.close-other-tabs")
+    section.append(_("Close Tabs to the Right"), "win.close-tabs-right")
+    section.append(_("Close All Tabs"), "win.close-all-tabs")
     menu.append_section(None, section)
     move = Gio.Menu()
-    move.append("Move to New Window", "win.move-to-window")
+    move.append(_("Move to New Window"), "win.move-to-window")
     if popped_out:
-        move.append("Move Back to Main Window", "win.move-to-main")
+        move.append(_("Move Back to Main Window"), "win.move-to-main")
     menu.append_section(None, move)
     return menu
 
@@ -424,7 +425,7 @@ class MainWindow(Adw.ApplicationWindow):
         # window-controls live here, not on a banner above it.
         sidebar_header = Adw.HeaderBar()
         sidebar_header.set_show_end_title_buttons(False)
-        sidebar_header.set_title_widget(Gtk.Label(label="Connections"))
+        sidebar_header.set_title_widget(Gtk.Label(label=_("Connections")))
         # Two icons, two jobs: leave this workspace, or change how the
         # app behaves. Everything else the sidebar does is a row below.
         sidebar_header.pack_start(workspaces_button())
@@ -485,7 +486,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         placeholder = Adw.StatusPage(
             icon_name="folder-open-symbolic",
-            title="Nothing Open",
+            title=_("Nothing Open"),
             description="Pick a table from the sidebar, or start a query "
             "console.",
             child=self._placeholder_actions(),
@@ -502,15 +503,17 @@ class MainWindow(Adw.ApplicationWindow):
         # header bar's left corner stops being a puzzle.
         new_menu = Gio.Menu()
         tabs = Gio.Menu()
-        tabs.append("Query Console", "win.new-query")
-        tabs.append("CLI Client", "win.new-cli")
-        tabs.append("Query Builder", "win.new-builder")
+        tabs.append(_("Query Console"), "win.new-query")
+        tabs.append(_("CLI Client"), "win.new-cli")
+        tabs.append(_("Query Builder"), "win.new-builder")
         new_menu.append_section(None, tabs)
         servers = Gio.Menu()
-        servers.append("MCP Server", "win.new-mcp")
+        servers.append(_("MCP Server"), "win.new-mcp")
         new_menu.append_section(None, servers)
         new_button = Adw.SplitButton(
-            label="New", menu_model=new_menu, tooltip_text="New query console"
+            label=_("New"),
+            menu_model=new_menu,
+            tooltip_text=_("New query console"),
         )
         new_button.connect(
             "clicked", lambda *_: self.new_query(self._default_query_profile())
@@ -523,13 +526,13 @@ class MainWindow(Adw.ApplicationWindow):
             icon_name="view-dual-symbolic"
         )
         self._split_button.add_css_class("flat")
-        describe(self._split_button, "Split View")
+        describe(self._split_button, _("Split View"))
         self._split_button.connect("toggled", self._on_split_toggled)
         content_header.pack_start(self._split_button)
         content_header.pack_start(new_button)
 
         self._tab_button = Adw.TabButton(view=self._active_pane.view)
-        self._tab_button.set_tooltip_text("View open tabs")
+        self._tab_button.set_tooltip_text(_("View open tabs"))
         self._tab_button.connect(
             "clicked", lambda *_: self._overview.set_open(True)
         )
@@ -591,7 +594,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._history_toggle = Gtk.ToggleButton(
             icon_name="sidebar-show-right-symbolic"
         )
-        self._history_toggle.set_tooltip_text("Toggle side panel")
+        self._history_toggle.set_tooltip_text(_("Toggle side panel"))
         self._history_toggle.connect(
             "toggled",
             lambda button: self._set_side_panel_shown(button.get_active()),
@@ -789,7 +792,9 @@ class MainWindow(Adw.ApplicationWindow):
             transition_type=Gtk.StackTransitionType.CROSSFADE,
         )
 
-        search = Gtk.SearchEntry(placeholder_text="Find objects…", hexpand=True)
+        search = Gtk.SearchEntry(
+            placeholder_text=_("Find objects…"), hexpand=True
+        )
         search.set_tooltip_text(
             "Find objects by name in loaded connections"
         )
@@ -809,7 +814,7 @@ class MainWindow(Adw.ApplicationWindow):
             css_classes=["flat"],
             popover=self._sidebar_scope_popover(),
         )
-        describe(filter_button, "Filter search by object kind")
+        describe(filter_button, _("Filter search by object kind"))
         self._sidebar_filter_label = filter_button.get_child()
 
         def close_search(*_args) -> None:
@@ -823,7 +828,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         exit_search = Gtk.Button(icon_name="window-close-symbolic")
         exit_search.add_css_class("flat")
-        describe(exit_search, "Exit search")
+        describe(exit_search, _("Exit search"))
         exit_search.connect("clicked", close_search)
 
         # Escape reaches here even when the focus has moved on to the
@@ -848,7 +853,7 @@ class MainWindow(Adw.ApplicationWindow):
         actions = Gtk.Box(spacing=6)
         add = Gtk.Button(
             child=Adw.ButtonContent(
-                icon_name="list-add-symbolic", label="Add Connection"
+                icon_name="list-add-symbolic", label=_("Add Connection")
             ),
             hexpand=True,
             css_classes=["flat"],
@@ -858,7 +863,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         open_search = Gtk.Button(icon_name="system-search-symbolic")
         open_search.add_css_class("flat")
-        describe(open_search, "Search objects")
+        describe(open_search, _("Search objects"))
 
         def show_search(*_args) -> None:
             stack.set_visible_child_name("search")
@@ -872,7 +877,7 @@ class MainWindow(Adw.ApplicationWindow):
         # stale, but during a search the row belongs to the search.
         refresh = Gtk.Button(icon_name="view-refresh-symbolic")
         refresh.add_css_class("flat")
-        describe(refresh, "Refresh schemas")
+        describe(refresh, _("Refresh schemas"))
         refresh.connect("clicked", lambda *_: self._sidebar.reload_all())
         actions.append(refresh)
 
@@ -913,7 +918,7 @@ class MainWindow(Adw.ApplicationWindow):
         system_button.set_tooltip_text(
             "Also search information_schema and the server's own catalog"
         )
-        all_button = Gtk.CheckButton(label="All")
+        all_button = Gtk.CheckButton(label=_("All"))
         all_button.set_active(not self._sidebar_scopes)
         box.append(all_button)
         box.append(Gtk.Separator())
@@ -1002,7 +1007,7 @@ class MainWindow(Adw.ApplicationWindow):
         only one offered."""
         box = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER)
         if self.workspace.connections:
-            query = Gtk.Button(label="New Query Console")
+            query = Gtk.Button(label=_("New Query Console"))
             query.add_css_class("suggested-action")
             query.add_css_class("pill")
             query.connect(
@@ -1010,7 +1015,7 @@ class MainWindow(Adw.ApplicationWindow):
             )
             box.append(query)
         else:
-            add = Gtk.Button(label="Add Connection")
+            add = Gtk.Button(label=_("Add Connection"))
             add.add_css_class("suggested-action")
             add.add_css_class("pill")
             add.connect("clicked", self._add_connection)
@@ -1606,12 +1611,12 @@ class MainWindow(Adw.ApplicationWindow):
         self, view: Adw.TabView, page: Adw.TabPage, name: str
     ) -> None:
         dialog = Adw.AlertDialog(
-            heading="Open Transaction",
+            heading=_("Open Transaction"),
             body=f"The connection “{name}” has an open transaction. "
             "Close the console anyway and roll it back?",
         )
-        dialog.add_response("cancel", "Keep Open")
-        dialog.add_response("rollback", "Roll Back and Close")
+        dialog.add_response("cancel", _("Keep Open"))
+        dialog.add_response("rollback", _("Roll Back and Close"))
         dialog.set_response_appearance(
             "rollback", Adw.ResponseAppearance.DESTRUCTIVE
         )
@@ -1633,12 +1638,12 @@ class MainWindow(Adw.ApplicationWindow):
         self, view: Adw.TabView, page: Adw.TabPage, tab: McpServerTab
     ) -> None:
         dialog = Adw.AlertDialog(
-            heading="MCP Server Running",
-            body="This server is still running. Close the tab anyway "
-            "and stop it?",
+            heading=_("MCP Server Running"),
+            body=_("This server is still running. Close the tab anyway "
+            "and stop it?"),
         )
-        dialog.add_response("cancel", "Keep Open")
-        dialog.add_response("stop", "Stop and Close")
+        dialog.add_response("cancel", _("Keep Open"))
+        dialog.add_response("stop", _("Stop and Close"))
         dialog.set_response_appearance(
             "stop", Adw.ResponseAppearance.DESTRUCTIVE
         )
@@ -1995,10 +2000,10 @@ class MainWindow(Adw.ApplicationWindow):
                 + ", ".join(f"“{name}”" for name in transactions)
                 + " will be rolled back."
             )
-        dialog = Adw.AlertDialog(heading="Close Workspace?", body=body)
-        dialog.add_response("cancel", "Cancel")
+        dialog = Adw.AlertDialog(heading=_("Close Workspace?"), body=body)
+        dialog.add_response("cancel", _("Cancel"))
         dialog.add_response(
-            "close", "Roll Back and Close" if transactions else "Close"
+            "close", _("Roll Back and Close") if transactions else _("Close")
         )
         dialog.set_response_appearance(
             "close", Adw.ResponseAppearance.DESTRUCTIVE
@@ -2155,14 +2160,19 @@ class MainWindow(Adw.ApplicationWindow):
         if not running:
             self._do_disconnect(profile)
             return
-        plural = "query is" if running == 1 else "queries are"
         dialog = Adw.AlertDialog(
-            heading=f"Disconnect “{profile.name}”?",
-            body=f"{running} {plural} still running on this connection. "
-            "Disconnecting cancels the run and closes the session.",
+            heading=_("Disconnect “%s”?") % profile.name,
+            body=ngettext(
+                "%d query is still running on this connection. "
+                "Disconnecting cancels the run and closes the session.",
+                "%d queries are still running on this connection. "
+                "Disconnecting cancels the runs and closes the session.",
+                running,
+            )
+            % running,
         )
-        dialog.add_response("cancel", "Keep Connected")
-        dialog.add_response("disconnect", "Disconnect Anyway")
+        dialog.add_response("cancel", _("Keep Connected"))
+        dialog.add_response("disconnect", _("Disconnect Anyway"))
         dialog.set_response_appearance(
             "disconnect", Adw.ResponseAppearance.DESTRUCTIVE
         )
@@ -2280,14 +2290,18 @@ class MainWindow(Adw.ApplicationWindow):
         )
         count = len(pages)
         dialog = Adw.AlertDialog(
-            heading=f"Close {count} tab{'' if count == 1 else 's'} "
-            f"on “{profile.name}”?",
-            body="These tabs have work that was never written:\n\n"
-            f"{listing}",
+            heading=ngettext(
+                "Close %(count)d tab on “%(name)s”?",
+                "Close %(count)d tabs on “%(name)s”?",
+                count,
+            )
+            % {"count": count, "name": profile.name},
+            body=_("These tabs have work that was never written:\n\n%s")
+            % listing,
         )
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("discard", "Discard")
-        dialog.add_response("save", "Save")
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("discard", _("Discard"))
+        dialog.add_response("save", _("Save"))
         dialog.set_response_appearance(
             "discard", Adw.ResponseAppearance.DESTRUCTIVE
         )
@@ -2325,7 +2339,12 @@ class MainWindow(Adw.ApplicationWindow):
             self._closing_connection = ""
         count = len(pages)
         self.show_message(
-            f"Closed {count} tab{'' if count == 1 else 's'} on {name}"
+            ngettext(
+                "Closed %(count)d tab on %(name)s",
+                "Closed %(count)d tabs on %(name)s",
+                count,
+            )
+            % {"count": count, "name": name}
         )
 
     def _edit_connection(self, profile: ConnectionProfile) -> None:
@@ -2368,12 +2387,12 @@ class MainWindow(Adw.ApplicationWindow):
     def _remove_connection(self, profile: ConnectionProfile) -> None:
         dialog = Adw.AlertDialog(
             heading=f"Remove “{profile.name}”?",
-            body="This removes the connection from this workspace. Tabs "
+            body=_("This removes the connection from this workspace. Tabs "
             "already open on it are left as-is and will show an error "
-            "next time they run.",
+            "next time they run."),
         )
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("remove", "Remove")
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("remove", _("Remove"))
         dialog.set_response_appearance(
             "remove", Adw.ResponseAppearance.DESTRUCTIVE
         )

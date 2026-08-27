@@ -31,6 +31,7 @@ from sqlide.frontend.util import (
     main_menu_button,
     open_workspace_from,
 )
+from sqlide.i18n import _
 
 TAGLINE = "A minimal SQL IDE for SQLite, MySQL and PostgreSQL."
 
@@ -68,7 +69,7 @@ class WelcomeWindow(Adw.ApplicationWindow):
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.set_title("Welcome to sqlide")
+        self.set_title(_("Welcome to sqlide"))
         self.set_default_size(420, 560)
 
         self._pending_name = ""
@@ -105,13 +106,13 @@ class WelcomeWindow(Adw.ApplicationWindow):
         # it too, rather than below the fold under the pitch.
         import_button = Gtk.Button(
             child=Adw.ButtonContent(
-                icon_name="document-open-symbolic", label="Import…"
+                icon_name="document-open-symbolic", label=_("Import…")
             )
         )
         import_button.add_css_class("flat")
         describe(
             import_button,
-            "Import a workspace exported from another machine (XML)",
+            _("Import a workspace exported from another machine (XML)"),
         )
         import_button.connect("clicked", lambda *_: self._import())
         header.pack_start(import_button)
@@ -134,7 +135,7 @@ class WelcomeWindow(Adw.ApplicationWindow):
         view = Adw.ToolbarView()
         view.add_top_bar(header)
         view.set_content(clamp)
-        return Adw.NavigationPage(child=view, title="Welcome", tag="start")
+        return Adw.NavigationPage(child=view, title=_("Welcome"), tag="start")
 
     def _hero(self) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -159,16 +160,18 @@ class WelcomeWindow(Adw.ApplicationWindow):
 
     def _form(self) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
-        group = Adw.PreferencesGroup(title="Create your first workspace")
-        self._name = Adw.EntryRow(title="Workspace name")
+        group = Adw.PreferencesGroup(title=_("Create your first workspace"))
+        self._name = Adw.EntryRow(title=_("Workspace name"))
         self._name.connect("entry-activated", lambda *_: self._continue())
         group.add(self._name)
-        self._color = identity_ui.ColorRow(subtitle="Window colour")
+        self._color = identity_ui.ColorRow(subtitle=_("Window colour"))
         self._color.set_color(identity.NONE)
         group.add(self._color)
         box.append(group)
 
-        continue_button = Gtk.Button(label="Continue", halign=Gtk.Align.CENTER)
+        continue_button = Gtk.Button(
+            label=_("Continue"), halign=Gtk.Align.CENTER
+        )
         continue_button.add_css_class("suggested-action")
         continue_button.add_css_class("pill")
         continue_button.connect("clicked", lambda *_: self._continue())
@@ -190,7 +193,7 @@ class WelcomeWindow(Adw.ApplicationWindow):
         view.add_top_bar(header)
         view.set_content(self._connection_form.page)
         return Adw.NavigationPage(
-            child=view, title="Add a connection", tag="connection"
+            child=view, title=_("Add a connection"), tag="connection"
         )
 
     # Actions

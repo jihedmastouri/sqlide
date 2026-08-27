@@ -18,6 +18,7 @@ from __future__ import annotations
 from gi.repository import Adw, Gtk
 
 from sqlide.frontend import keymap
+from sqlide.i18n import _
 
 
 def shortcuts_dialog() -> Adw.Dialog:
@@ -44,7 +45,7 @@ def _fallback_dialog() -> Adw.Dialog:
     """Same content, plain widgets: one row per binding with the keys
     spelled out."""
     dialog = Adw.Dialog(
-        title="Keyboard Shortcuts", content_width=480, content_height=560
+        title=_("Keyboard Shortcuts"), content_width=480, content_height=560
     )
     page = Adw.PreferencesPage()
     for title, items in keymap.grouped():

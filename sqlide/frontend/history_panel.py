@@ -22,6 +22,7 @@ from gi.repository import Adw, Gtk
 
 from sqlide.backend.workspaces import HistoryEntry
 from sqlide.frontend.util import describe
+from sqlide.i18n import _, format_datetime
 
 _SCOPES = ("This panel", "All panels")
 
@@ -48,11 +49,11 @@ class HistoryPanel(Gtk.Box):
         self._scope = Gtk.DropDown(
             model=Gtk.StringList.new(list(_SCOPES)), hexpand=True
         )
-        self._scope.set_tooltip_text("Which queries to list")
+        self._scope.set_tooltip_text(_("Which queries to list"))
         self._scope.connect("notify::selected", lambda *_: self._rebuild())
         clear_button = Gtk.Button(icon_name="user-trash-symbolic")
         clear_button.add_css_class("flat")
-        describe(clear_button, "Clear history")
+        describe(clear_button, _("Clear history"))
         clear_button.connect("clicked", lambda *_: on_clear())
         controls.append(self._scope)
         controls.append(clear_button)
@@ -62,7 +63,7 @@ class HistoryPanel(Gtk.Box):
         self._list.set_selection_mode(Gtk.SelectionMode.NONE)
         self._list.add_css_class("navigation-sidebar")
         self._list.connect("row-activated", self._row_activated)
-        placeholder = Gtk.Label(label="No queries yet", margin_top=24)
+        placeholder = Gtk.Label(label=_("No queries yet"), margin_top=24)
         placeholder.add_css_class("dim-label")
         self._list.set_placeholder(placeholder)
         scroller = Gtk.ScrolledWindow(vexpand=True, hexpand=True)
@@ -115,7 +116,7 @@ class HistoryPanel(Gtk.Box):
         row.set_tooltip_text(entry.sql)
         if not entry.ok:
             marker = Gtk.Image(icon_name="dialog-error-symbolic")
-            marker.set_tooltip_text("This run failed")
+            marker.set_tooltip_text(_("This run failed"))
             marker.add_css_class("dim-label")
             row.add_suffix(marker)
         return row
@@ -123,7 +124,7 @@ class HistoryPanel(Gtk.Box):
     @staticmethod
     def _format_time(timestamp: str) -> str:
         try:
-            return datetime.fromisoformat(timestamp).strftime("%Y-%m-%d %H:%M")
+            return format_datetime(datetime.fromisoformat(timestamp))
         except ValueError:
             return timestamp
 

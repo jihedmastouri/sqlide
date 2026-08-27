@@ -24,6 +24,7 @@ from sqlide.backend.db import cli
 from sqlide.backend.db.base import Connector
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend.util import describe, run_async
+from sqlide.i18n import _
 
 
 class CliConsole(Gtk.Box):
@@ -53,12 +54,12 @@ class CliConsole(Gtk.Box):
             margin_end=6,
         )
         self._dropdown = Gtk.DropDown(model=connection_names)
-        self._dropdown.set_tooltip_text("Connection this session talks to")
-        label = Gtk.Label(label="CLI client")
+        self._dropdown.set_tooltip_text(_("Connection this session talks to"))
+        label = Gtk.Label(label=_("CLI client"))
         label.add_css_class("dim-label")
         clear = Gtk.Button(icon_name="edit-clear-all-symbolic")
         clear.add_css_class("flat")
-        describe(clear, "Clear the scrollback")
+        describe(clear, _("Clear the scrollback"))
         clear.connect("clicked", lambda *_: self._clear())
         toolbar.append(label)
         toolbar.append(self._dropdown)
@@ -154,7 +155,7 @@ class CliConsole(Gtk.Box):
     def _update_prompt(self) -> None:
         profile = self._profile()
         if profile is None:
-            self._prompt_label.set_text("(no connection) ")
+            self._prompt_label.set_text(_("(no connection) "))
             return
         self._prompt_label.set_text(
             cli.prompt_for(profile.kind, profile.database)

@@ -8,6 +8,21 @@
 | CORE-02 | Metadata provider abstraction per engine | — |
 | CORE-13 | File-system config (TOML/XML, git-friendly) | — |
 
+### UI refinements (requested 2026-08-27 — do these first)
+
+| ID | Title | Depends on |
+|---|---|---|
+| CORE-46 | Multi-language support (i18n) | CORE-13 |
+| CORE-47 | Table properties in the right side panel, not a tab toggle | CORE-04, CORE-09 |
+| CORE-48 | Keyword case for SQL autocompletion | CORE-13 |
+| CORE-49 | Render tabular object information as a real table | CORE-01 |
+| CORE-50 | Stop recycling the table properties page | CORE-47 |
+| CORE-51 | Truncate the sidebar's secondary text | CORE-08 |
+| CORE-52 | Sidebar click behaviour: expand, open, Open (Window) | CORE-01 |
+| CORE-53 | Keep grants out of the side panel for users and roles | CORE-47, CORE-12 |
+| CORE-54 | Users/roles page: scope the tree and name the subject | CORE-10, CORE-12 |
+| CORE-55 | Follow the active tab in the sidebar | CORE-01, CORE-52 |
+
 ### Cross-engine UI
 
 | ID | Title | Depends on |

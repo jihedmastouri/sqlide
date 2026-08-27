@@ -128,6 +128,10 @@ key with a value outside its set is reported and falls back.
 | `monitor_interval` | integer 1–60 | `2` | Seconds between samples in the [monitoring](/docs/monitoring/) dashboard. The dashboard's own control writes here; storage keeps its separate 60-second timer. |
 | `lsp_enabled` | boolean | `true` | Master switch for completion language servers. |
 | `show_system_schemas` | boolean | `true` | Keep `information_schema` and the server's own catalog in the object tree. Shown dimmed and after the user's schemas; off hides them entirely. |
+| `map_tiles_enabled` | boolean | `true` | Whether the geo viewer fetches background map tiles. Off draws geometries on a plain grid and makes no network request at all. |
+| `map_tile_url` | string | `"https://tile.openstreetmap.org/{z}/{x}/{y}.png"` | Slippy-map tile template for the geo viewer. Point it at your own tile server and nothing in the app talks to openstreetmap.org. Must be an `http(s)` URL containing `{z}`, `{x}` and `{y}`. |
+| `map_attribution` | string | `"© OpenStreetMap contributors"` | The credit line drawn over the map. It belongs to whichever server the tiles come from; blank turns tiles off rather than dropping the credit. |
+| `map_max_features` | integer ≥ 1 | `2000` | How many geometries one map draws before it stops and says "showing N of M". |
 | `last_workspace` | string | `""` | Id of the workspace to reopen on startup. Empty, or a workspace that no longer exists, opens the first on file. |
 
 Three tables of string-to-string:

@@ -59,6 +59,20 @@ Settings:
   so a drag survives a restart. Clamped to SIDEBAR_MIN_WIDTH ..
   SIDEBAR_MAX_WIDTH on the way in and out, and double-clicking the
   drag handle puts DEFAULT_SIDEBAR_WIDTH back.
+- map_tiles_enabled: whether the geo viewer (PG-04) draws map tiles at
+  all. Off gives geometries on a plain background and never makes a
+  network request — the setting for an air-gapped machine, and what
+  the viewer falls back to when the network is down.
+- map_tile_url: the slippy-map tile template the geo viewer fetches,
+  with {z}/{x}/{y} placeholders. Defaults to OpenStreetMap's own
+  server; point it at your own tile server (or a paid one) and nothing
+  in the app talks to openstreetmap.org again. See backend/tiles.py
+  for the caching and attribution the viewer holds itself to.
+- map_attribution: the credit line drawn over the map. It travels with
+  the URL because a tile server's terms come with it; blanking it
+  disables tiles rather than dropping the credit.
+- map_max_features: how many geometries one map draws before it stops
+  and says "showing N of M".
 - keymap: user-edited keyboard shortcuts, action id -> accelerator
   string (Gtk.accelerator_parse() syntax; "" means "no binding"). Only
   actions the user rebound appear here — everything else falls back to
@@ -76,7 +90,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
-from sqlide.backend import config, tomlwrite
+from sqlide.backend import config, tiles, tomlwrite
 from sqlide.backend.db import metrics
 from sqlide.backend.sql_risk import CONFIRM_MODES, DEFAULT_CONFIRM_MODE
 
@@ -90,6 +104,13 @@ DEFAULT_MAX_RESULT_ROWS = 5000
 DEFAULT_SIDEBAR_WIDTH = 280
 SIDEBAR_MIN_WIDTH = 180
 SIDEBAR_MAX_WIDTH = 600
+# The geo viewer's tile source and its drawing cap (PG-04). The
+# defaults are OpenStreetMap's public server, used under its tile
+# policy — see backend/tiles.py, which does the caching and sends the
+# identifying User-Agent that policy asks for.
+DEFAULT_TILE_URL = tiles.DEFAULT_TILE_URL
+DEFAULT_TILE_ATTRIBUTION = tiles.DEFAULT_ATTRIBUTION
+DEFAULT_MAX_FEATURES = 2000
 
 
 def clamp_sidebar_width(width: int) -> int:
@@ -114,6 +135,10 @@ class Settings:
     #: hidden: they are worth reading, just never the thing you came
     #: for (PG-03).
     show_system_schemas: bool = True
+    map_tiles_enabled: bool = True
+    map_tile_url: str = DEFAULT_TILE_URL
+    map_attribution: str = DEFAULT_TILE_ATTRIBUTION
+    map_max_features: int = DEFAULT_MAX_FEATURES
     lsp_defaults: dict[str, str] = field(default_factory=dict)
     mcp_defaults: dict[str, str] = field(default_factory=dict)
     sidebar_width: int = DEFAULT_SIDEBAR_WIDTH
@@ -184,6 +209,14 @@ class Settings:
             ),
             lsp_enabled=flag("lsp_enabled", True),
             show_system_schemas=flag("show_system_schemas", True),
+            map_tiles_enabled=flag("map_tiles_enabled", True),
+            map_tile_url=text("map_tile_url", DEFAULT_TILE_URL),
+            map_attribution=text(
+                "map_attribution", DEFAULT_TILE_ATTRIBUTION
+            ),
+            map_max_features=number(
+                "map_max_features", DEFAULT_MAX_FEATURES, minimum=1
+            ),
             lsp_defaults=table("lsp_defaults"),
             mcp_defaults=table("mcp_defaults"),
             sidebar_width=clamp_sidebar_width(
@@ -208,6 +241,27 @@ def _line_of(path: Path, key: str) -> int:
         if stripped.split("=", 1)[0].strip().strip('"') == key:
             return number
     return 0
+
+
+def tile_source() -> tiles.TileSource:
+    """The geo viewer's tile source as the settings describe it.
+
+    One place builds it, so the viewer, the preferences page and the
+    tests all agree on what "the current tile server" means — and a
+    blank attribution disables tiles rather than drawing somebody's
+    tiles uncredited (see backend/tiles.py).
+    """
+    current = store.settings
+    return tiles.TileSource(
+        url_template=current.map_tile_url or DEFAULT_TILE_URL,
+        attribution=current.map_attribution,
+        enabled=current.map_tiles_enabled,
+    )
+
+
+def max_map_features() -> int:
+    """The cap on features one map draws (PG-04)."""
+    return max(1, store.settings.map_max_features)
 
 
 def session_time_zone() -> str | None:

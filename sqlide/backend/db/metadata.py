@@ -96,6 +96,11 @@ class Capabilities:
     grants: bool = False  # per-object privileges are readable
     roles: bool = False  # accounts/roles are readable
     extensions: bool = False
+    #: The engine has spatial types the geo viewer could map (PG-04).
+    #: A flag, not a promise: whether *this* server actually has
+    #: PostGIS installed is a catalog question, asked at runtime
+    #: through `MetadataProvider.spatial_extension()`.
+    geometry: bool = False
     partitions: bool = False
     pragmas: bool = False  # SQLite's PRAGMA settings
     constraints: bool = False  # a constraint catalog of its own
@@ -436,6 +441,17 @@ class MetadataProvider:
 
     def capabilities(self) -> Capabilities:
         return self.CAPABILITIES
+
+    def spatial_extension(self) -> str:
+        """The spatial extension this connection has, "" for none.
+
+        The geo viewer (PG-04) is offered only where this answers: the
+        capability flag says the *engine* could have geometry types,
+        this says the *server* does. A PostgreSQL database without
+        PostGIS therefore never grows a Map view it could not fill,
+        and no engine has to be named in the UI to arrange that.
+        """
+        return ""
 
     def root(self, name: str = "") -> NodeRef:
         """The connection node the tree starts at."""

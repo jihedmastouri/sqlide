@@ -44,6 +44,46 @@ Shared dataclasses: `TableInfo(name, kind)`, `ColumnInfo(name, type,
 is_pk, nullable)`, `FunctionInfo(name)`, `ResultSet(columns, rows)`. All
 driver errors are re-raised as `ConnectorError` with a readable message.
 
+### The catalog cache
+
+Validating an identifier against the catalog is what keeps unchecked
+names out of SQL text, and every page of a grid does it: `fetch_rows`
+asks whether the table exists, and a filtered or sorted page asks what
+columns it has. Asking the server that every 500 rows is what stops
+(CORE-41), not the asking.
+
+Each connector carries a `CatalogCache` (`backend/db/base.py`) keyed by
+`(kind, database, schema, name)`. The connection's own reads —
+validation, `row_key_columns`, `paging_strategy`, the object tree, the
+console's hover — go through `catalog_tables()`, `catalog_columns()`,
+`catalog_relations()` and `catalog_schemas()`; the `list_*` methods
+stay the uncached truth an adapter implements and a reload asks.
+
+Invalidation is the whole design, because a cache that serves a dropped
+table is worse than the round trip it saved. There is no TTL: a clock
+cannot know when someone ran an ALTER. Instead every observable event
+drops the connection's cache whole — coarse on purpose, since working
+out which entries one statement touched is guesswork:
+
+* any statement through `execute()` that is not plainly a read, a row
+  change or transaction control (`sql_risk.changes_catalog()`), in a
+  `finally` so a half-applied failure counts too. Every DDL path in the
+  app — the definition tab, the table designer, drop dialogs, extension
+  install and drop, the console — ends in `execute()`, so they are
+  covered at one point rather than one screen at a time;
+* `connect()` and `close()`, so a reconnect starts empty;
+* a change of the schema names resolve in (`set_search_path`); a change
+  of database needs no rule, since the app holds one connector per
+  (connection, database, schema);
+* the sidebar's Refresh, through `invalidate_catalog()`.
+
+The event nobody can observe is another session changing the schema, so
+validation never rejects from cache alone: a table or column the cache
+does not know is re-read from the server once before the error is
+raised (`_assert_known_table`, `_assert_known_columns`). A name added
+elsewhere therefore costs a round trip, not a failure — and a wrong
+answer costs exactly what it cost before the cache existed.
+
 ### Paging the grid
 
 The grid reads a table one page at a time, and two pages of the same

@@ -1509,7 +1509,7 @@ class MetadataProvider:
         """The tables and views of the node being listed. `ref` is the
         category folder, so an engine with schemas can read the one it
         was opened under (see postgres/metadata.py)."""
-        return _safe(self.connector.list_tables, [])
+        return _safe(self.connector.catalog_tables, [])
 
     def object_detail(self, info) -> str:
         """The one-line note next to a table or view row. Empty here;
@@ -1524,6 +1524,6 @@ class MetadataProvider:
                 detail=column.type + (" · PK" if column.is_pk else ""),
             )
             for column in _safe(
-                lambda: self.connector.list_columns(ref.name), []
+                lambda: self.connector.catalog_columns(ref.name), []
             )
         ]

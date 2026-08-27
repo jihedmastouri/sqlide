@@ -55,6 +55,7 @@ class JdbcConnector(Connector):
         self._active_cursor = None
 
     def connect(self) -> None:
+        self.invalidate_catalog()
         try:
             import jaydebeapi
         except ImportError as exc:
@@ -76,6 +77,7 @@ class JdbcConnector(Connector):
             raise ConnectorError(str(exc)) from exc
 
     def close(self) -> None:
+        self.invalidate_catalog()
         if self._conn is not None:
             self._conn.close()
             self._conn = None
@@ -180,6 +182,9 @@ class JdbcConnector(Connector):
         # happens to be exactly max_rows long.
         limit = max_rows + 1 if max_rows else None
         try:
+            # Whether it succeeded or not: a DDL statement that failed
+            # half way may still have changed the catalog.
+            self._note_statement(sql)
             with self._lock:
                 cur = self._conn.cursor()
                 self._active_cursor = cur

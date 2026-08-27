@@ -171,6 +171,7 @@ class MysqlConnector(Connector):
         return kwargs
 
     def connect(self) -> None:
+        self.invalidate_catalog()
         host, port = self.host, self.port
         if self.ssh:
             from sqlide.backend.ssh import SshTunnel
@@ -241,6 +242,7 @@ class MysqlConnector(Connector):
                 continue
 
     def close(self) -> None:
+        self.invalidate_catalog()
         if self._conn is not None:
             try:
                 self._conn.close()
@@ -931,7 +933,13 @@ class MysqlConnector(Connector):
         # One row past the cap: the extra is what tells truncated from
         # a result that happens to be exactly max_rows long.
         limit = max_rows + 1 if max_rows else None
-        columns, rows, rowcount = self._run(sql, fetch_limit=limit)
+        try:
+            columns, rows, rowcount = self._run(sql, fetch_limit=limit)
+        finally:
+            # In a finally: a DDL statement that failed may still have
+            # applied part of itself (MySQL commits each one), so the
+            # cache is dropped whether or not the statement succeeded.
+            self._note_statement(sql)
         if columns:
             truncated = max_rows is not None and len(rows) > max_rows
             return ResultSet(
@@ -979,25 +987,15 @@ class MysqlConnector(Connector):
     ) -> None:
         if not pk_values:
             raise ConnectorError("Refusing to update without a primary-key filter")
-        # Only identifiers the catalog vouches for reach the SQL text.
-        known = {c.name for c in self.list_columns(table)}
-        if not known:
-            raise ConnectorError(f"No such table: {table}")
-        unknown = ({column} | set(pk_values)) - known
-        if unknown:
-            raise ConnectorError(
-                f"Unknown column(s) for {table}: {', '.join(sorted(unknown))}"
-            )
+        # Only identifiers the catalog vouches for reach the SQL text
+        # (cached, and re-read on a miss before rejecting anything).
+        self._assert_known_columns(table, {column, *pk_values})
         where = " AND ".join(f"{self.quote_ident(k)} = %s" for k in pk_values)
         sql = (
             f"UPDATE {self.quote_ident(table)} "
             f"SET {self.quote_ident(column)} = %s WHERE {where}"
         )
         self._run(sql, (value, *pk_values.values()), expect_rowcount=1)
-
-    def _assert_known_table(self, table: str) -> None:
-        if table not in {t.name for t in self.list_tables()}:
-            raise ConnectorError(f"No such table or view: {table}")
 
     def quote_ident(self, name: str) -> str:
         if not name:

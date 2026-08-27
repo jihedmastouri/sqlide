@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from secrets import token_hex
 from typing import Any
 
+from sqlide.backend import sql_risk
 from sqlide.backend.db.extensions import ExtensionState
 
 
@@ -366,6 +368,69 @@ class ResultSet:
         return len(self.rows)
 
 
+class CatalogCache:
+    """What one connection has already read from its own catalog.
+
+    Entries are keyed by (kind, database, schema, name) — the name
+    being the table a column listing belongs to, "" for the listings
+    that cover a whole schema — so nothing a switch of database or
+    schema invalidates can be answered from the scope before it.
+
+    There is no TTL, deliberately. A clock cannot know when someone
+    else ran an ALTER, so a short TTL would only make the stale window
+    smaller while pretending it had closed; what makes an entry wrong
+    is an event, and every event we can observe drops the entry (see
+    Connector.invalidate_catalog). The one case nobody can observe —
+    another session changing the schema — is handled where it matters,
+    in validation: a name the cache does not know is re-read from the
+    server before it is rejected (Connector._assert_known_columns), so the
+    cache can never turn a real column into an error. It can still
+    briefly *hold* an object another session dropped, which is why a
+    statement built from cached names is checked by the server anyway:
+    the cache decides what reaches the SQL text, the server decides
+    what exists.
+    """
+
+    def __init__(self) -> None:
+        # Reentrant: a loader may itself ask the cache for something
+        # else (paging_strategy wants columns and the row key).
+        self._lock = threading.RLock()
+        self._entries: dict[tuple, Any] = {}
+
+    def get(self, key: tuple, load) -> Any:
+        """The cached value for `key`, calling `load()` for it once.
+
+        `load` runs outside the lock: it goes to the server, and a
+        catalog query is not something to hold a lock across. Two
+        threads racing on a cold key both load and the second one's
+        answer wins, which costs one extra round trip and never a
+        wrong answer.
+        """
+        with self._lock:
+            if key in self._entries:
+                return self._entries[key]
+        value = load()
+        with self._lock:
+            self._entries[key] = value
+        return value
+
+    def store(self, key: tuple, value: Any) -> None:
+        with self._lock:
+            self._entries[key] = value
+
+    def drop(self, key: tuple) -> None:
+        with self._lock:
+            self._entries.pop(key, None)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+
 class ConnectorError(Exception):
     """Raised by adapters for any database failure, wrapping the driver error."""
 
@@ -503,10 +568,133 @@ class Connector(ABC):
     Adapters own all dialect differences: identifier quoting, catalog
     queries, pagination syntax. Driver exceptions must be re-raised as
     ConnectorError with a readable message.
+
+    Catalog reads a connection makes on its own behalf — the ones
+    behind validation and paging — go through the catalog_* methods
+    below rather than through list_tables()/list_columns() directly,
+    so they are answered from this connection's CatalogCache
+    (CORE-41). The list_* methods stay the uncached truth: an adapter
+    implements those, and a caller that must see the server (the
+    reload behind a validation miss) asks them.
     """
 
     @abstractmethod
     def connect(self) -> None: ...
+
+    # Catalog cache (CORE-41)
+    #
+    # Invalidation, in one place, because a stale catalog is worse
+    # than a slow one. Everything that can change this connection's
+    # catalog and that we can observe drops the whole cache:
+    #
+    #   * any statement run through execute() that is not a plain
+    #     read, a row change or transaction control — see
+    #     _note_statement(); every DDL path in the app (the definition
+    #     tab, the table designer, drop dialogs, extension install and
+    #     drop, the console) ends in execute(), so hooking it there
+    #     covers them all rather than one screen at a time;
+    #   * connect() and close(), so a reconnect starts empty;
+    #   * a change of the schema names resolve in (set_search_path);
+    #   * the sidebar's Refresh, through invalidate_catalog().
+    #
+    # A change of database is not in that list because it does not
+    # need to be: the app holds one connector per (connection,
+    # database, schema), so switching creates a different connector
+    # with a cache of its own — and the scope is in the key anyway.
+
+    @property
+    def catalog_cache(self) -> CatalogCache:
+        """This connection's cache, created on first use.
+
+        A property rather than a constructor line: every adapter
+        writes its own __init__ and none of them calls super(), so a
+        base-class attribute would have to be added four times and
+        would be missing from the fifth adapter somebody writes.
+        """
+        cache = getattr(self, "_catalog_cache", None)
+        if cache is None:
+            cache = CatalogCache()
+            self._catalog_cache = cache
+        return cache
+
+    def invalidate_catalog(self) -> None:
+        """Forget everything cached about this connection's catalog.
+
+        Coarse on purpose: working out which entries one ALTER touched
+        is guesswork (a rename shows up under two names, a CASCADE
+        drop reaches objects the statement never named), and the cost
+        of being wrong is a wrong answer. The cost of being coarse is
+        one catalog query.
+        """
+        self.catalog_cache.clear()
+
+    def _catalog_scope(self) -> tuple[str, str]:
+        """(database, schema) this connection currently resolves names
+        in, read from the adapter's own attributes rather than from the
+        server — a cache key must not itself cost a round trip."""
+        return (
+            str(getattr(self, "database", "") or ""),
+            str(getattr(self, "schema", "") or ""),
+        )
+
+    def _catalog_key(self, kind: str, name: str = "") -> tuple:
+        database, schema = self._catalog_scope()
+        return (kind, database, schema, name)
+
+    def catalog_tables(self, *, reload: bool = False) -> list[TableInfo]:
+        """list_tables(), cached for this connection."""
+        key = self._catalog_key("tables")
+        if reload:
+            self.catalog_cache.drop(key)
+        return list(self.catalog_cache.get(key, self.list_tables))
+
+    def catalog_columns(
+        self, table: str, *, reload: bool = False
+    ) -> list[ColumnInfo]:
+        """list_columns(table), cached for this connection."""
+        key = self._catalog_key("columns", table)
+        if reload:
+            self.catalog_cache.drop(key)
+        return list(
+            self.catalog_cache.get(key, lambda: self.list_columns(table))
+        )
+
+    def catalog_relations(self, *, reload: bool = False) -> list[RelationInfo]:
+        """list_relations(), cached for this connection."""
+        key = self._catalog_key("relations")
+        if reload:
+            self.catalog_cache.drop(key)
+        return list(self.catalog_cache.get(key, self.list_relations))
+
+    def catalog_schemas(
+        self, *, include_system: bool = False, reload: bool = False
+    ) -> list[str]:
+        """list_schemas(), cached for this connection. The system
+        schemas are a different listing, so they are a different key
+        rather than a filter over one."""
+        key = self._catalog_key("schemas", "system" if include_system else "")
+        if reload:
+            self.catalog_cache.drop(key)
+        return list(
+            self.catalog_cache.get(
+                key, lambda: self.list_schemas(include_system=include_system)
+            )
+        )
+
+    def _note_statement(self, sql: str) -> None:
+        """Drop the cache if `sql` could have changed the catalog.
+
+        Called by every adapter's execute(). The rule is the cautious
+        way round: a statement keeps the cache only when it is plainly
+        a read, a row change or transaction control. Anything else —
+        CREATE, ALTER, DROP, TRUNCATE, and the statements the
+        classifier cannot name at all (COMMENT ON, RENAME TABLE, a
+        procedure call that does DDL inside) — invalidates. Being
+        wrong that way costs one catalog query; being wrong the other
+        way puts a dropped table's name into a statement.
+        """
+        if sql_risk.changes_catalog(sql):
+            self.invalidate_catalog()
 
     @abstractmethod
     def close(self) -> None: ...
@@ -658,7 +846,7 @@ class Connector(ABC):
         """Foreign keys *pointing at* this table — the mirror of the
         table's own. Derived from list_relations() here, so every
         adapter with a foreign-key catalog gets it for free."""
-        return [r for r in self.list_relations() if r.ref_table == table]
+        return [r for r in self.catalog_relations() if r.ref_table == table]
 
     def list_partitions(self, table: str) -> list[ObjectSummary]:
         """The partitions of a partitioned table."""
@@ -1177,7 +1365,7 @@ class Connector(ABC):
         an order nobody guarantees, which paging_strategy() says out
         loud rather than hiding.
         """
-        return [c.name for c in self.list_columns(table) if c.is_pk]
+        return [c.name for c in self.catalog_columns(table) if c.is_pk]
 
     def paging_strategy(
         self, table: str, order_by: list[SortSpec] | None = None
@@ -1190,7 +1378,7 @@ class Connector(ABC):
         user = list(order_by or [])
         try:
             key = self.row_key_columns(table)
-            selectable = {c.name for c in self.list_columns(table)}
+            selectable = {c.name for c in self.catalog_columns(table)}
         except ConnectorError:
             key, selectable = [], set()
         if not key:
@@ -1295,6 +1483,39 @@ class Connector(ABC):
             statement=query.display,
         )
 
+    def _assert_known_table(self, table: str) -> None:
+        """Refuse a name the catalog does not list as a relation, so
+        only identifiers the catalog vouches for reach the SQL text.
+
+        Answered from the cache, and a miss is a reload rather than a
+        rejection: a table another session created must be openable
+        without reconnecting first. So the price of the check is one
+        catalog query per connection, and a wrong answer still costs
+        exactly what it did before — a round trip.
+        """
+        if table in {t.name for t in self.catalog_tables()}:
+            return
+        if table in {t.name for t in self.catalog_tables(reload=True)}:
+            return
+        raise ConnectorError(f"No such table or view: {table}")
+
+    def _assert_known_columns(self, table: str, used: set[str]) -> None:
+        """Refuse column names `table` does not have, on the same
+        cache-then-reload rule as _assert_known_table: a column added
+        by somebody else is picked up, not blocked."""
+        if not used:
+            return
+        known = {c.name for c in self.catalog_columns(table)}
+        if used <= known and known:
+            return
+        known = {c.name for c in self.catalog_columns(table, reload=True)}
+        if not known:
+            raise ConnectorError(f"No such table: {table}")
+        if unknown := used - known:
+            raise ConnectorError(
+                f"Unknown column(s) for {table}: {', '.join(sorted(unknown))}"
+            )
+
     def _assert_filter_columns(
         self,
         table: str,
@@ -1303,15 +1524,11 @@ class Connector(ABC):
     ) -> None:
         """Reject filter/sort column names the catalog doesn't vouch for,
         so they never reach the SQL text. Skipped when neither is set —
-        list_columns() can cost a catalog round trip."""
+        the first page of a table needs no column listing at all."""
         if not filters and not order_by:
             return
         used = {f.column for f in filters or []} | {s.column for s in order_by or []}
-        unknown = used - {c.name for c in self.list_columns(table)}
-        if unknown:
-            raise ConnectorError(
-                f"Unknown column(s) for {table}: {', '.join(sorted(unknown))}"
-            )
+        self._assert_known_columns(table, used)
 
     @abstractmethod
     def execute(self, sql: str, max_rows: int | None = None) -> ResultSet | int:
@@ -1408,20 +1625,18 @@ class Connector(ABC):
         self, table: str, operations: list[RowOperation]
     ) -> None:
         """One catalog lookup for the batch: every column named by any
-        operation has to be one the table actually has."""
-        known = {c.name for c in self.list_columns(table)}
-        if not known:
-            raise ConnectorError(f"No such table: {table}")
+        operation has to be one the table actually has. Cached, so a
+        second Save on the same table costs none at all."""
         used: set[str] = set()
         for op in operations:
             used |= set(op.pk_values)
             if op.column:
                 used.add(op.column)
-        unknown = used - known
-        if unknown:
-            raise ConnectorError(
-                f"Unknown column(s) for {table}: {', '.join(sorted(unknown))}"
-            )
+        if not self.catalog_columns(table) and not self.catalog_columns(
+            table, reload=True
+        ):
+            raise ConnectorError(f"No such table: {table}")
+        self._assert_known_columns(table, used)
 
     def _apply_operation(
         self, table: str, op: RowOperation, index: int

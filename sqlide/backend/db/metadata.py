@@ -104,6 +104,11 @@ class Capabilities:
     partitions: bool = False
     pragmas: bool = False  # SQLite's PRAGMA settings
     constraints: bool = False  # a constraint catalog of its own
+    #: The key constraints are worth a section (and a folder) of their
+    #: own, beside the full constraint list — true where the primary
+    #: key and the unique constraints are what a person looks for and
+    #: the rest is CHECK text (SQ-01).
+    keys: bool = False
     rules: bool = False  # rewrite rules (PostgreSQL)
     policies: bool = False  # row-level security policies (PostgreSQL)
     dependencies: bool = False  # what depends on an object is readable
@@ -451,6 +456,22 @@ class MetadataProvider:
         """
         return False
 
+    @classmethod
+    def is_system_object(cls, name: str) -> bool:
+        """Is `name` an object the engine owns rather than the user?
+
+        The per-object twin of `is_system_schema`, for the engines
+        whose internals live beside the user's objects instead of in a
+        schema of their own: SQLite's `sqlite_*` tables are in the one
+        namespace there is (SQ-01). False by default — an engine that
+        keeps its catalog somewhere else has nothing to mark here.
+
+        Answerable without a connection, so a row can be styled as it
+        is built, and dimming is all it means: the row expands, opens
+        and refreshes like any other.
+        """
+        return False
+
     def capabilities(self) -> Capabilities:
         return self.CAPABILITIES
 
@@ -614,6 +635,7 @@ class MetadataProvider:
         """
         caps = cls.CAPABILITIES
         gated = {
+            "keys": caps.keys,
             "constraints": caps.constraints,
             "partitions": caps.partitions,
             "rules": caps.rules,
@@ -1135,13 +1157,25 @@ class MetadataProvider:
     #: postgres/metadata.py, PG-02).
     LEVEL_CATEGORIES: dict[str, tuple[str, ...]] = {}
 
+    #: Folders this engine spells differently from the shared
+    #: vocabulary: slug -> label. SQLite's only triggers are a table's,
+    #: and its tree says so ("Table Triggers", SQ-01) rather than
+    #: repeating the word the section under every table already uses.
+    CATEGORY_LABEL_OVERRIDES: dict[str, str] = {}
+
+    @classmethod
+    def category_label(cls, slug: str) -> str:
+        """What this engine calls one folder — its own word for it
+        where it has one, the shared label otherwise."""
+        return cls.CATEGORY_LABEL_OVERRIDES.get(slug) or CATEGORY_LABELS[slug]
+
     @classmethod
     def level_categories(cls, level: str) -> tuple[tuple[str, str], ...]:
         """(slug, label) for the folders `level` shows, decided by the
         declaration alone so the sidebar can lay a level out before it
         has asked the server anything (CORE-02)."""
         return tuple(
-            (slug, CATEGORY_LABELS[slug])
+            (slug, cls.category_label(slug))
             for slug in cls.LEVEL_CATEGORIES.get(level, ())
         )
 
@@ -1167,8 +1201,9 @@ class MetadataProvider:
     def catalog_category(self, ref: NodeRef, slug: str) -> NodeRef:
         """One catalog folder under `ref`, labelled the one way
         CATALOG_CATEGORIES spells it."""
-        label, _kind = CATALOG_CATEGORIES[slug]
-        return ref.child("category", label, category=slug)
+        return ref.child(
+            "category", self.category_label(slug), category=slug
+        )
 
     def _catalog_children(self, ref: NodeRef, slug: str) -> list[NodeRef]:
         """The rows of a catalog folder: the accounts, the sub-folders
@@ -1204,6 +1239,7 @@ class MetadataProvider:
                 ref.child(
                     "view" if want_view else "table", info.name,
                     detail=self.object_detail(info),
+                    system=ref.system or self.is_system_object(info.name),
                 )
                 for info in self._objects(ref)
                 if (info.kind == "view") == want_view
@@ -1211,7 +1247,10 @@ class MetadataProvider:
         if slug in ("functions", "procedures"):
             kind = "function" if slug == "functions" else "procedure"
             return [
-                ref.child(kind, function.name, category=slug)
+                ref.child(
+                    kind, function.name, category=slug,
+                    detail=function.detail,
+                )
                 for function in _safe(
                     lambda: self.connector.list_routines(kind), []
                 )

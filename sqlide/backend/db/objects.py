@@ -95,6 +95,13 @@ CATALOG_KINDS = frozenset(
     if kind not in ("table", "view", "category", "principal")
 )
 
+#: The constraint kinds the Keys section holds: a key is a constraint
+#: that names a set of columns as identifying, which is the primary key
+#: and the unique ones. A foreign key is a reference and has its own
+#: section, and a CHECK constrains values rather than identifying rows.
+_KEY_KINDS = ("PRIMARY KEY", "UNIQUE")
+
+
 #: Human name per kind, for the header line.
 TYPE_LABELS = {
     "connection": "Connection",
@@ -383,8 +390,11 @@ def _category(
         functions = _safe(lambda: connector.list_routines(child), [])
         detail = DetailTable(
             title=name,
-            columns=["Name"],
-            rows=[(f.name,) for f in functions],
+            # The note a routine carries where it is a special case:
+            # a built-in nobody can edit (SQ-01). Blank for a stored
+            # routine, which is every row on the engines that have any.
+            columns=["Name", "Detail"],
+            rows=[(f.name, f.detail) for f in functions],
             links=[ObjectRef(child, f.name) for f in functions],
         )
     elif slug == "indexes":
@@ -792,6 +802,7 @@ _BUILDERS = {
 PROPERTY_SECTIONS = (
     ("general", "General"),
     ("columns", "Columns"),
+    ("keys", "Keys"),
     ("constraints", "Constraints"),
     ("foreign_keys", "Foreign keys"),
     ("references", "References"),
@@ -898,6 +909,23 @@ def _property_table(connector, name, slug, columns) -> DetailTable:
             ],
             links=[ObjectRef("column", c.name, name) for c in columns],
             empty_note="(no columns)",
+        )
+    if slug == "keys":
+        # The key constraints on their own — the primary key and the
+        # unique ones — out of the same constraint listing Constraints
+        # shows in full (SQ-01). One folder is a subset of the other
+        # rather than a second query: an engine that keeps no
+        # constraint catalog reads them back off its PRAGMAs once.
+        found = [
+            c for c in _safe(lambda: connector.list_constraints(name), [])
+            if c.kind in _KEY_KINDS
+        ]
+        return DetailTable(
+            title=title,
+            columns=["Name", "Kind", "Columns"],
+            rows=[(c.name, c.kind, c.columns) for c in found],
+            links=[None] * len(found),
+            empty_note="(no keys)",
         )
     if slug == "constraints":
         found = _safe(lambda: connector.list_constraints(name), [])

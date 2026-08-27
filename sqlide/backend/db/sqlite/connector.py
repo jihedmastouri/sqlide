@@ -16,6 +16,7 @@ from sqlide.backend.db.base import (
     FilterCondition,
     FunctionInfo,
     IndexInfo,
+    ObjectSummary,
     RelationInfo,
     ResultSet,
     SortSpec,
@@ -25,6 +26,32 @@ from sqlide.backend.db.base import (
     TypeSpec,
     build_filter_clauses,
 )
+
+#: The built-ins to fall back on where `pragma_function_list` is not
+#: compiled in (SQLite before 3.30). Not the whole set — the core
+#: scalar and aggregate functions of every build, which is what a
+#: person is looking for in the folder.
+_BUILTIN_FUNCTIONS = (
+    "abs", "avg", "changes", "char", "coalesce", "count", "date",
+    "datetime", "glob", "group_concat", "hex", "ifnull", "iif",
+    "instr", "julianday", "last_insert_rowid", "length", "like",
+    "lower", "ltrim", "max", "min", "nullif", "printf", "quote",
+    "random", "randomblob", "replace", "round", "rtrim", "sqlite_version",
+    "strftime", "substr", "sum", "time", "total", "total_changes",
+    "trim", "typeof", "unicode", "upper", "zeroblob",
+)
+
+#: What `pragma_function_list.type` calls a function's kind.
+_FUNCTION_KINDS = {"s": "scalar", "a": "aggregate", "w": "window"}
+
+
+def _function_detail(kind: str, builtin: Any) -> str:
+    """The note a Functions row carries: what the function is, and that
+    it cannot be edited from here — SQLite has no CREATE FUNCTION, so
+    every row in that folder is read-only (SQ-01)."""
+    origin = "built-in" if builtin else "registered"
+    return f"{origin} {_FUNCTION_KINDS.get(kind, 'function')} (read-only)"
+
 
 _TEMPLATES = {
     "table": (
@@ -199,10 +226,15 @@ class SqliteConnector(Connector):
             raise ConnectorError(str(exc)) from exc
 
     def list_tables(self) -> list[TableInfo]:
+        # SQLite's own tables — sqlite_sequence, sqlite_stat1, the
+        # autoindex bookkeeping — live in the one namespace there is,
+        # so they are listed rather than hidden and the tree dims them
+        # instead (SQ-01; the provider's is_system_object says which).
+        # They sort last, the way a system schema does (PG-03).
         _, rows, _ = self._run(
             "SELECT name, type FROM sqlite_master "
-            "WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' "
-            "ORDER BY name"
+            "WHERE type IN ('table', 'view') "
+            "ORDER BY (name LIKE 'sqlite_%'), name"
         )
         return [TableInfo(name=name, kind=kind) for name, kind in rows]
 
@@ -331,13 +363,87 @@ class SqliteConnector(Connector):
         return [sql.strip() for (sql,) in rows if sql and sql.strip()]
 
     def list_functions(self) -> list[FunctionInfo]:
-        # SQLite has no stored functions or procedures; triggers are
-        # its programmable objects, so they populate Functions.
-        _, rows, _ = self._run(
-            "SELECT name FROM sqlite_master WHERE type = 'trigger' "
-            "ORDER BY name"
+        """The functions SQL on this connection can call.
+
+        SQLite has no stored functions: every one of these is either
+        built into the library or registered by the process that opened
+        the file, so the listing is read-only — there is no CREATE
+        FUNCTION to offer and no catalog to drop from (SQ-01). Each row
+        says which it is, and the Functions folder shows that note.
+
+        `pragma_function_list` arrived in 3.30; an older library
+        answers with the built-ins this adapter knows about instead of
+        an empty folder.
+        """
+        for query in (
+            # `builtin` (3.34) tells a function the library ships from
+            # one the process registered; an older library answers the
+            # kind alone and every row is called built-in.
+            "SELECT name, type, builtin FROM pragma_function_list "
+            "GROUP BY name ORDER BY name",
+            "SELECT name, type, 1 FROM pragma_function_list "
+            "GROUP BY name ORDER BY name",
+        ):
+            try:
+                _, rows, _ = self._run(query)
+            except ConnectorError:
+                continue
+            return [
+                FunctionInfo(name=name, detail=_function_detail(kind, builtin))
+                for name, kind, builtin in rows
+            ]
+        return [
+            FunctionInfo(name=name, detail="built-in scalar (read-only)")
+            for name in _BUILTIN_FUNCTIONS
+        ]
+
+    def list_catalog(self, slug: str, schema: str = "") -> list[ObjectSummary]:
+        """The looser folders of the object tree (SQ-01). Two of them
+        exist here, and neither is a catalog of things somebody
+        created:
+
+        * **Sequences** is `sqlite_sequence`, the one row per
+          AUTOINCREMENT table that records the highest rowid used. A
+          file where nothing declared AUTOINCREMENT has no such table,
+          and the folder is empty rather than an error.
+        * **Data Types** is the five storage classes and the affinity
+          rules around them — what SQLite has instead of a type
+          catalog, so the rows are the same declaration the table
+          designer offers (`column_type_specs`) and none of them is
+          user-defined.
+        """
+        if slug == "sequences":
+            return self._catalog_sequences()
+        if slug == "data_types":
+            return [
+                ObjectSummary(
+                    name=spec.name,
+                    kind="data_type",
+                    detail=spec.note,
+                    definition=spec.render(spec.defaults),
+                )
+                for spec in self.column_type_specs()
+            ]
+        return []
+
+    def _catalog_sequences(self) -> list[ObjectSummary]:
+        _, present, _ = self._run(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'sqlite_sequence'"
         )
-        return [FunctionInfo(name=name) for (name,) in rows]
+        if not present:
+            return []
+        _, rows, _ = self._run(
+            "SELECT name, seq FROM sqlite_sequence ORDER BY name"
+        )
+        return [
+            ObjectSummary(
+                name=name,
+                kind="sequence",
+                detail=f"AUTOINCREMENT on {name}, last rowid {seq}",
+            )
+            for name, seq in rows
+        ]
 
     def list_indexes(self) -> list[IndexInfo]:
         # Autoindexes (sqlite_autoindex_*) back PRIMARY KEY/UNIQUE

@@ -32,6 +32,11 @@ class ColumnInfo:
 @dataclass(frozen=True)
 class FunctionInfo:
     name: str
+    #: A one-line note for the row, where the routine is a special
+    #: case: a built-in an engine ships rather than one somebody
+    #: created (SQLite has only those). Empty for a stored routine,
+    #: which is what the sidebar shows nothing extra for.
+    detail: str = ""
 
 
 @dataclass(frozen=True)

@@ -13,7 +13,13 @@ from __future__ import annotations
 from gi.repository import Adw, Gdk, GObject, Gtk
 
 from sqlide import APP_ID, __version__
-from sqlide.backend.settings import THEMES, TIME_ZONES, Settings, store
+from sqlide.backend.settings import (
+    KEYWORD_CASES,
+    THEMES,
+    TIME_ZONES,
+    Settings,
+    store,
+)
 from sqlide.backend.sql_risk import CONFIRM_MODES
 from sqlide.frontend import feedback, keymap
 from sqlide.frontend.backup_dialog import BackupWindow
@@ -32,6 +38,12 @@ _CONFIRM_LABELS = (
     "Always",
     "Outside Development",
     "Never",
+)
+# Parallel to settings.KEYWORD_CASES.
+_KEYWORD_CASE_LABELS = (
+    "UPPER CASE",
+    "lower case",
+    "Follow What You Type",
 )
 # Parallel to settings.TIME_ZONES.
 _TIME_ZONE_LABELS = (
@@ -117,6 +129,21 @@ class PreferencesDialog(Adw.PreferencesDialog):
             ),
         )
         group.add(follow_row)
+
+        case_row = Adw.ComboRow(
+            title="Keyword Completion Case",
+            subtitle="How completion spells a keyword. Table and "
+            "column names always keep the case the database reports.",
+            model=Gtk.StringList.new(list(_KEYWORD_CASE_LABELS)),
+        )
+        case_row.set_selected(KEYWORD_CASES.index(settings.sql_keyword_case))
+        case_row.connect(
+            "notify::selected",
+            lambda row, *_: store.update(
+                sql_keyword_case=KEYWORD_CASES[row.get_selected()]
+            ),
+        )
+        group.add(case_row)
 
         page.add(group)
 

@@ -1,6 +1,6 @@
 ## CORE-48 — Keyword case for SQL autocompletion
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-13
 
 ### Problem
@@ -26,10 +26,21 @@ the case the catalog reports, since they can be case-sensitive.
 
 ### Acceptance criteria
 
-- [ ] The setting exists in the TOML config and in Preferences, defaulting to
+- [x] The setting exists in the TOML config and in Preferences, defaulting to
       `upper`.
-- [ ] All three modes behave as described, including `follow` with an empty prefix
+- [x] All three modes behave as described, including `follow` with an empty prefix
       (falls back to `upper`).
-- [ ] Identifier completions are unaffected by the setting.
-- [ ] Changing the setting takes effect without a restart.
-- [ ] Tests cover each mode, plus the empty-prefix and mixed-case cases.
+- [x] Identifier completions are unaffected by the setting.
+- [x] Changing the setting takes effect without a restart.
+- [x] Tests cover each mode, plus the empty-prefix and mixed-case cases.
+
+### Notes
+
+settings.toml is flat, so the key is spelled `sql_keyword_case`
+(documented in docs/configuration.md) rather than `sql.keyword_case`.
+The mode is applied in one place — `backend.settings.
+apply_keyword_case()` — which the completion controller runs over every
+suggestion whose detail is `keyword`, so the built-in word list and a
+language server's keyword items agree and identifier suggestions are
+left in the case the catalog reported. The setting is read per request,
+so a change reaches the next popup without a restart.

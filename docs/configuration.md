@@ -124,6 +124,7 @@ key with a value outside its set is reported and falls back.
 | `confirm_destructive` | `"always"` \| `"non-dev"` \| `"never"` | `"non-dev"` | When a destructive statement asks first. `"non-dev"` runs development connections without a prompt. |
 | `max_result_rows` | integer ≥ 0 | `5000` | Row cap for a console or preview statement. `0` means no cap. |
 | `time_zone` | `"local"` \| `"utc"` \| `"server"` | `"local"` | Which zone a database session reports timestamps in. `"server"` takes whatever the server is set to. |
+| `sql_keyword_case` | `"upper"` \| `"lower"` \| `"follow"` | `"upper"` | The case completion inserts a SQL keyword in. `"follow"` matches the prefix you typed — all lower case gives `select`, a leading capital gives `SELECT` — and falls back to upper case when nothing is typed yet. Keywords only: table, column and schema names keep the case the catalog reports, since a server may treat it as significant. |
 | `sidebar_width` | integer | `280` | Width of the connections sidebar, in pixels. Clamped to 180–600; drag its inner edge to change it, double-click that edge to reset. |
 | `monitor_interval` | integer 1–60 | `2` | Seconds between samples in the [monitoring](/docs/monitoring/) dashboard. The dashboard's own control writes here; storage keeps its separate 60-second timer. |
 | `lsp_enabled` | boolean | `true` | Master switch for completion language servers. |

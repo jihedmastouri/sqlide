@@ -52,6 +52,17 @@
 | CORE-28 | Persist the designer's table model in the workspace | CORE-23 |
 | CORE-29 | Copy structure from an existing table, and saved templates | CORE-23, CORE-28 |
 
+### Charting (from RS-03)
+
+| ID | Title | Depends on |
+|---|---|---|
+| CORE-30 | Chart model and data mapping in the backend | CORE-02 |
+| CORE-31 | Cairo chart canvas, shared with the monitoring sparkline | CORE-30 |
+| CORE-32 | Chart view in the result tab, beside Data and Properties | CORE-30, CORE-31 |
+| CORE-33 | Persist chart specs: with the tab, and on saved queries | CORE-30, CORE-32 |
+| CORE-34 | Export a chart as PNG or SVG, and copy it | CORE-31, CORE-32 |
+| CORE-35 | Dashboard tab: several saved charts, refreshed together | CORE-33 |
+
 ### Monitoring
 
 | ID | Title | Depends on |
@@ -88,5 +99,5 @@
 |---|---|
 | RS-01 | Improve the Query Builder (done — see `docs/query-builder-research.md`, filed CORE-17…CORE-22) |
 | RS-02 | Improve the Table Creator (done — see `docs/table-creator-research.md`, filed CORE-23…CORE-29) |
-| RS-03 | BI / charting support |
+| RS-03 | BI / charting support (done — see `docs/charting-research.md`, filed CORE-30…CORE-35) |
 | RS-04 | DBeaver Comparission |

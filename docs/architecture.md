@@ -54,7 +54,7 @@ class MetadataProvider:
     def capabilities(self) -> Capabilities   # feature flags
     def list_children(self, ref) -> list[NodeRef]
     def describe(self, ref) -> ObjectInfo    # the info view (db/objects.py)
-    def property_sections(self) -> tuple[str, ...]   # a table's Properties
+    def property_sections(self) -> tuple[str, ...]   # the properties panel
     def table_properties(self, ref) -> ObjectInfo    # …and its descriptor
     def get_ddl(self, ref) -> str
     def list_grants(self, ref) -> list[PrivilegeInfo]
@@ -224,7 +224,7 @@ sqlide/
     ├── window.py           # one workspace: split view, tabs, pop-outs, connectors
     ├── sidebar.py           # lazy schema tree (TreeListModel)
     ├── tree_search.py       # sidebar search: matching, scopes, highlights
-    ├── object_info.py       # read-only info view for any tree node
+    ├── object_info.py       # info view for a node + the properties surface
     ├── users_tab.py         # accounts + privileges (review-then-run DDL)
     ├── permission_editor.py  # one principal: object tree + privilege grid
     ├── monitor_tab.py       # live dashboard: sessions, throughput, storage
@@ -233,7 +233,8 @@ sqlide/
     ├── backup_restore.py    # pick artifact -> pick target -> confirm -> run
     ├── notes_panel.py       # side panel Notes page + Markdown editor
     ├── extension_dialog.py  # install/update/drop an extension, confirmed
-    ├── data_grid.py         # ResultGrid + TableTab (Data | Properties | Map)
+    ├── side_panel.py        # right panel: Properties, Info, Notes, History…
+    ├── data_grid.py         # ResultGrid + TableTab (Data | Map)
     ├── map_view.py          # geometries drawn on OpenStreetMap tiles
     ├── query_console.py
     ├── sql_editor.py        # GtkSourceView 5 with TextView fallback

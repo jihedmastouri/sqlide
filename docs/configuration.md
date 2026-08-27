@@ -126,6 +126,7 @@ key with a value outside its set is reported and falls back.
 | `time_zone` | `"local"` \| `"utc"` \| `"server"` | `"local"` | Which zone a database session reports timestamps in. `"server"` takes whatever the server is set to. |
 | `sql_keyword_case` | `"upper"` \| `"lower"` \| `"follow"` | `"upper"` | The case completion inserts a SQL keyword in. `"follow"` matches the prefix you typed — all lower case gives `select`, a leading capital gives `SELECT` — and falls back to upper case when nothing is typed yet. Keywords only: table, column and schema names keep the case the catalog reports, since a server may treat it as significant. |
 | `sidebar_width` | integer | `280` | Width of the connections sidebar, in pixels. Clamped to 180–600; drag its inner edge to change it, double-click that edge to reset. |
+| `side_panel_width` | integer | `340` | Width of the right side panel (Properties, Info, Notes, History…), in pixels. Clamped to 260–900; drag its inner edge to change it. |
 | `monitor_interval` | integer 1–60 | `2` | Seconds between samples in the [monitoring](/docs/monitoring/) dashboard. The dashboard's own control writes here; storage keeps its separate 60-second timer. |
 | `lsp_enabled` | boolean | `true` | Master switch for completion language servers. |
 | `show_system_schemas` | boolean | `true` | Keep `information_schema` and the server's own catalog in the object tree. Shown dimmed and after the user's schemas; off hides them entirely. |

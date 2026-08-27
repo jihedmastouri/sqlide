@@ -46,8 +46,8 @@ into an EditableLabel, so setting a cell to NULL instead goes through
 the cell's right-click menu ("Set Cell to NULL", enabled only while
 unlocked) — it calls on_edit with None rather than "".
 
-A table whose rows hold geometries grows a third side, Map, next to
-Data and Properties (frontend/map_view.py): the loaded rows drawn on
+A table whose rows hold geometries grows a second side, Map, next to
+Data (frontend/map_view.py): the loaded rows drawn on
 OpenStreetMap tiles, with selection running both ways — clicking a
 feature selects its row, selecting a row highlights its feature.
 """
@@ -64,7 +64,7 @@ from decimal import Decimal
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
 from sqlide.backend.connections import ConnectionProfile
-from sqlide.backend.db import geo, objects, registry
+from sqlide.backend.db import geo, registry
 from sqlide.backend.db.base import (
     CONJUNCTIONS,
     FILTER_OPERATORS,
@@ -78,7 +78,6 @@ from sqlide.backend.workspaces import TabState
 from sqlide.backend.settings import max_map_features as settings_max_map_features
 from sqlide.backend.settings import store as settings_store
 from sqlide.frontend import confirm, feedback, keymap
-from sqlide.frontend.object_info import TablePropertiesView
 from sqlide.frontend.util import describe, run_async
 
 PAGE_SIZE = 500
@@ -1623,17 +1622,17 @@ class UpdatePreviewDialog(Adw.Dialog):
 
 
 class TableTab(Gtk.Box):
-    """Content of one open table: a Data side and a Properties side.
+    """Content of one open table: its data.
 
-    Data is the paged grid plus its action bar. Properties is the same
-    read-only descriptor the info view renders (CORE-04), showing the
-    sections this engine has — columns, constraints, keys, indexes,
-    triggers, partitions, policies, the DDL — with every row opening
-    that child object's own info view.
+    The paged grid plus its action bar. A table's properties are not a
+    mode of this tab any more (CORE-47 supersedes CORE-04's Data |
+    Properties toggle): they live in the right side panel, which
+    follows whichever tab is active, and can be torn off into a window
+    of their own. Opening a table shows its rows, full stop.
 
-    The toggle at the top switches which is visible; both stay built,
-    so unsaved edits, filters and the grid's scroll position survive a
-    trip through Properties and back.
+    The Map side (PG-04) is still a side of this tab, because it draws
+    the rows that are loaded here; its toggle appears only once a load
+    finds geometries on a server that has a spatial extension.
 
     Cell editing is locked until the pencil toggle is pressed. Edits are
     held locally (pending) and only hit the database after Save, which
@@ -1651,9 +1650,6 @@ class TableTab(Gtk.Box):
         ensure_connector: Callable[[ConnectionProfile], Connector],
         show_error: Callable[[str], None],
         on_aggregate: AggregateCallback | None = None,
-        on_open_object: Callable[
-            [ConnectionProfile, objects.ObjectRef], None
-        ] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.profile = profile
@@ -1685,13 +1681,14 @@ class TableTab(Gtk.Box):
         self.read_only = False
         self._row_range = "loading…"
 
-        # Data and Properties are two sides of one tab, held in a stack
-        # so switching between them keeps both alive: the grid's rows,
-        # its scroll position, its filters and any unsaved edits are
-        # still there when the user comes back from Properties.
+        # Data and Map are two sides of one tab, held in a stack so
+        # switching between them keeps both alive: the grid's rows, its
+        # scroll position, its filters and any unsaved edits are still
+        # there when the user comes back from the map.
         self._stack = Gtk.Stack(vexpand=True)
         self._stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
-        self.append(self._view_switch())
+        self._switch_row = self._view_switch()
+        self.append(self._switch_row)
         self.append(self._stack)
         data = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self._stack.add_named(data, "data")
@@ -1776,11 +1773,6 @@ class TableTab(Gtk.Box):
         # extension, otherwise its name.
         self._spatial = None
 
-        self._properties = TablePropertiesView(
-            profile, table, ensure_connector, show_error, on_open_object
-        )
-        self._stack.add_named(self._properties, "properties")
-
         self._prev.set_sensitive(False)
         self._next.set_sensitive(False)
         self.reload()
@@ -1791,24 +1783,18 @@ class TableTab(Gtk.Box):
         )
 
     def _view_switch(self) -> Gtk.Widget:
-        """The Data | Properties toggle at the top of every table tab.
+        """The Data | Map toggle at the top of a table tab.
 
-        Two linked toggles rather than a menu: which side is showing is
-        part of the tab, and it should be readable without clicking
-        anything."""
-        row = Gtk.CenterBox(margin_top=6, margin_bottom=6)
+        Hidden until a load finds geometry columns: a table with no map
+        to draw has one side, so it gets no switch at all. Two linked
+        toggles rather than a menu — which side is showing should be
+        readable without clicking anything.
+        """
+        row = Gtk.CenterBox(margin_top=6, margin_bottom=6, visible=False)
         linked = Gtk.Box(spacing=0)
         linked.add_css_class("linked")
         self._data_toggle = Gtk.ToggleButton(label="Data", active=True)
         describe(self._data_toggle, "The table's rows")
-        self._properties_toggle = Gtk.ToggleButton(label="Properties")
-        describe(
-            self._properties_toggle,
-            "Everything else about the table: columns, keys, indexes, DDL",
-        )
-        self._properties_toggle.set_group(self._data_toggle)
-        # Map is a third side, offered only once a load finds geometry
-        # columns on a server that has a spatial extension.
         self._map_toggle = Gtk.ToggleButton(label="Map", visible=False)
         describe(
             self._map_toggle,
@@ -1816,10 +1802,8 @@ class TableTab(Gtk.Box):
         )
         self._map_toggle.set_group(self._data_toggle)
         self._data_toggle.connect("toggled", self._on_view_toggled)
-        self._properties_toggle.connect("toggled", self._on_view_toggled)
         self._map_toggle.connect("toggled", self._on_view_toggled)
         linked.append(self._data_toggle)
-        linked.append(self._properties_toggle)
         linked.append(self._map_toggle)
         row.set_center_widget(linked)
         return row
@@ -1829,31 +1813,11 @@ class TableTab(Gtk.Box):
         # state as well; only the one that gained it is a switch.
         if not button.get_active():
             return
-        if button is self._data_toggle:
-            self._stack.set_visible_child_name("data")
-            return
         if button is self._map_toggle:
             self._stack.set_visible_child_name("map")
             self._refresh_map()
             return
-        self._stack.set_visible_child_name("properties")
-        self._properties.ensure_loaded()
-
-    def show_properties(self, section: str = "") -> None:
-        """Switch this tab to Properties, optionally on one section.
-
-        This is where a sidebar deep link lands (CORE-05): *Tables →
-        orders → Indexes* opens (or reuses) the orders tab, flips it to
-        Properties and scrolls to Indexes. The grid keeps everything it
-        had, exactly as the toggle would leave it.
-        """
-        self._properties_toggle.set_active(True)
-        # The toggle's handler does the switch; do it here too so a
-        # deep link into a tab already showing Properties still works.
-        self._stack.set_visible_child_name("properties")
-        self._properties.ensure_loaded()
-        if section:
-            self._properties.select_section(section)
+        self._stack.set_visible_child_name("data")
 
     def show_map(self, column: str = "", row: int | None = None) -> None:
         """Switch this tab to the Map side, optionally on one column
@@ -1934,6 +1898,8 @@ class TableTab(Gtk.Box):
         self._grid.geo_enabled = True
         has_geo = bool(self._grid.geometry_columns())
         self._map_toggle.set_visible(has_geo)
+        # The switch row exists for the map: no map, no row.
+        self._switch_row.set_visible(has_geo)
         if not has_geo:
             if self._map_toggle.get_active():
                 self._data_toggle.set_active(True)

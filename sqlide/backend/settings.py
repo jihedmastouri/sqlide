@@ -68,6 +68,10 @@ Settings:
   so a drag survives a restart. Clamped to SIDEBAR_MIN_WIDTH ..
   SIDEBAR_MAX_WIDTH on the way in and out, and double-clicking the
   drag handle puts DEFAULT_SIDEBAR_WIDTH back.
+- side_panel_width: width in pixels of the window's right side panel —
+  the properties/notes/history panel (CORE-47) — so a drag of its
+  divider survives a restart. Clamped to SIDE_PANEL_MIN_WIDTH ..
+  SIDE_PANEL_MAX_WIDTH the same way the sidebar's width is.
 - sidebar_follow_active_tab: whether switching tabs highlights that
   tab's object in the object tree, expanding the rows on the way to it
   and scrolling to it only when it is off screen (CORE-55). Off leaves
@@ -122,6 +126,11 @@ DEFAULT_KEYWORD_CASE = "upper"
 DEFAULT_SIDEBAR_WIDTH = 280
 SIDEBAR_MIN_WIDTH = 180
 SIDEBAR_MAX_WIDTH = 600
+# The right side panel (properties, notes, history): the same story on
+# the other edge of the window.
+DEFAULT_SIDE_PANEL_WIDTH = 340
+SIDE_PANEL_MIN_WIDTH = 260
+SIDE_PANEL_MAX_WIDTH = 900
 # The geo viewer's tile source and its drawing cap (PG-04). The
 # defaults are OpenStreetMap's public server, used under its tile
 # policy — see backend/tiles.py, which does the caching and sends the
@@ -136,6 +145,13 @@ def clamp_sidebar_width(width: int) -> int:
     limits are applied, whether the number came from a drag or from a
     hand-edited settings.toml."""
     return max(SIDEBAR_MIN_WIDTH, min(SIDEBAR_MAX_WIDTH, int(width)))
+
+
+def clamp_side_panel_width(width: int) -> int:
+    """A side-panel width held to its allowed range (CORE-47)."""
+    return max(
+        SIDE_PANEL_MIN_WIDTH, min(SIDE_PANEL_MAX_WIDTH, int(width))
+    )
 
 
 @dataclass
@@ -167,6 +183,7 @@ class Settings:
     lsp_defaults: dict[str, str] = field(default_factory=dict)
     mcp_defaults: dict[str, str] = field(default_factory=dict)
     sidebar_width: int = DEFAULT_SIDEBAR_WIDTH
+    side_panel_width: int = DEFAULT_SIDE_PANEL_WIDTH
     last_workspace: str = ""
     keymap: dict[str, str] = field(default_factory=dict)
 
@@ -252,6 +269,9 @@ class Settings:
             mcp_defaults=table("mcp_defaults"),
             sidebar_width=clamp_sidebar_width(
                 number("sidebar_width", DEFAULT_SIDEBAR_WIDTH)
+            ),
+            side_panel_width=clamp_side_panel_width(
+                number("side_panel_width", DEFAULT_SIDE_PANEL_WIDTH)
             ),
             last_workspace=text("last_workspace"),
             keymap=table("keymap"),

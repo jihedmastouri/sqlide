@@ -84,7 +84,11 @@ Every menu of a row that opens something starts with Open and Open
 neither. Open (Window) hands the opening to the window with "in a
 window of its own" forced on, which is the tear-out path a dragged tab
 and a Shift-click already take (window.open_in_window), rather than a
-second way to make a pop-out.
+second way to make a pop-out. Under them, every row that has an object
+behind it offers Properties and Properties (Window): the right side
+panel pointed at that object, or the same surface torn off into its own
+window (CORE-47). A section row under a table targets its table on that
+section, which is what CORE-05's deep link now means.
 
 Right-clicking a table or view then offers View Data /
 Query Console / Table Definition; right-clicking a connection offers
@@ -364,6 +368,11 @@ class Sidebar(Gtk.ScrolledWindow):
         # (window._place_new_page). Optional like the two above — a
         # harness without a window then just opens the tab.
         on_open_window: Callable[[Callable[[], None]], None] | None = None,
+        # "Properties" / "Properties (Window)": the row's object in the
+        # right side panel, or torn off into a window (CORE-47). A
+        # harness with no window behind it leaves them out.
+        on_open_properties: Callable[..., None] | None = None,
+        on_open_properties_window: Callable[..., None] | None = None,
     ) -> None:
         super().__init__(vexpand=True)
         # Both scrollbars, on demand. Row name labels are not ellipsized
@@ -392,6 +401,8 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_monitor = on_monitor
         self._on_pragmas = on_pragmas
         self._on_open_window = on_open_window
+        self._on_open_properties = on_open_properties
+        self._on_open_properties_window = on_open_properties_window
         self._on_open_schema = on_open_schema
         self._on_edit_connection = on_edit_connection
         self._on_disconnect = on_disconnect
@@ -467,6 +478,8 @@ class Sidebar(Gtk.ScrolledWindow):
         for name, callback in (
             ("open", self._menu_open),
             ("open-window", self._menu_open_window),
+            ("properties", self._menu_properties),
+            ("properties-window", self._menu_properties_window),
             ("object-info", self._menu_object_info),
             ("view-data", self._menu_view_data),
             ("view-section", self._menu_view_section),
@@ -1343,6 +1356,9 @@ class Sidebar(Gtk.ScrolledWindow):
         # Open and Open (Window) sit above everything else, in the
         # same flat list as the rest — prepended in reverse so Open
         # ends up first.
+        if self.properties_target(node) is not None:
+            menu.prepend("Properties (Window)", "schema.properties-window")
+            menu.prepend("Properties", "schema.properties")
         menu.prepend("Open (Window)", "schema.open-window")
         menu.prepend("Open", "schema.open")
         return menu
@@ -1553,6 +1569,21 @@ class Sidebar(Gtk.ScrolledWindow):
     def _menu_open_window(self, *_args) -> None:
         if self._menu_node is not None:
             self.open_node_in_window(self._menu_node)
+
+    def _menu_properties(self, *_args) -> None:
+        self._open_properties(self._on_open_properties)
+
+    def _menu_properties_window(self, *_args) -> None:
+        self._open_properties(self._on_open_properties_window)
+
+    def _open_properties(self, callback) -> None:
+        target = (
+            None if self._menu_node is None
+            else self.properties_target(self._menu_node)
+        )
+        if target is None or callback is None:
+            return
+        callback(*target)
 
     def _menu_object_info(self, *_args) -> None:
         if self._menu_node is not None:
@@ -1985,6 +2016,35 @@ class Sidebar(Gtk.ScrolledWindow):
         are placeholders, and a row with no profile behind it has
         nothing to open — the menu leaves Open off those (CORE-52)."""
         return node.kind != "note" and node.profile is not None
+
+    def properties_target(self, node: Node) -> tuple | None:
+        """What this row's Properties item acts on (CORE-47):
+        (profile, ObjectRef, section slug), or None for a row with no
+        object behind it.
+
+        A section row under a table (CORE-05) is not an object of its
+        own: it targets its table, on that section.
+        """
+        if node.profile is None or node.kind == "note":
+            return None
+        if node.kind == "section":
+            if not node.table:
+                return None
+            return (
+                node.profile,
+                objects.ObjectRef(kind="table", name=node.table),
+                node.category,
+            )
+        return (
+            node.profile,
+            objects.ObjectRef(
+                kind=node.kind,
+                name=node.label,
+                table=node.table,
+                category=node.category,
+            ),
+            "",
+        )
 
     def open_node(self, node: Node) -> None:
         """Open one row's object — the Open action, and what a double

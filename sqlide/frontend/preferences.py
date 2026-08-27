@@ -104,6 +104,20 @@ class PreferencesDialog(Adw.PreferencesDialog):
         )
         group.add(system_row)
 
+        follow_row = Adw.SwitchRow(
+            title="Follow the Active Tab",
+            subtitle="Highlight the object the current tab is showing "
+            "in the tree, expanding the rows on the way to it",
+        )
+        follow_row.set_active(settings.sidebar_follow_active_tab)
+        follow_row.connect(
+            "notify::active",
+            lambda row, *_: store.update(
+                sidebar_follow_active_tab=row.get_active()
+            ),
+        )
+        group.add(follow_row)
+
         page.add(group)
 
         results = Adw.PreferencesGroup(

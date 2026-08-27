@@ -1,6 +1,6 @@
 ## CORE-55 — Follow the active tab in the sidebar
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-01, CORE-52
 
 ### Problem

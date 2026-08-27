@@ -121,6 +121,21 @@ schema is searched. clear_filter() — Exit, or Escape, in the sidebar's
 search row — brings the tree back with the expansion it had when
 search opened.
 
+follow_object() is the other direction of CORE-52's opening: the
+window hands the active tab's object over on every tab switch and the
+tree reveals it — ancestors expanded, the row selected. It is
+deliberately quiet about it. The call is debounced, so cycling through
+tabs with the keyboard resolves only the tab you stop on rather than
+one path per keystroke; the walk expands exactly the rows on the path
+and asks for nothing sideways, so a deep PostgreSQL path costs one
+listing per level and no cascade; and a row already on screen is
+selected where it is rather than scrolled to, so the tree the user
+navigated to stays where they left it. A tab with no object behind it
+(a query console) clears the selection instead of leaving a stale
+highlight, and the sync is one-way: selecting in the tree never
+switches tabs. `sidebar_follow_active_tab` (settings.toml,
+"Follow the Active Tab" in Preferences) turns the whole thing off.
+
 Lazy loading: GTK probes create_func just to decide whether a row gets
 an expander arrow, so it must stay cheap — it only creates (and caches)
 an empty child store. The actual database work (list_tables /
@@ -205,6 +220,32 @@ _LAZY_CATEGORIES = {
     slug: kind
     for slug, (_label, kind) in objects.CATALOG_CATEGORIES.items()
     if slug not in objects.RELATION_FOLDERS and slug != "administer"
+}
+
+
+# Following the active tab (CORE-55). The window reports a tab switch
+# straight away; the tree waits this long (milliseconds) before
+# resolving it, so holding Ctrl+Tab through ten tabs walks one path,
+# not ten.
+_FOLLOW_DELAY = 180
+
+# Which folders an object of a given kind can be sitting in, in the
+# order they are worth looking in. A relation is a table or a view and
+# the tab key does not say which; an engine with catalog folders
+# (PG-02) keeps materialized views and foreign tables in folders of
+# their own, so those are searched too.
+_FOLLOW_CATEGORIES = {
+    "table": ("tables", "foreign_tables", "views", "materialized_views"),
+    "view": ("views", "materialized_views", "tables", "foreign_tables"),
+    "function": ("functions", "procedures", "aggregates"),
+    "procedure": ("procedures", "functions"),
+    "index": ("indexes",),
+    "trigger": ("triggers",),
+    "event": ("events",),
+    "sequence": ("sequences",),
+    "data_type": ("data_types",),
+    "extension": ("extensions",),
+    "principal": ("roles", "users"),
 }
 
 
@@ -366,6 +407,16 @@ class Sidebar(Gtk.ScrolledWindow):
         # rather than through a captured reference).
         self._new_buttons: dict[Gtk.Widget, Node] = {}
 
+        # Following the active tab (CORE-55): the object the window
+        # last reported, the debounce timer resolving it, the store
+        # whose load the walk is waiting on, and the tree rows GTK has
+        # bound — which is what "already on screen" means when deciding
+        # whether the reveal may move the scroll.
+        self._follow_target: tuple[str, str, str] | None = None
+        self._follow_source = 0
+        self._follow_wait: tuple[Gio.ListStore, int] | None = None
+        self._bound_rows: set[Gtk.TreeListRow] = set()
+
         # Search mode: the tree expansion to put back on the way out.
         self._filtering = False
         self._saved_expansion: frozenset[str] = frozenset()
@@ -381,8 +432,15 @@ class Sidebar(Gtk.ScrolledWindow):
         factory.connect("setup", self._setup_row)
         factory.connect("bind", self._bind_row)
         factory.connect("unbind", self._unbind_row)
+        # autoselect off, unselecting allowed: "no row is current" has
+        # to be a state the tree can be in, because a tab with no
+        # object behind it clears the highlight (CORE-55) — with
+        # autoselect the first row would quietly take its place.
         self._view = Gtk.ListView(
-            model=Gtk.SingleSelection(model=self._tree), factory=factory
+            model=Gtk.SingleSelection(
+                model=self._tree, autoselect=False, can_unselect=True
+            ),
+            factory=factory,
         )
         self._view.add_css_class("navigation-sidebar")
         self._view.add_css_class("schema-tree")
@@ -455,6 +513,7 @@ class Sidebar(Gtk.ScrolledWindow):
         # rows that are already there (PG-03). The listener outlives
         # nothing: it goes when the sidebar's view does.
         self._show_system = settings_store.settings.show_system_schemas
+        self._follow_enabled = settings_store.settings.sidebar_follow_active_tab
         settings_store.subscribe(self._settings_changed)
         self._view.connect(
             "destroy",
@@ -464,6 +523,9 @@ class Sidebar(Gtk.ScrolledWindow):
     def _settings_changed(self, settings) -> None:
         """Re-list the schemas when the system-schema setting flips;
         every other setting leaves the tree alone."""
+        self._follow_enabled = settings.sidebar_follow_active_tab
+        if not self._follow_enabled:
+            self._cancel_follow()
         if settings.show_system_schemas == self._show_system:
             return
         self._show_system = settings.show_system_schemas
@@ -1244,6 +1306,7 @@ class Sidebar(Gtk.ScrolledWindow):
             and (not node.filtered or bool(node.store.get_n_items()))
         )
         _set_caret(list_item.caret, row.get_expanded())
+        self._bound_rows.add(row)
         list_item.row_handler = row.connect(
             "notify::expanded", self._on_row_expanded, list_item
         )
@@ -1251,6 +1314,7 @@ class Sidebar(Gtk.ScrolledWindow):
             self._load_children(node)
 
     def _unbind_row(self, _factory, list_item: Gtk.ListItem) -> None:
+        self._bound_rows.discard(list_item.get_item())
         if list_item.row_handler:
             list_item.get_item().disconnect(list_item.row_handler)
             list_item.row_handler = 0
@@ -1759,6 +1823,163 @@ class Sidebar(Gtk.ScrolledWindow):
                 row.set_expanded(True)
         self.open_node(node)
 
+    # Following the active tab (CORE-55)
+
+    def follow_object(self, target: tuple[str, str, str] | None) -> None:
+        """Reveal the row the active tab is showing: `target` is
+        (connection profile name, node kind, object name), or None for
+        a tab with no object behind it — a query console, the history
+        — which clears the highlight rather than leaving a stale one.
+
+        The resolution is debounced and happens on the next idle
+        stretch, so a burst of tab switches walks one path.
+        """
+        if not self._follow_enabled or self._filtering:
+            return
+        self._cancel_follow()
+        self._follow_target = target
+        if target is None:
+            self._clear_selection()
+            return
+        self._follow_source = GLib.timeout_add(
+            _FOLLOW_DELAY, self._follow_timeout
+        )
+
+    def _follow_timeout(self) -> bool:
+        self._follow_source = 0
+        self._follow_step()
+        return GLib.SOURCE_REMOVE
+
+    def _cancel_follow(self) -> None:
+        """Forget the walk in flight: a newer tab switch supersedes it,
+        and nothing half-resolved should land after it."""
+        if self._follow_source:
+            GLib.source_remove(self._follow_source)
+            self._follow_source = 0
+        if self._follow_wait is not None:
+            store, handler = self._follow_wait
+            store.disconnect(handler)
+            self._follow_wait = None
+        self._follow_target = None
+
+    def _clear_selection(self) -> None:
+        model = self._view.get_model()
+        model.set_selected(Gtk.INVALID_LIST_POSITION)
+
+    def _follow_step(self) -> None:
+        """One pass at the path, from the connection row down.
+
+        Every level is either already loaded — walk on — or expanded
+        and left to load, with the walk resuming when its rows arrive
+        (_wait_for). So the whole reveal costs one listing per level of
+        the path and none beside it: a deep tree is not a reason to
+        query the catalog for the branches nobody asked about.
+        """
+        target = self._follow_target
+        if target is None:
+            return
+        profile_name, kind, name = target
+        segments = profile_name.split(_DATABASE_SEPARATOR)
+        node = next(
+            (n for n in _items(self._roots) if n.label == segments[0]), None
+        )
+        if node is None:
+            return
+        # The database and schema levels, where the profile name has
+        # them: a tab opened under "prod · billing · public" sits three
+        # rows down (see _database_profile / schema_profile).
+        for label in segments[1:]:
+            child = self._follow_into(node, lambda n: n.label == label)
+            if child is None:
+                return
+            node = child
+        # The folders of that level are its own listing, so it has to
+        # be loaded before there is anywhere to look.
+        self._follow_into(node, lambda _n: False)
+        if not node.loaded:
+            return
+        for slug in _FOLLOW_CATEGORIES.get(kind, ()):
+            category = next(
+                (
+                    child for child in _items(node.store)
+                    if child.kind == "category" and child.category == slug
+                ),
+                None,
+            )
+            if category is None:
+                continue
+            found = self._follow_into(
+                category, lambda child: _same_object(child, name)
+            )
+            if found is not None:
+                self._select(found)
+                return
+
+    def _follow_into(
+        self, node: Node, match: Callable[[Node], bool]
+    ) -> Node | None:
+        """The child of `node` that `match` picks, expanding and
+        loading `node` first. None means "not there, or not yet": a
+        pending load resumes the walk itself when its rows land."""
+        if not node.loaded:
+            row = self._row_for(node)
+            if row is not None and not row.get_expanded():
+                row.set_expanded(True)
+            self._load_children(node)
+            if not node.loaded:
+                self._wait_for(node)
+                return None
+        for child in _items(node.store):
+            if match(child):
+                row = self._row_for(child)
+                if row is None:
+                    # The child exists but its row is not in the model
+                    # yet, because an ancestor is collapsed: expanding
+                    # this node put it there, so a later pass finds it.
+                    return None
+                return child
+        return None
+
+    def _wait_for(self, node: Node) -> None:
+        """Resume the walk when a level finishes loading. A failed load
+        appends its own "(failed to load)" row, so the walk restarts,
+        finds nothing to match and quietly stops."""
+        if node.store is None or self._follow_wait is not None:
+            return
+        store = node.store
+
+        def arrived(*_args) -> None:
+            if self._follow_wait is None:
+                return
+            waiting, handler = self._follow_wait
+            if waiting is not store:
+                return
+            self._follow_wait = None
+            store.disconnect(handler)
+            self._follow_step()
+
+        self._follow_wait = (store, store.connect("items-changed", arrived))
+
+    def _select(self, node: Node) -> None:
+        """Highlight the row for `node`, scrolling it into view only
+        when it is off screen. Selection alone never opens anything —
+        the sync is one-way (CORE-55)."""
+        model = self._view.get_model()
+        for position in range(self._tree.get_n_items()):
+            row = self._tree.get_row(position)
+            if row is None or row.get_item() is not node:
+                continue
+            model.set_selected(position)
+            if row not in self._bound_rows:
+                # Off screen: this is the one case worth moving the
+                # scroll for. A row the user can already see is
+                # highlighted where it is, so a tab switch never yanks
+                # the position they navigated to.
+                self._view.scroll_to(
+                    position, Gtk.ListScrollFlags.NONE, None
+                )
+            return
+
     def is_openable(self, node: Node) -> bool:
         """Does this row open anything? "Loading…" and "(none)" rows
         are placeholders, and a row with no profile behind it has
@@ -2119,6 +2340,15 @@ def _connection_summary(node: Node) -> str:
         )
         summary += f"\n{count} object(s)"
     return summary
+
+
+def _same_object(node: Node, name: str) -> bool:
+    """Is this row the object a tab key names? The key carries the name
+    the tab was opened with, which may be schema-qualified
+    ("public.orders") where the row is not."""
+    if node.kind == "note":
+        return False
+    return node.label == name or node.label == name.rsplit(".", 1)[-1]
 
 
 def _node_path(node: Node) -> str:

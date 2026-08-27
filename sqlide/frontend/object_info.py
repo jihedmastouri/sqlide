@@ -12,7 +12,12 @@ opens (the generic fallback) instead of doing nothing.
 
 Rows in a detail table are links: a folder lists what is inside it and
 activating a row opens that child's own info view, so the tree can also
-be walked from the main area. Read-only throughout — editing an object
+be walked from the main area. A section the descriptor calls tabular —
+a listing of columns, indexes, constraints, grants — is drawn in the
+same result grid the query console uses (CORE-49), so it sorts, its
+columns resize and it copies as CSV/JSON/Markdown for free; a section
+holding a single record stays a key/value block rather than becoming a
+table one row tall. Read-only throughout — editing an object
 stays with the definition tab and the table designer.
 """
 
@@ -86,6 +91,9 @@ class InfoBody(Gtk.ScrolledWindow):
         # scroll to a named section (CORE-05); `_wanted` remembers a
         # link that arrived while the catalog read was still running.
         self._sections: dict[str, Gtk.Widget] = {}
+        # The grid-backed sections of the current render, kept because
+        # each owns the callbacks its grid sorts and links through.
+        self._grids: list[_GridSection] = []
         self._wanted = ""
         self._selected: Gtk.Widget | None = None
         self.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
@@ -105,6 +113,7 @@ class InfoBody(Gtk.ScrolledWindow):
         while child := self._box.get_first_child():
             self._box.remove(child)
         self._sections.clear()
+        self._grids = []
         self._selected = None
         if header is not None:
             self._box.append(header)
@@ -174,6 +183,48 @@ class InfoBody(Gtk.ScrolledWindow):
         self._box.append(label)
 
     def _detail_group(self, table: objects.DetailTable) -> Gtk.Widget:
+        """One section, drawn as what its rows actually are: a real
+        grid for a listing of like-shaped records, a key/value block
+        for a single record, and the plain list for everything a
+        descriptor has not called tabular (CORE-49)."""
+        if table.as_grid:
+            return self._grid_group(table)
+        if table.tabular and len(table.rows) == 1:
+            return self._record_group(table)
+        return self._list_group(table)
+
+    def _grid_group(self, table: objects.DetailTable) -> Gtk.Widget:
+        group = Adw.PreferencesGroup(title=table.title)
+        section = _GridSection(table, self._on_open_link)
+        self._grids.append(section)
+        frame = Gtk.Frame()
+        frame.set_child(section.grid)
+        group.add(frame)
+        return group
+
+    def _record_group(self, table: objects.DetailTable) -> Gtk.Widget:
+        """A tabular section holding exactly one record: its columns
+        read as a key/value block, the way the summary does. Where
+        that record stands for an object, the group's header offers
+        the link the row would have been."""
+        row = table.rows[0]
+        group = _summary_group(
+            [
+                (name, str(row[index]) if index < len(row) else "")
+                for index, name in enumerate(table.columns)
+            ],
+            table.title,
+        )
+        link = table.link(0)
+        if link is not None:
+            button = Gtk.Button(label="Open")
+            button.add_css_class("flat")
+            describe(button, f"Open {link.name}")
+            button.connect("clicked", lambda *_: self._on_open_link(link))
+            group.set_header_suffix(button)
+        return group
+
+    def _list_group(self, table: objects.DetailTable) -> Gtk.Widget:
         group = Adw.PreferencesGroup(title=table.title)
         if not table.rows:
             row = Adw.ActionRow(title=table.empty_note)
@@ -356,6 +407,93 @@ class ObjectInfoTab(Gtk.Box):
 
     def _open_link(self, ref: objects.ObjectRef) -> None:
         self._on_open_object(self.profile, ref)
+
+
+class _GridSection:
+    """One tabular detail section, drawn in the result grid (CORE-49).
+
+    The grid itself never sorts: it reports the column order it was
+    asked for and expects its owner to re-query. There is nothing to
+    re-query in a descriptor, so this sorts the rows it already holds —
+    links travelling with them, so a row still opens its own object
+    after a sort — and loads them again.
+    """
+
+    #: How tall a section is allowed to grow, in rows. A long listing
+    #: scrolls inside its own grid rather than pushing the sections
+    #: under it off the page.
+    MAX_ROWS = 12
+    ROW_HEIGHT = 32
+
+    def __init__(
+        self,
+        table: objects.DetailTable,
+        on_open_link: Callable[[objects.ObjectRef], None],
+    ) -> None:
+        # Imported here, not at module scope: data_grid imports this
+        # module for the table tab's Properties side, so the pair can
+        # only be tied together one way round.
+        from sqlide.frontend.data_grid import ResultGrid
+
+        self._table = table
+        self._on_open_link = on_open_link
+        self._origin = [
+            (tuple(row), table.link(index))
+            for index, row in enumerate(table.rows)
+        ]
+        self._rows = list(self._origin)
+        self.grid = ResultGrid(
+            table_name=table.slug or table.title,
+            on_header_sort=self._sort,
+            on_row_activated=self._activate,
+        )
+        self.grid.set_vexpand(False)
+        self.grid.set_size_request(
+            -1, self.ROW_HEIGHT * (min(len(self._rows), self.MAX_ROWS) + 1)
+        )
+        self._load()
+
+    def _load(self) -> None:
+        self.grid.set_result(
+            list(self._table.columns), [row for row, _link in self._rows]
+        )
+
+    def _sort(self, order: list[tuple[str, bool]]) -> None:
+        rows = list(self._origin)
+        # Least significant column first, so the primary one decides:
+        # Python's sort is stable, which is what composes the order.
+        for name, descending in reversed(order):
+            if name not in self._table.columns:
+                continue
+            index = self._table.columns.index(name)
+            kind = self._table.column_type(index)
+            rows.sort(
+                key=lambda pair, i=index, k=kind: _sort_key(pair[0], i, k),
+                reverse=descending,
+            )
+        self._rows = rows
+        self._load()
+        self.grid.set_sort_state(order)
+
+    def _activate(self, index: int) -> None:
+        if not 0 <= index < len(self._rows):
+            return
+        link = self._rows[index][1]
+        if link is not None:
+            self._on_open_link(link)
+
+
+def _sort_key(row: tuple, index: int, kind: str):
+    """One cell as something sortable: a number where the descriptor
+    said the column holds numbers (so 9 comes before 10), the text
+    case-folded otherwise. An unparsable number sorts last."""
+    value = row[index] if index < len(row) else ""
+    if kind == "number":
+        try:
+            return (0, float(value), "")
+        except (TypeError, ValueError):
+            return (1, 0.0, str(value).lower())
+    return (0, 0.0, str(value).lower())
 
 
 def _summary_group(

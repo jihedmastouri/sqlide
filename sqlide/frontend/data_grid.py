@@ -118,6 +118,7 @@ class ResultGrid(Gtk.ScrolledWindow):
         on_aggregate: AggregateCallback | None = None,
         on_header_sort: Callable[[list[tuple[str, bool]]], None] | None = None,
         on_edge_reached: Callable[[Gtk.PositionType], None] | None = None,
+        on_row_activated: Callable[[int], None] | None = None,
     ) -> None:
         super().__init__(vexpand=True, hexpand=True)
         self.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
@@ -130,6 +131,11 @@ class ResultGrid(Gtk.ScrolledWindow):
         # as (name, descending) pairs, primary first, so the owner can
         # re-query.
         self._on_header_sort = on_header_sort
+        # When set, double-clicking a row hands its index over — the
+        # object info view's tabular sections use it to open the child
+        # a row stands for (CORE-49). Grids that answer no such
+        # question leave it None and a double click only selects.
+        self._on_row_activated = on_row_activated
         # Geometry rendering is off until the owner says the server has
         # a spatial extension (PG-04): without that gate a column of
         # ordinary hex strings would be summarised as geometries on
@@ -771,7 +777,7 @@ class ResultGrid(Gtk.ScrolledWindow):
         if self.on_row_selected is not None:
             self.on_row_selected(min(rows) if len(rows) == 1 else None)
 
-    def _on_cell_pressed(self, gesture, _n_press, x, y) -> None:
+    def _on_cell_pressed(self, gesture, n_press, x, y) -> None:
         widget = gesture.get_widget()
         bound = self._bound_cells.get(widget)
         if bound is None:
@@ -792,7 +798,11 @@ class ResultGrid(Gtk.ScrolledWindow):
             self._menu_cell = (row, index)
             self._popup_menu(widget, x, y)
         elif button == Gdk.BUTTON_PRIMARY:
-            if shift and self._anchor is not None:
+            if n_press >= 2 and self._on_row_activated is not None:
+                gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+                self._drag_anchor = None
+                self._on_row_activated(self._row_offset + row)
+            elif shift and self._anchor is not None:
                 gesture.set_state(Gtk.EventSequenceState.CLAIMED)
                 self._drag_anchor = self._anchor
                 self._drag_last = (row, index)

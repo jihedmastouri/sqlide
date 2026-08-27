@@ -1,6 +1,6 @@
 ## CORE-49 — Render tabular object information as a real table
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-01
 
 ### Problem
@@ -27,10 +27,10 @@ copy-as (CSV/JSON/Markdown), and the value display rules.
 
 ### Acceptance criteria
 
-- [ ] Index, constraint, trigger, column, grant and permission listings render in
+- [x] Index, constraint, trigger, column, grant and permission listings render in
       the grid.
-- [ ] Rows still open the child object's info view (CORE-01's behaviour is kept).
-- [ ] Sorting and copy-as work in those grids.
-- [ ] A section with a single record still renders as a key/value block, not a
+- [x] Rows still open the child object's info view (CORE-01's behaviour is kept).
+- [x] Sorting and copy-as work in those grids.
+- [x] A section with a single record still renders as a key/value block, not a
       one-row table.
-- [ ] Sections that are not tabular are untouched.
+- [x] Sections that are not tabular are untouched.

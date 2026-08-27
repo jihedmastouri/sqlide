@@ -162,6 +162,16 @@ class DetailTable:
     rows: list[tuple[str, ...]]
     links: list[ObjectRef | None] = field(default_factory=list)
     empty_note: str = "(none)"
+    #: True where the rows are like-shaped records — a listing of
+    #: columns, indexes, constraints, grants — rather than a handful
+    #: of lines that only happen to sit in a table. A tabular section
+    #: is drawn in the result grid, with its sorting, resizing and
+    #: copy-as (CORE-49); everything else keeps the plain list.
+    tabular: bool = False
+    #: What each column holds, parallel to `columns`: "text" (the
+    #: default for anything unnamed) or "number". Only the grid reads
+    #: it, to sort a count column by value instead of by spelling.
+    types: tuple[str, ...] = ()
     #: The PROPERTY_SECTIONS slug this table is, where it is one, so a
     #: deep link from the sidebar can find it again (CORE-05). Empty
     #: for the detail tables of a plain info view.
@@ -171,6 +181,22 @@ class DetailTable:
         if 0 <= index < len(self.links):
             return self.links[index]
         return None
+
+    def column_type(self, index: int) -> str:
+        """The declared type of one column, "text" where none was."""
+        if 0 <= index < len(self.types):
+            return self.types[index] or "text"
+        return "text"
+
+    @property
+    def as_grid(self) -> bool:
+        """Draw this section in the result grid?
+
+        A tabular section with a single record is still a record: it
+        reads better as a key/value block than as a table one row
+        tall, so it stays one (CORE-49).
+        """
+        return self.tabular and len(self.rows) > 1
 
 
 @dataclass(frozen=True)
@@ -319,6 +345,7 @@ def _connection(connector, kind, name, *, table, category, path, schema):
     tables = []
     if databases:
         tables.append(DetailTable(
+            tabular=True,
             title="Databases",
             columns=["Name"],
             rows=[(db,) for db in databases],
@@ -352,6 +379,7 @@ def _database(connector, kind, name, *, table, category, path, schema):
 
 def _objects_table(objects) -> DetailTable:
     return DetailTable(
+        tabular=True,
         title="Tables and views",
         columns=["Name", "Kind"],
         rows=[(o.name, o.kind) for o in objects],
@@ -373,8 +401,10 @@ def _category(
             if (o.kind == "view") == (slug == "views")
         ]
         detail = DetailTable(
+            tabular=True,
             title=name,
             columns=["Name", "Columns"],
+            types=("text", "number"),
             rows=[
                 (o.name, str(len(_safe(
                     lambda o=o: connector.list_columns(o.name), []
@@ -389,6 +419,7 @@ def _category(
         # does not answers with every routine either way.
         functions = _safe(lambda: connector.list_routines(child), [])
         detail = DetailTable(
+            tabular=True,
             title=name,
             # The note a routine carries where it is a special case:
             # a built-in nobody can edit (SQ-01). Blank for a stored
@@ -400,6 +431,7 @@ def _category(
     elif slug == "indexes":
         indexes = _safe(connector.list_indexes, [])
         detail = DetailTable(
+            tabular=True,
             title=name,
             columns=["Name", "Table", "Definition"],
             rows=[
@@ -411,6 +443,7 @@ def _category(
     elif slug == "triggers":
         triggers = _safe(connector.list_triggers, [])
         detail = DetailTable(
+            tabular=True,
             title=name,
             columns=["Name", "Table"],
             rows=[(t.name, t.table) for t in triggers],
@@ -419,6 +452,7 @@ def _category(
     elif slug == "events":
         events = _safe(connector.list_events, [])
         detail = DetailTable(
+            tabular=True,
             title=name,
             columns=["Name"],
             rows=[(e,) for e in events],
@@ -453,6 +487,7 @@ def _catalog_table(
     if slug in ("roles", "users"):
         accounts = _safe(connector.list_users, [])
         return DetailTable(
+            tabular=True,
             title=label,
             columns=["Name", "Kind", "Detail"],
             rows=[(u.name, u.kind, u.detail) for u in accounts],
@@ -481,6 +516,7 @@ def _catalog_table(
     kind = CATALOG_CATEGORIES[slug][1]
     rows = _safe(lambda: connector.list_catalog(slug, schema), [])
     return DetailTable(
+        tabular=True,
         title=label,
         columns=["Name", "Kind", "Detail"],
         rows=[(r.name, r.kind or kind, r.detail) for r in rows],
@@ -572,6 +608,7 @@ def _table(connector, kind, name, *, table, category, path, schema):
         ("Triggers", str(len(triggers))),
     ]
     tables = [DetailTable(
+        tabular=True,
         title="Columns",
         columns=["Name", "Type", "Nullable", "Key"],
         rows=[
@@ -584,6 +621,7 @@ def _table(connector, kind, name, *, table, category, path, schema):
     )]
     if indexes:
         tables.append(DetailTable(
+            tabular=True,
             title="Indexes",
             columns=["Name", "Definition"],
             rows=[(i.name, i.ddl or "(no definition available)")
@@ -592,6 +630,7 @@ def _table(connector, kind, name, *, table, category, path, schema):
         ))
     if triggers:
         tables.append(DetailTable(
+            tabular=True,
             title="Triggers",
             columns=["Name"],
             rows=[(t.name,) for t in triggers],
@@ -599,6 +638,7 @@ def _table(connector, kind, name, *, table, category, path, schema):
         ))
     if relations:
         tables.append(DetailTable(
+            tabular=True,
             title="Foreign keys",
             columns=["Column", "References"],
             rows=[(r.column, f"{r.target}.{r.ref_column}")
@@ -682,6 +722,7 @@ def _index(connector, kind, name, *, table, category, path, schema):
                 ("Columns", ", ".join(c.name for c in indexed))
             )
             tables.append(DetailTable(
+                tabular=True,
                 title="Indexed columns",
                 columns=["Name", "Type"],
                 rows=[(c.name, c.type) for c in indexed],
@@ -900,6 +941,7 @@ def _property_table(connector, name, slug, columns) -> DetailTable:
     title = PROPERTY_SECTION_LABELS.get(slug, slug.capitalize())
     if slug == "columns":
         return DetailTable(
+            tabular=True,
             title=title,
             columns=["Name", "Type", "Nullable", "Key"],
             rows=[
@@ -921,6 +963,7 @@ def _property_table(connector, name, slug, columns) -> DetailTable:
             if c.kind in _KEY_KINDS
         ]
         return DetailTable(
+            tabular=True,
             title=title,
             columns=["Name", "Kind", "Columns"],
             rows=[(c.name, c.kind, c.columns) for c in found],
@@ -930,6 +973,7 @@ def _property_table(connector, name, slug, columns) -> DetailTable:
     if slug == "constraints":
         found = _safe(lambda: connector.list_constraints(name), [])
         return DetailTable(
+            tabular=True,
             title=title,
             columns=["Name", "Kind", "Columns", "Definition"],
             rows=[(c.name, c.kind, c.columns, c.definition) for c in found],
@@ -939,6 +983,7 @@ def _property_table(connector, name, slug, columns) -> DetailTable:
     if slug == "foreign_keys":
         found = _own_relations(connector, name)
         return DetailTable(
+            tabular=True,
             title=title,
             columns=["Column", "References"],
             rows=[(r.column, f"{r.target}.{r.ref_column}") for r in found],
@@ -954,6 +999,7 @@ def _property_table(connector, name, slug, columns) -> DetailTable:
     if slug == "references":
         found = _safe(lambda: connector.list_references(name), [])
         return DetailTable(
+            tabular=True,
             title=title,
             columns=["Table", "Column", "References"],
             rows=[
@@ -973,6 +1019,7 @@ def _property_table(connector, name, slug, columns) -> DetailTable:
             i for i in _safe(connector.list_indexes, []) if i.table == name
         ]
         return DetailTable(
+            tabular=True,
             title=title,
             columns=["Name", "Definition"],
             rows=[(i.name, i.ddl or "(no definition available)")
@@ -985,6 +1032,7 @@ def _property_table(connector, name, slug, columns) -> DetailTable:
             t for t in _safe(connector.list_triggers, []) if t.table == name
         ]
         return DetailTable(
+            tabular=True,
             title=title,
             columns=["Name", "Definition"],
             rows=[(t.name, t.ddl or "(no definition available)")
@@ -1001,6 +1049,7 @@ def _property_table(connector, name, slug, columns) -> DetailTable:
     }[slug]
     found = _safe(lambda: getattr(connector, lister)(name), [])
     return DetailTable(
+        tabular=True,
         title=title,
         columns=["Name", "Detail", "Definition"],
         rows=[(o.name, o.detail, o.definition) for o in found],

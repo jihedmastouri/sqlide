@@ -1,6 +1,6 @@
 ## CORE-52 — Sidebar click behaviour: expand, open, and an explicit Open menu
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-01
 
 ### Problem
@@ -26,9 +26,9 @@ for tabs rather than adding a second path.
 
 ### Acceptance criteria
 
-- [ ] Single click expands/collapses without opening a tab.
-- [ ] Double click opens, or focuses an already-open tab for that object.
-- [ ] Enter matches double click for the selected node.
-- [ ] Right-click menu has Open and Open (Window) on every openable node, and
+- [x] Single click expands/collapses without opening a tab.
+- [x] Double click opens, or focuses an already-open tab for that object.
+- [x] Enter matches double click for the selected node.
+- [x] Right-click menu has Open and Open (Window) on every openable node, and
       omits them (or disables them with a reason) on nodes that open nothing.
-- [ ] Keyboard navigation (arrows, Home/End) is unaffected.
+- [x] Keyboard navigation (arrows, Home/End) is unaffected.

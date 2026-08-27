@@ -19,6 +19,12 @@ columns resize and it copies as CSV/JSON/Markdown for free; a section
 holding a single record stays a key/value block rather than becoming a
 table one row tall. Read-only throughout — editing an object
 stays with the definition tab and the table designer.
+
+An object whose whole content *is* a listing — a folder, or one
+properties section of a table (Indexes, Columns, Constraints) — opens
+as that grid alone, filling the tab the way the data tab does, rather
+than as a page of the side panel (CORE-56). Which of the two a node is
+comes from `objects.grid_listing`.
 """
 
 from __future__ import annotations
@@ -316,7 +322,18 @@ class ObjectInfoTab(Gtk.Box):
         self.append(bar)
 
         self._body = InfoBody(self._open_link)
-        self.append(self._body)
+        # A listing opens as a grid and an object as the info view
+        # (CORE-56); which of the two a descriptor is stays unknown
+        # until it has been read, so the tab holds both and shows the
+        # one that fits.
+        self._grid_holder = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, vexpand=True
+        )
+        self._grid: _GridSection | None = None
+        self._stack = Gtk.Stack(vexpand=True)
+        self._stack.add_named(self._body, "info")
+        self._stack.add_named(self._grid_holder, "grid")
+        self.append(self._stack)
 
         self.reload()
 
@@ -379,8 +396,30 @@ class ObjectInfoTab(Gtk.Box):
     # Rendering
 
     def _render(self, info: objects.ObjectInfo) -> None:
-        self._title.set_label(f"{info.name} · {info.type_label.lower()}")
-        self._body.render(info, header=self._header(info))
+        self._title.set_label(self._heading(info))
+        table = objects.grid_listing(self.ref.kind, info)
+        if table is None:
+            self._show_grid(None)
+            self._body.render(info, header=self._header(info))
+            return
+        self._show_grid(_GridSection(table, self._open_link, expand=True))
+
+    def _heading(self, info: objects.ObjectInfo) -> str:
+        """The line above the body: the object and what it is — and,
+        for a listing, the object it is a listing of (CORE-56)."""
+        if self.ref.kind == "section" and self.ref.table:
+            return f"{self.ref.table} · {info.name.lower()}"
+        return f"{info.name} · {info.type_label.lower()}"
+
+    def _show_grid(self, section: "_GridSection | None") -> None:
+        while child := self._grid_holder.get_first_child():
+            self._grid_holder.remove(child)
+        self._grid = section
+        if section is None:
+            self._stack.set_visible_child_name("info")
+            return
+        self._grid_holder.append(section.grid)
+        self._stack.set_visible_child_name("grid")
 
     def _header(self, info: objects.ObjectInfo) -> Gtk.Widget:
         box = Gtk.Box(spacing=12, margin_top=6)
@@ -430,6 +469,8 @@ class _GridSection:
         self,
         table: objects.DetailTable,
         on_open_link: Callable[[objects.ObjectRef], None],
+        *,
+        expand: bool = False,
     ) -> None:
         # Imported here, not at module scope: data_grid imports this
         # module for the table tab's Properties side, so the pair can
@@ -448,10 +489,14 @@ class _GridSection:
             on_header_sort=self._sort,
             on_row_activated=self._activate,
         )
-        self.grid.set_vexpand(False)
-        self.grid.set_size_request(
-            -1, self.ROW_HEIGHT * (min(len(self._rows), self.MAX_ROWS) + 1)
-        )
+        # A section inside an info view is one of several and is
+        # capped; a listing opened as a tab of its own (CORE-56) is the
+        # whole page and takes all the room there is.
+        self.grid.set_vexpand(expand)
+        if not expand:
+            self.grid.set_size_request(
+                -1, self.ROW_HEIGHT * (min(len(self._rows), self.MAX_ROWS) + 1)
+            )
         self._load()
 
     def _load(self) -> None:

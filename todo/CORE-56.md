@@ -1,6 +1,6 @@
 ## CORE-56 — Tabular objects open in their own tab, not the properties panel
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-49, CORE-50, CORE-52
 - **Corrects:** CORE-50, whose intent was this rather than a per-object panel surface
 
@@ -48,13 +48,47 @@ from CORE-50 stay as the panel's own internal behaviour.
 
 ### Acceptance criteria
 
-- [ ] Clicking Indexes (or any collection node) opens a tab with a grid, not a
+- [x] Clicking Indexes (or any collection node) opens a tab with a grid, not a
       panel page.
-- [ ] The grid supports sorting, resizing and copy-as, as the data tab does.
-- [ ] A row in that grid opens the individual object's info view.
-- [ ] A single, non-tabular object opens the info view directly.
-- [ ] Opening the same collection twice focuses the existing tab.
-- [ ] Nothing about opening these objects forces the side panel open or changes
+- [x] The grid supports sorting, resizing and copy-as, as the data tab does.
+- [x] A row in that grid opens the individual object's info view.
+- [x] A single, non-tabular object opens the info view directly.
+- [x] Opening the same collection twice focuses the existing tab.
+- [x] Nothing about opening these objects forces the side panel open or changes
       which panel page is showing.
-- [ ] The classification comes from the descriptor/capability layer, with a
+- [x] The classification comes from the descriptor/capability layer, with a
       documented fallback for object types that declare neither shape.
+
+### Notes
+
+- **Classification is the capability layer's** (`backend/db/objects.py`):
+  `TABULAR_KINDS` ("category", "section") and `SCALAR_KINDS` (every
+  single-record kind — table, view, index, column, trigger, …) answer
+  `shape_of(kind)` with no connection open, and `grid_listing(kind,
+  info)` turns the descriptor into the listing a tab should draw, or
+  None for the info view.
+- **Fallback**: a kind that declares neither shape — a new adapter's
+  own kind, anything `_generic` describes — is decided by the
+  descriptor it came back with: it opens as a grid only where its whole
+  body is one tabular section, with no summary and no DDL that the grid
+  would drop. Anything less certain opens the info view, which shows
+  the listing as one of its sections, so an undeclared kind is never
+  worse off than before.
+- A table's section row is described by itself rather than out of a
+  whole `table_properties` read: `objects.table_section` for the
+  sections the plain connector fills, and
+  `MetadataProvider.section_listing` for the provider-only ones
+  (Permissions), which is what `describe(NodeRef(kind="section", …))`
+  routes to.
+- The tab is `ObjectInfoTab` still — it holds a `Gtk.Stack` of the
+  info body and a full-height `_GridSection`, and shows whichever the
+  descriptor turned out to be, so there is one tab type and one dedupe
+  key (`tab_key`): opening Indexes twice focuses the open tab. Sorting,
+  resizing and copy-as come from `ResultGrid` itself; a row opens the
+  child's own info view.
+- Titled for the object and its parent — "orders · indexes".
+- The panel is untouched: opening a listing neither reveals it nor
+  changes its page. The panel beside a listing tab points at the table
+  the listing came out of. CORE-05's deep link into the panel is still
+  reachable, as the section row's explicit "Open in Properties" menu
+  item.

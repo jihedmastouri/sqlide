@@ -27,7 +27,11 @@ table's Properties view with the Indexes section selected.
   Indexes, Triggers — `objects.SECTION_CHILD_KINDS`) still expand into
   them, so one specific index opens its own info view (CORE-01); the
   rest are leaves that only deep-link.
-- Activating a section row calls `window.open_table_section`. Since
+- **Since CORE-56, activating a section row opens that listing as a
+  tab of its own** — the grid, not a panel page. The deep link into
+  the panel is still there as the row's explicit "Open in Properties"
+  menu item, which is what the rest of this note describes.
+- "Open in Properties" calls `window.open_table_section`. Since
   CORE-47 the section is not a mode of the tab: the table's data tab
   is opened (or reused, `_tab_for`, so the link never costs a second
   grid) and the right side panel — which follows that tab anyway — is

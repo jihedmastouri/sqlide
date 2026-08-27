@@ -36,6 +36,12 @@ the object's own surface.
 
 ### Notes
 
+- **CORE-56 changed where these objects open**: a collection — Indexes,
+  Constraints, Columns, Grants — now opens as a tab of its own with the
+  listing in the result grid, not as a page of the properties panel.
+  Everything below stays true of the panel's own behaviour, which is
+  still one surface per object.
+
 - The panel now holds `object_info.PropertiesSurfaces`: a `Gtk.Stack`
   of one `PropertiesView` per object, keyed by `properties_key`, made
   on first sight and brought to the front afterwards. Nothing is

@@ -871,9 +871,13 @@ class Sidebar(Gtk.ScrolledWindow):
 
     def _fill_sections(self, node: Node) -> None:
         """A table's children: the Properties sections this engine has
-        (CORE-05), so every row under a table maps to a section of the
-        table tab's Properties view — and the ones that hold objects
-        (Columns, Indexes, Triggers) still expand into them.
+        (CORE-05), so every row under a table maps to one section of
+        its properties — and the ones that hold objects (Columns,
+        Indexes, Triggers) still expand into them.
+
+        Opening such a row opens that listing as a tab of its own
+        (CORE-56); "Open in Properties" is what still sends it to the
+        side panel.
 
         Which sections exist is a capability question the provider layer
         already answers without a connection, so filling is
@@ -2051,12 +2055,17 @@ class Sidebar(Gtk.ScrolledWindow):
         """Open one row's object — the Open action, and what a double
         click or Enter does. Opening something that is already open
         focuses its tab rather than stacking a second copy (CORE-01),
-        which the window handles for every kind here."""
+        which the window handles for every kind here.
+
+        A section row under a table — Indexes, Columns, Constraints —
+        opens as a tab of its own showing that listing in the result
+        grid (CORE-56), not as a page of the side panel. The panel
+        route is still there, as the row's explicit "Open in
+        Properties" menu item (CORE-05).
+        """
         if not self.is_openable(node):
             return
-        if node.kind == "section":
-            self._on_open_section(node.profile, node.table, node.category)
-        elif node.kind in ("table", "view"):
+        if node.kind in ("table", "view"):
             self._on_open_table(node.profile, node.label)
         elif node.kind == "function":
             self._on_open_function(node.profile, node.label)

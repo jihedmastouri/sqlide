@@ -15,6 +15,10 @@ the keys in SCOPES; the empty set is "All", the default, and matches
 every kind. Kinds the scope list doesn't name (triggers, events) are
 searched under "All" only — the picker stays the short list of things
 people actually scope by.
+
+Beside the kinds the picker carries one opt-in, SYSTEM_SCOPE: without
+it the server's own schemas and everything under them are not searched
+at all (PG-03).
 """
 
 from __future__ import annotations
@@ -34,6 +38,14 @@ SCOPES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 )
 
 SCOPE_KEYS: tuple[str, ...] = tuple(key for key, _label, _kinds in SCOPES)
+
+# Not a kind but an opt-in: the server's own schemas and everything
+# under them are out of the hunt unless this is ticked, so a search for
+# "users" finds the table and not the forty catalog views that mention
+# one (PG-03). Kept out of SCOPES because it narrows nothing on its own
+# — it widens what the other scopes are allowed to reach.
+SYSTEM_SCOPE = "system"
+SYSTEM_SCOPE_LABEL = "System schemas"
 
 _KINDS_BY_SCOPE = {key: kinds for key, _label, kinds in SCOPES}
 
@@ -56,10 +68,17 @@ def scope_label(scopes: frozenset[str]) -> str:
     return f"{len(chosen)} kinds"
 
 
-def in_scope(kind: str, scopes: frozenset[str]) -> bool:
-    """Is a row of this kind searchable under the chosen scopes?"""
+def in_scope(kind: str, scopes: frozenset[str], *, system: bool = False) -> bool:
+    """Is a row of this kind searchable under the chosen scopes?
+
+    `system` marks a row that belongs to a system schema — its own row
+    or anything under it — which only the system opt-in reaches.
+    """
     if kind in _UNSEARCHABLE:
         return False
+    if system and SYSTEM_SCOPE not in scopes:
+        return False
+    scopes = scopes - {SYSTEM_SCOPE}
     if not scopes or len(scopes) == len(SCOPES):
         return True
     return any(kind in _KINDS_BY_SCOPE[key] for key in scopes)

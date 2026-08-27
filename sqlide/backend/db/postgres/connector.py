@@ -633,15 +633,27 @@ class PostgresConnector(Connector):
             f"PASSWORD {_quote_str(password)}"
         )
 
-    def list_schemas(self) -> list[str]:
+    def list_schemas(self, *, include_system: bool = False) -> list[str]:
         """Every schema in the database the user could work in, system
-        and temp catalogs excluded — the schema dropdown's list."""
+        and temp catalogs excluded — the schema dropdown's list.
+
+        `include_system` keeps `pg_catalog`, `information_schema` and
+        the other `pg_*` schemas in, for the object tree that shows
+        them dimmed (PG-03). The per-session and per-table catalogs
+        (`pg_temp_*`, `pg_toast*`) stay out either way: they are
+        bookkeeping, not places anything is browsed.
+        """
+        where = (
+            "nspname NOT LIKE 'pg\\_toast%' "
+            "AND nspname NOT LIKE 'pg\\_temp%'"
+        )
+        if not include_system:
+            where = (
+                "nspname NOT IN ('pg_catalog', 'information_schema') "
+                f"AND {where}"
+            )
         _, rows, _ = self._run(
-            "SELECT nspname FROM pg_namespace "
-            "WHERE nspname NOT IN ('pg_catalog', 'information_schema') "
-            "AND nspname NOT LIKE 'pg\\_toast%' "
-            "AND nspname NOT LIKE 'pg\\_temp%' "
-            "ORDER BY nspname"
+            f"SELECT nspname FROM pg_namespace WHERE {where} ORDER BY nspname"
         )
         return [name for (name,) in rows]
 

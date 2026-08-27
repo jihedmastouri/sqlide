@@ -109,6 +109,11 @@ class Settings:
     time_zone: str = DEFAULT_TIME_ZONE
     monitor_interval: int = metrics.DEFAULT_INTERVAL
     lsp_enabled: bool = True
+    #: Show the server's own schemas (information_schema, pg_catalog)
+    #: in the object tree. Shown by default, dimmed rather than
+    #: hidden: they are worth reading, just never the thing you came
+    #: for (PG-03).
+    show_system_schemas: bool = True
     lsp_defaults: dict[str, str] = field(default_factory=dict)
     mcp_defaults: dict[str, str] = field(default_factory=dict)
     sidebar_width: int = DEFAULT_SIDEBAR_WIDTH
@@ -178,6 +183,7 @@ class Settings:
                 number("monitor_interval", metrics.DEFAULT_INTERVAL)
             ),
             lsp_enabled=flag("lsp_enabled", True),
+            show_system_schemas=flag("show_system_schemas", True),
             lsp_defaults=table("lsp_defaults"),
             mcp_defaults=table("mcp_defaults"),
             sidebar_width=clamp_sidebar_width(

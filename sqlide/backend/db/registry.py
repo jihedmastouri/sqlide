@@ -100,6 +100,15 @@ def hierarchy(kind: str) -> tuple[str, ...]:
     return provider_class(kind).HIERARCHY
 
 
+def is_system_schema(kind: str, name: str) -> bool:
+    """Is `name` a schema `kind`'s server owns rather than the user
+    (PG-03)? Answerable without a connection, and the only thing the
+    sidebar asks about a schema's standing — which names those are
+    stays in each engine's provider.
+    """
+    return provider_class(kind).is_system_schema(name)
+
+
 def level_categories(kind: str, level: str) -> tuple[tuple[str, str], ...]:
     """(slug, label) for the folders `kind` hangs off one level of its
     tree — a connection, a database, a schema (PG-02). Answerable

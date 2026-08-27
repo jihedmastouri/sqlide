@@ -127,6 +127,7 @@ key with a value outside its set is reported and falls back.
 | `sidebar_width` | integer | `280` | Width of the connections sidebar, in pixels. Clamped to 180–600; drag its inner edge to change it, double-click that edge to reset. |
 | `monitor_interval` | integer 1–60 | `2` | Seconds between samples in the [monitoring](/docs/monitoring/) dashboard. The dashboard's own control writes here; storage keeps its separate 60-second timer. |
 | `lsp_enabled` | boolean | `true` | Master switch for completion language servers. |
+| `show_system_schemas` | boolean | `true` | Keep `information_schema` and the server's own catalog in the object tree. Shown dimmed and after the user's schemas; off hides them entirely. |
 | `last_workspace` | string | `""` | Id of the workspace to reopen on startup. Empty, or a workspace that no longer exists, opens the first on file. |
 
 Three tables of string-to-string:

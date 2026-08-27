@@ -824,3 +824,35 @@ def test_schema_node_lists_its_own_tables(crm_schema):
     assert tables[0].schema == "sqlide_crm"
     assert provider.qualified_name(tables[0]) == "sqlide_crm.accounts"
     assert provider.describe(tables[0]).name == "sqlide_crm.accounts"
+
+
+def test_list_schemas_can_include_the_system_ones(postgres):
+    """The object tree shows them (dimmed, PG-03), so the adapter can
+    be asked for them — the per-session and per-table catalogs stay
+    out either way, being bookkeeping rather than places to browse."""
+    _, db = postgres
+    schemas = db.list_schemas(include_system=True)
+    assert "information_schema" in schemas and "pg_catalog" in schemas
+    assert "public" in schemas
+    assert not [s for s in schemas if s.startswith(("pg_toast", "pg_temp"))]
+
+
+def test_the_tree_sorts_system_schemas_last(postgres):
+    """A database's schema rows: the user's first, the server's own
+    after them and marked as such (PG-03)."""
+    from sqlide.backend.db import registry
+    from sqlide.backend.db.metadata import NodeRef
+
+    _, db = postgres
+    provider = registry.create_provider("postgres", db)
+    rows = [
+        ref
+        for ref in provider.list_children(NodeRef("database", db.database))
+        if ref.kind == "schema"
+    ]
+    names = [ref.name for ref in rows]
+    assert "public" in names and "information_schema" in names
+    flags = [ref.system for ref in rows]
+    assert flags == sorted(flags)  # every user schema before every system one
+    assert dict(zip(names, flags))["information_schema"] is True
+    assert dict(zip(names, flags))["public"] is False

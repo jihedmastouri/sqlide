@@ -46,6 +46,11 @@ class PostgresMetadata(MetadataProvider):
         "Name", "Type", "Login", "Superuser", "Create DB", "Create role",
         "Member of", "Valid until", "Connection limit",
     )
+    #: What the server owns rather than the user: the SQL-standard
+    #: catalog and every `pg_*` schema (pg_catalog, pg_toast, a
+    #: session's pg_temp_N). Shown dimmed and last (PG-03).
+    SYSTEM_SCHEMAS = ("information_schema",)
+    SYSTEM_SCHEMA_PREFIXES = ("pg_",)
     CAPABILITIES = Capabilities(
         databases=True,
         schemas=True,
@@ -231,14 +236,21 @@ class PostgresMetadata(MetadataProvider):
         """Schemas, not categories: here the objects belong to a schema
         and the tree has to say which one."""
         current = self.connector.current_schema()
+        names = self.connector.list_schemas(include_system=True)
         return [
             NodeRef(
                 "schema", name,
                 database=ref.database or ref.name,
                 schema=name,
                 detail="current" if name == current else "",
+                system=self.is_system_schema(name),
             )
-            for name in self.connector.list_schemas()
+            # The server's own schemas come after the user's: they are
+            # there to be looked into, not worked in (PG-03).
+            for name in sorted(
+                names,
+                key=lambda n: (self.is_system_schema(n), n != current, n),
+            )
         ] + self.tree_categories(ref)
 
     def _objects(self, ref: NodeRef):

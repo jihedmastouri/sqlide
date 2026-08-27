@@ -121,6 +121,7 @@ from sqlide.backend import identity
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import metrics, objects, registry
 from sqlide.backend.db.base import Connector
+from sqlide.backend.settings import store as settings_store
 from sqlide.frontend import identity as identity_ui
 from sqlide.frontend import tree_search
 from sqlide.frontend.util import describe, run_async
@@ -212,6 +213,7 @@ class Node(GObject.Object):
         payload: list | None = None,  # tables/views categories: TableInfo list
         is_pk: bool = False,
         table: str = "",  # index/trigger rows: owning table (for DROP)
+        system: bool = False,  # a system schema, or a row inside one
     ) -> None:
         super().__init__()
         self.kind = kind
@@ -222,6 +224,11 @@ class Node(GObject.Object):
         self.payload = payload
         self.is_pk = is_pk
         self.table = table
+        # A schema the server owns rather than the user, or anything
+        # under one: drawn dimmed, sorted last, and left out of search
+        # unless it is asked for (PG-03). Dimmed is not disabled — the
+        # row expands, opens and refreshes like any other.
+        self.system = system
         self.store: Gio.ListStore | None = None  # cached child model
         # The row this one was loaded under, so Refresh on a leaf can
         # refetch the category that owns it. Roots keep None.
@@ -390,6 +397,39 @@ class Sidebar(Gtk.ScrolledWindow):
         self._popover.add_css_class("schema-popover")
         self._view.connect("destroy", lambda *_: self._popover.unparent())
 
+        # Hiding or showing the server's own schemas changes what a
+        # database row lists, so a flip of the setting reloads the
+        # rows that are already there (PG-03). The listener outlives
+        # nothing: it goes when the sidebar's view does.
+        self._show_system = settings_store.settings.show_system_schemas
+        settings_store.subscribe(self._settings_changed)
+        self._view.connect(
+            "destroy",
+            lambda *_: settings_store.unsubscribe(self._settings_changed),
+        )
+
+    def _settings_changed(self, settings) -> None:
+        """Re-list the schemas when the system-schema setting flips;
+        every other setting leaves the tree alone."""
+        if settings.show_system_schemas == self._show_system:
+            return
+        self._show_system = settings.show_system_schemas
+        for node in _items(self._roots):
+            self._reload_schema_lists(node)
+
+    def _reload_schema_lists(self, node: Node) -> None:
+        """Refetch the rows of every node that lists schemas — a
+        database on PostgreSQL, a connection on an engine with no
+        database level — and leave the rest of the tree, and every
+        connection never opened, alone."""
+        if not node.loaded:
+            return
+        if any(child.kind == "schema" for child in _items(node.store)):
+            self.refresh_node(node)
+            return
+        for child in list(_items(node.store)):
+            self._reload_schema_lists(child)
+
     def add_profile(self, profile: ConnectionProfile) -> None:
         self._roots.append(
             Node("connection", profile.name, detail=profile.kind, profile=profile)
@@ -477,6 +517,11 @@ class Sidebar(Gtk.ScrolledWindow):
         when neither it nor anything under it matches. Ancestors of a
         match are kept even when they don't match themselves — a bare
         column name says nothing without the table above it."""
+        if node.system and tree_search.SYSTEM_SCOPE not in scopes:
+            # The server's own schemas are not what a search is for
+            # unless the filter says so, and skipping the schema skips
+            # everything under it in one go (PG-03).
+            return None
         children = Gio.ListStore(item_type=Node)
         for child in self._search_children(node):
             clone = self._filter_node(child, query, scopes)
@@ -484,7 +529,7 @@ class Sidebar(Gtk.ScrolledWindow):
                 children.append(clone)
         hit = (
             tree_search.match(query, node.label)
-            if tree_search.in_scope(node.kind, scopes)
+            if tree_search.in_scope(node.kind, scopes, system=node.system)
             else None
         )
         if hit is None and not children.get_n_items():
@@ -772,7 +817,11 @@ class Sidebar(Gtk.ScrolledWindow):
                 connector = self._ensure(node.profile)
                 databases = connector.list_databases() if root else []
                 schemas = (
-                    connector.list_schemas()
+                    # The server's own schemas come back too and are
+                    # filtered (or not) below: whether they are shown
+                    # is a setting, and toggling it must not need a
+                    # reconnect (PG-03).
+                    connector.list_schemas(include_system=True)
                     if wants_schemas and not databases
                     else []
                 )
@@ -814,16 +863,27 @@ class Sidebar(Gtk.ScrolledWindow):
                 if schemas:
                     # The one bare names already resolve in comes first
                     # and says so: it is the schema every unqualified
-                    # reference in a console on this row will hit.
+                    # reference in a console on this row will hit. The
+                    # server's own schemas come last, and only when
+                    # they are wanted (PG-03).
+                    kind = node.profile.kind if node.profile else ""
+                    show_system = settings_store.settings.show_system_schemas
                     for name in sorted(
-                        schemas, key=lambda n: n != current_schema
+                        schemas,
+                        key=lambda n: (
+                            _is_system_schema(kind, n), n != current_schema, n
+                        ),
                     ):
+                        system = _is_system_schema(kind, name)
+                        if system and not show_system:
+                            continue
                         store.append(Node(
                             "schema", name,
                             detail=(
                                 "current" if name == current_schema else ""
                             ),
                             profile=schema_profile(node.profile, name),
+                            system=system,
                         ))
                     _append_folders(store, node, folders, relations)
                     return
@@ -1016,6 +1076,9 @@ class Sidebar(Gtk.ScrolledWindow):
         expander.set_child(box)
         row_box.append(expander)
         list_item.set_child(row_box)
+        # The row's content minus the identity bar: what a system row
+        # dims, so the connection colour keeps its full strength.
+        list_item.content = expander
         list_item.identity_bar = identity_bar
         list_item.dot = dot
         list_item.dot_name = ""
@@ -1070,6 +1133,13 @@ class Sidebar(Gtk.ScrolledWindow):
             list_item.label.add_css_class("dim-label")
         else:
             list_item.label.remove_css_class("dim-label")
+        # Dimmed, not disabled: a system row is quieter than the rest
+        # and behaves exactly like it (PG-03). Rows are recycled, so
+        # the class is set on every bind either way.
+        if node.system:
+            list_item.content.add_css_class("system-row")
+        else:
+            list_item.content.remove_css_class("system-row")
         list_item.pk.set_visible(node.is_pk)
         list_item.detail.set_text(node.detail)
         list_item.detail.set_visible(bool(node.detail))
@@ -1632,6 +1702,18 @@ def _append_folders(
         store.append(row)
 
 
+def _is_system_schema(kind: str, name: str) -> bool:
+    """Whether `name` is one of the server's own schemas on this
+    engine — the provider layer's answer (registry.is_system_schema,
+    PG-03), so no engine is named here."""
+    if not kind:
+        return False
+    try:
+        return registry.is_system_schema(kind, name)
+    except Exception:  # an adapter the registry doesn't know
+        return False
+
+
 def _has_schemas(profile: ConnectionProfile | None) -> bool:
     """Whether this engine puts schemas below the database — a
     capability question the provider layer answers with no connection
@@ -1690,6 +1772,7 @@ def _clone(node: Node) -> Node:
         payload=node.payload,
         is_pk=node.is_pk,
         table=node.table,
+        system=node.system,
     )
     copy.connected = node.connected
     copy.ddl = node.ddl
@@ -1721,7 +1804,11 @@ def _adopt(node: Node) -> None:
     if node.store is None:
         return
     for i in range(node.store.get_n_items()):
-        node.store.get_item(i).parent = node
+        child = node.store.get_item(i)
+        child.parent = node
+        # Everything under a system schema is system too: the folders,
+        # their rows, and the columns below those (PG-03).
+        child.system = child.system or node.system
 
 
 def _new_items(kinds: tuple[str, ...]) -> Gio.Menu:

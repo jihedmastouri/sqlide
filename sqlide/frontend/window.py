@@ -768,10 +768,13 @@ class MainWindow(Adw.ApplicationWindow):
         return row
 
     def _sidebar_scope_popover(self) -> Gtk.Popover:
-        """The Filter menu: "All" plus a check button per object kind.
-        Ticking any kind unticks All, and unticking the last one falls
-        back to All — an empty scope would search nothing, which is
-        never what the user meant."""
+        """The Filter menu: "All" plus a check button per object kind,
+        and below them the system-schema opt-in. Ticking any kind
+        unticks All, and unticking the last one falls back to All — an
+        empty scope would search nothing, which is never what the user
+        meant. The system tick is not a kind: it widens the hunt to
+        the server's own schemas, which search skips otherwise
+        (PG-03), so it leaves All alone."""
         box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
             spacing=6,
@@ -781,6 +784,10 @@ class MainWindow(Adw.ApplicationWindow):
             margin_end=6,
         )
         buttons: dict[str, Gtk.CheckButton] = {}
+        system_button = Gtk.CheckButton(label=tree_search.SYSTEM_SCOPE_LABEL)
+        system_button.set_tooltip_text(
+            "Also search information_schema and the server's own catalog"
+        )
         all_button = Gtk.CheckButton(label="All")
         all_button.set_active(not self._sidebar_scopes)
         box.append(all_button)
@@ -790,12 +797,17 @@ class MainWindow(Adw.ApplicationWindow):
 
         def apply() -> None:
             nonlocal updating
-            chosen = frozenset(
+            kinds = frozenset(
                 key for key, button in buttons.items() if button.get_active()
             )
-            self._sidebar_scopes = chosen
+            chosen = kinds | (
+                {tree_search.SYSTEM_SCOPE}
+                if system_button.get_active()
+                else set()
+            )
+            self._sidebar_scopes = frozenset(chosen)
             updating = True
-            all_button.set_active(not chosen)
+            all_button.set_active(not kinds)
             updating = False
             if self._sidebar_filter_label is not None:
                 self._sidebar_filter_label.set_label(
@@ -823,6 +835,12 @@ class MainWindow(Adw.ApplicationWindow):
             button.connect("toggled", toggled)
             buttons[key] = button
             box.append(button)
+        box.append(Gtk.Separator())
+        system_button.set_active(
+            tree_search.SYSTEM_SCOPE in self._sidebar_scopes
+        )
+        system_button.connect("toggled", toggled)
+        box.append(system_button)
         all_button.connect("toggled", all_toggled)
         return Gtk.Popover(child=box)
 

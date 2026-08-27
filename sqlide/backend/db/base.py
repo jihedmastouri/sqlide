@@ -384,9 +384,13 @@ class Connector(ABC):
         """
         return self.list_tables()
 
-    def list_schemas(self) -> list[str]:
+    def list_schemas(self, *, include_system: bool = False) -> list[str]:
         """Schemas inside the connected database, sorted by name, for
         the console's schema switcher.
+
+        `include_system` adds the schemas the server owns —
+        `information_schema`, the engine's own catalog — which the
+        object tree shows dimmed (PG-03) and the switcher leaves out.
 
         Concrete default (not abstract), empty for every adapter where
         a schema is not a level of its own: SQLite has none, and in

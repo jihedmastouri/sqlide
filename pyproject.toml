@@ -32,6 +32,8 @@ build-backend = "setuptools.build_meta"
 include = ["sqlide*"]
 
 [tool.setuptools.package-data]
+# Compiled message catalogues, built from po/ by `make i18n`.
+"sqlide" = ["locale/*/LC_MESSAGES/*.mo"]
 "sqlide.frontend" = ["style.css"]
 "sqlide.backend.demo" = ["*.sql"]
 

@@ -21,6 +21,7 @@ from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import Connector
 from sqlide.frontend import confirm
 from sqlide.frontend.util import run_async
+from sqlide.i18n import _
 
 
 def present_drop_dialog(
@@ -73,7 +74,9 @@ def _present(
     statement.add_css_class("monospace")
     cascade = None
     if cascade_sql:
-        cascade = Gtk.CheckButton(label="Also drop dependent objects (CASCADE)")
+        cascade = Gtk.CheckButton(
+            label=_("Also drop dependent objects (CASCADE)")
+        )
         cascade.connect(
             "toggled",
             lambda button: statement.set_label(

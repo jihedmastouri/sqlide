@@ -35,6 +35,7 @@ from sqlide.backend.db.metadata import NodeRef
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend.sql_editor import SqlEditor
 from sqlide.frontend.util import describe, run_async
+from sqlide.i18n import _
 
 # Header icon per kind; mirrors the sidebar's own icons so an object
 # looks the same in both places.
@@ -217,7 +218,7 @@ class InfoBody(Gtk.ScrolledWindow):
         )
         link = table.link(0)
         if link is not None:
-            button = Gtk.Button(label="Open")
+            button = Gtk.Button(label=_("Open"))
             button.add_css_class("flat")
             describe(button, f"Open {link.name}")
             button.connect("clicked", lambda *_: self._on_open_link(link))
@@ -259,10 +260,10 @@ class InfoBody(Gtk.ScrolledWindow):
         self._on_open_link(row.link)
 
     def _ddl_group(self, ddl: str) -> Gtk.Widget:
-        group = Adw.PreferencesGroup(title="Definition")
+        group = Adw.PreferencesGroup(title=_("Definition"))
         copy = Gtk.Button(icon_name="edit-copy-symbolic")
         copy.add_css_class("flat")
-        describe(copy, "Copy the definition to the clipboard")
+        describe(copy, _("Copy the definition to the clipboard"))
         copy.connect("clicked", lambda *_: self._copy(ddl))
         group.set_header_suffix(copy)
         editor = SqlEditor(ddl, editable=False)
@@ -308,7 +309,7 @@ class ObjectInfoTab(Gtk.Box):
         self._title.add_css_class("heading")
         refresh = Gtk.Button(icon_name="view-refresh-symbolic")
         refresh.add_css_class("flat")
-        describe(refresh, "Reload this object's information")
+        describe(refresh, _("Reload this object's information"))
         refresh.connect("clicked", lambda *_: self.reload())
         bar.append(self._title)
         bar.append(refresh)
@@ -586,7 +587,7 @@ class PropertiesView(Gtk.Box):
         self._title.add_css_class("heading")
         self._refresh = Gtk.Button(icon_name="view-refresh-symbolic")
         self._refresh.add_css_class("flat")
-        describe(self._refresh, "Re-read this object's properties")
+        describe(self._refresh, _("Re-read this object's properties"))
         self._refresh.connect("clicked", lambda *_: self.reload())
         bar.append(self._title)
         bar.append(self._refresh)
@@ -724,8 +725,8 @@ class PropertiesSurfaces(Gtk.Box):
         self._key: tuple | None = None
         self._stack = Gtk.Stack(vexpand=True, hexpand=True)
         self._placeholder = Gtk.Label(
-            label="Open a tab, or pick an object in the tree, to see its "
-            "properties",
+            label=_("Open a tab, or pick an object in the tree, to see its "
+            "properties"),
             margin_top=24,
             margin_start=12,
             margin_end=12,

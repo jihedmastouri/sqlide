@@ -26,6 +26,8 @@ from typing import Callable
 
 from gi.repository import Adw, Gdk, Gtk
 
+from sqlide.i18n import _
+
 TOAST_SECONDS = 3
 
 
@@ -99,14 +101,14 @@ def error_page(message: str, statement: str = "") -> Gtk.Widget:
         sql.add_css_class("dim-label")
         box.append(sql)
 
-    copy = Gtk.Button(label="Copy Error", halign=Gtk.Align.START)
+    copy = Gtk.Button(label=_("Copy Error"), halign=Gtk.Align.START)
     payload = message if not statement else f"{message}\n\n{statement}"
 
     def copy_clicked(button: Gtk.Button) -> None:
         display = Gdk.Display.get_default()
         if display is not None:
             display.get_clipboard().set(payload)
-        button.set_label("Copied")
+        button.set_label(_("Copied"))
 
     copy.connect("clicked", copy_clicked)
     box.append(copy)

@@ -31,6 +31,7 @@ from gi.repository import Adw, Gtk, Pango
 from sqlide.backend import notes as notes_backend
 from sqlide.backend.notes import Note, NotesStore
 from sqlide.frontend.util import describe
+from sqlide.i18n import _
 
 # The scope filter, in the order the drop-down shows it.
 _FILTERS = (
@@ -58,7 +59,7 @@ class NoteDialog(Adw.Dialog):
         on_save: Callable[[str, str, str, str, str], None],
     ) -> None:
         super().__init__(
-            title="Edit Note" if note is not None else "New Note",
+            title=_("Edit Note") if note is not None else _("New Note"),
             content_width=640,
             content_height=560,
         )
@@ -85,13 +86,13 @@ class NoteDialog(Adw.Dialog):
                 (notes_backend.TABLE, f"Table: {self._table}")
             )
 
-        self._title = Adw.EntryRow(title="Title")
+        self._title = Adw.EntryRow(title=_("Title"))
         if note is not None:
             self._title.set_text(note.title)
 
         self._scope = Adw.ComboRow(
-            title="Scope",
-            subtitle="What this note is about",
+            title=_("Scope"),
+            subtitle=_("What this note is about"),
             model=Gtk.StringList.new([label for _scope, label in self._choices]),
         )
         # A new note defaults to the selected object; an edited one
@@ -149,7 +150,7 @@ class NoteDialog(Adw.Dialog):
                 ),
             )
             toolbar.append(button)
-        hint = Gtk.Label(label="Markdown", xalign=1, hexpand=True)
+        hint = Gtk.Label(label=_("Markdown"), xalign=1, hexpand=True)
         hint.add_css_class("dim-label")
         toolbar.append(hint)
 
@@ -166,10 +167,10 @@ class NoteDialog(Adw.Dialog):
         content.append(scroller)
 
         header = Adw.HeaderBar()
-        cancel = Gtk.Button(label="Cancel")
+        cancel = Gtk.Button(label=_("Cancel"))
         cancel.connect("clicked", lambda *_: self.close())
         header.pack_start(cancel)
-        save = Gtk.Button(label="Save")
+        save = Gtk.Button(label=_("Save"))
         save.add_css_class("suggested-action")
         save.connect("clicked", self._save)
         header.pack_end(save)
@@ -240,18 +241,18 @@ class NotesPage(Gtk.Box):
         self._scope = Gtk.DropDown.new_from_strings(
             [label for _scope, label in _FILTERS]
         )
-        describe(self._scope, "Which notes to list")
+        describe(self._scope, _("Which notes to list"))
         self._scope.connect("notify::selected", lambda *_: self._rebuild())
         controls.append(self._scope)
         add = Gtk.Button(icon_name="list-add-symbolic", hexpand=True, halign=Gtk.Align.END)
         add.add_css_class("flat")
-        describe(add, "Add a note")
+        describe(add, _("Add a note"))
         add.connect("clicked", lambda *_: self._add())
         controls.append(add)
         self.append(controls)
 
         self._search = Gtk.SearchEntry(
-            placeholder_text="Filter title and body",
+            placeholder_text=_("Filter title and body"),
             margin_bottom=6,
             margin_start=6,
             margin_end=6,
@@ -264,7 +265,7 @@ class NotesPage(Gtk.Box):
         self._list.add_css_class("navigation-sidebar")
         self._list.connect("row-activated", self._row_activated)
         placeholder = Gtk.Label(
-            label="No notes yet — the + button writes one",
+            label=_("No notes yet — the + button writes one"),
             margin_top=24,
             wrap=True,
         )
@@ -344,7 +345,7 @@ class NotesPage(Gtk.Box):
         delete = Gtk.Button(icon_name="user-trash-symbolic")
         delete.add_css_class("flat")
         delete.set_valign(Gtk.Align.CENTER)
-        describe(delete, "Delete")
+        describe(delete, _("Delete"))
         delete.connect("clicked", lambda _b, n=note: self._confirm_delete(n))
         row.add_suffix(delete)
         return row
@@ -381,11 +382,11 @@ class NotesPage(Gtk.Box):
 
     def _confirm_delete(self, note: Note) -> None:
         dialog = Adw.AlertDialog(
-            heading="Delete note?",
+            heading=_("Delete note?"),
             body=f"“{note.title}” will be removed from notes.toml.",
         )
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("delete", "Delete")
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("delete", _("Delete"))
         dialog.set_response_appearance(
             "delete", Adw.ResponseAppearance.DESTRUCTIVE
         )

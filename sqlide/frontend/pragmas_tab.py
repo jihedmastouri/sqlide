@@ -53,6 +53,7 @@ from sqlide.backend.workspaces import TabState
 from sqlide.frontend import confirm
 from sqlide.frontend.data_grid import ResultGrid
 from sqlide.frontend.util import describe, run_async
+from sqlide.i18n import _
 
 #: Which group a row belongs in, by the kind the catalog gives it.
 _GROUPS = {
@@ -128,25 +129,25 @@ class PragmasTab(Gtk.Box):
         self._rows: list[tuple[Adw.PreferencesGroup, Gtk.Widget]] = []
 
         header = Adw.HeaderBar()
-        save = Gtk.Button(label="Save as Defaults")
+        save = Gtk.Button(label=_("Save as Defaults"))
         save.connect("clicked", lambda *_: self._save_defaults())
         describe(
             save,
-            "Store the settings that differ from SQLite's defaults on this "
-            "connection, and apply them on every connect",
+            _("Store the settings that differ from SQLite's defaults on this "
+            "connection, and apply them on every connect"),
         )
         header.pack_start(save)
-        advanced = Gtk.ToggleButton(label="Advanced")
+        advanced = Gtk.ToggleButton(label=_("Advanced"))
         describe(
             advanced,
-            "Also list the pragmas that can corrupt a database rather than "
-            "only slow it down",
+            _("Also list the pragmas that can corrupt a database rather than "
+            "only slow it down"),
         )
         advanced.connect("toggled", self._advanced_toggled)
         header.pack_end(advanced)
         refresh = Gtk.Button(icon_name="view-refresh-symbolic")
         refresh.add_css_class("flat")
-        describe(refresh, "Re-read every value from the database")
+        describe(refresh, _("Re-read every value from the database"))
         refresh.connect("clicked", lambda *_: self.reload())
         header.pack_end(refresh)
 
@@ -227,7 +228,7 @@ class PragmasTab(Gtk.Box):
             return _with_note(row, _subtitle(state))
         row = Adw.ActionRow(title=spec.name, subtitle=_subtitle(state))
         if spec.kind == pragma_rules.CHECK:
-            run = Gtk.Button(label="Run", valign=Gtk.Align.CENTER)
+            run = Gtk.Button(label=_("Run"), valign=Gtk.Align.CENTER)
             run.connect("clicked", self._run_check, state)
             row.add_suffix(run)
         else:
@@ -363,7 +364,7 @@ class PragmasTab(Gtk.Box):
             else "Every setting is at SQLite's default, so nothing is stored."
         )
         dialog = Adw.AlertDialog(
-            heading="Saved as connection defaults",
+            heading=_("Saved as connection defaults"),
             body=(
                 f"These are applied every time {self.profile.name} "
                 "connects.\n\n" + body
@@ -371,7 +372,7 @@ class PragmasTab(Gtk.Box):
                 else body
             ),
         )
-        dialog.add_response("ok", "OK")
+        dialog.add_response("ok", _("OK"))
         dialog.present(self)
 
 

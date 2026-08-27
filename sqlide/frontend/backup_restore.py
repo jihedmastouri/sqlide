@@ -21,6 +21,7 @@ sqlite3) on a worker thread, with its output shown as it finishes.
 from __future__ import annotations
 
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -33,6 +34,7 @@ from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import Connector
 from sqlide.backend.workspaces import Workspace
 from sqlide.frontend.util import run_async
+from sqlide.i18n import _, format_datetime, format_size
 
 
 class RestoreWindow(Adw.Window):
@@ -45,7 +47,7 @@ class RestoreWindow(Adw.Window):
         **kwargs,
     ) -> None:
         super().__init__(
-            title="Restore Backup",
+            title=_("Restore Backup"),
             default_width=560,
             default_height=620,
             **kwargs,
@@ -60,13 +62,13 @@ class RestoreWindow(Adw.Window):
         page = Adw.PreferencesPage()
 
         source = Adw.PreferencesGroup(
-            title="What to restore",
+            title=_("What to restore"),
             description="A backup already at one of your destinations, "
             "or a dump file on this machine.",
         )
         self._destinations = list(store.destinations)
         self._destination = Adw.ComboRow(
-            title="Destination",
+            title=_("Destination"),
             model=Gtk.StringList.new(
                 [d.name for d in self._destinations] or ["No destinations"]
             ),
@@ -76,12 +78,12 @@ class RestoreWindow(Adw.Window):
         )
         source.add(self._destination)
         self._artifact = Adw.ComboRow(
-            title="Backup", model=Gtk.StringList.new(["—"])
+            title=_("Backup"), model=Gtk.StringList.new(["—"])
         )
         source.add(self._artifact)
         file_row = Adw.ActionRow(
-            title="Use a file instead…",
-            subtitle="Any .sql or .sql.gz dump",
+            title=_("Use a file instead…"),
+            subtitle=_("Any .sql or .sql.gz dump"),
             activatable=True,
         )
         file_row.add_suffix(Gtk.Image(icon_name="document-open-symbolic"))
@@ -90,13 +92,13 @@ class RestoreWindow(Adw.Window):
         page.add(source)
 
         target = Adw.PreferencesGroup(
-            title="Where to restore it",
+            title=_("Where to restore it"),
             description="The script runs against this connection. It does "
             "not have to be the one the backup came from.",
         )
         self._connections = list(workspace.connections)
         self._connection = Adw.ComboRow(
-            title="Connection",
+            title=_("Connection"),
             model=Gtk.StringList.new(
                 [c.name for c in self._connections] or ["No connections"]
             ),
@@ -105,7 +107,9 @@ class RestoreWindow(Adw.Window):
             "notify::selected", lambda *_: self._describe_target()
         )
         target.add(self._connection)
-        self._database = Adw.EntryRow(title="Database (leave empty for the connection's own)")
+        self._database = Adw.EntryRow(
+            title=_("Database (leave empty for the connection's own)")
+        )
         target.add(self._database)
         self._warning = Gtk.Label(
             xalign=0, wrap=True,
@@ -122,7 +126,7 @@ class RestoreWindow(Adw.Window):
         self._output.add_css_class("monospace")
         self._output.add_css_class("dim-label")
 
-        self._restore_button = Gtk.Button(label="Restore…")
+        self._restore_button = Gtk.Button(label=_("Restore…"))
         self._restore_button.add_css_class("destructive-action")
         self._restore_button.connect("clicked", lambda *_: self._confirm())
         header = Adw.HeaderBar()
@@ -193,7 +197,7 @@ class RestoreWindow(Adw.Window):
         )
 
     def _pick_file(self) -> None:
-        dialog = Gtk.FileDialog(title="Open Dump File")
+        dialog = Gtk.FileDialog(title=_("Open Dump File"))
 
         def picked(dialog: Gtk.FileDialog, result) -> None:
             try:
@@ -219,7 +223,7 @@ class RestoreWindow(Adw.Window):
     def _describe_target(self) -> None:
         profile = self._profile()
         if profile is None:
-            self._warning.set_text("This workspace has no connections.")
+            self._warning.set_text(_("This workspace has no connections."))
             self._restore_button.set_sensitive(False)
             return
         reason = restoring.unsupported_reason(profile)
@@ -245,8 +249,8 @@ class RestoreWindow(Adw.Window):
             )
             + "\n\nThis cannot be undone from sqlide.",
         )
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("restore", "Restore")
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("restore", _("Restore"))
         dialog.set_response_appearance(
             "restore", Adw.ResponseAppearance.DESTRUCTIVE
         )
@@ -308,10 +312,19 @@ class RestoreWindow(Adw.Window):
 def _artifact_label(artifact: targets.Artifact) -> str:
     parts = [artifact.name]
     if artifact.size:
-        parts.append(f"{artifact.size / 1024 / 1024:.1f} MB")
+        parts.append(format_size(artifact.size))
     if artifact.modified:
-        parts.append(artifact.modified.replace("T", " ")[:16])
+        parts.append(_format_modified(artifact.modified))
     return "  ·  ".join(parts)
+
+
+def _format_modified(stamp: str) -> str:
+    """An artifact's ISO timestamp in the reader's own date order.
+    Anything unparseable is shown as it came, minus the T."""
+    try:
+        return format_datetime(datetime.fromisoformat(stamp))
+    except ValueError:
+        return stamp.replace("T", " ")[:16]
 
 
 def _wrap(widget: Gtk.Widget) -> Gtk.ListBoxRow:

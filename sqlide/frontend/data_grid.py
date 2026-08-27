@@ -79,6 +79,7 @@ from sqlide.backend.settings import max_map_features as settings_max_map_feature
 from sqlide.backend.settings import store as settings_store
 from sqlide.frontend import confirm, feedback, keymap
 from sqlide.frontend.util import describe, run_async
+from sqlide.i18n import _
 
 PAGE_SIZE = 500
 
@@ -1382,11 +1383,11 @@ class _FilterRow(Gtk.Box):
             self._value.connect("changed", lambda *_: on_change())
         self._remove = Gtk.Button(icon_name="list-remove-symbolic")
         self._remove.add_css_class("flat")
-        describe(self._remove, "Remove condition")
+        describe(self._remove, _("Remove condition"))
         self._remove.connect("clicked", lambda *_: on_remove(self))
         self._close = Gtk.Button(icon_name="window-close-symbolic")
         self._close.add_css_class("flat")
-        describe(self._close, "Close filters")
+        describe(self._close, _("Close filters"))
         self._close.set_visible(False)
         if on_close is not None:
             self._close.connect("clicked", lambda *_: on_close())
@@ -1481,19 +1482,19 @@ class _SortRow(Gtk.Box):
                 dropdown.connect("notify::selected", lambda *_: on_change())
         up = Gtk.Button(icon_name="go-up-symbolic")
         up.add_css_class("flat")
-        describe(up, "Sort by this column earlier")
+        describe(up, _("Sort by this column earlier"))
         up.connect("clicked", lambda *_: on_move(self, -1))
         down = Gtk.Button(icon_name="go-down-symbolic")
         down.add_css_class("flat")
-        describe(down, "Sort by this column later")
+        describe(down, _("Sort by this column later"))
         down.connect("clicked", lambda *_: on_move(self, 1))
         self._remove = Gtk.Button(icon_name="list-remove-symbolic")
         self._remove.add_css_class("flat")
-        describe(self._remove, "Remove sort column")
+        describe(self._remove, _("Remove sort column"))
         self._remove.connect("clicked", lambda *_: on_remove(self))
         self._close = Gtk.Button(icon_name="window-close-symbolic")
         self._close.add_css_class("flat")
-        describe(self._close, "Close sort")
+        describe(self._close, _("Close sort"))
         self._close.set_visible(False)
         if on_close is not None:
             self._close.connect("clicked", lambda *_: on_close())
@@ -1577,9 +1578,9 @@ class UpdatePreviewDialog(Adw.Dialog):
         header = Adw.HeaderBar()
         header.set_show_start_title_buttons(False)
         header.set_show_end_title_buttons(False)
-        cancel = Gtk.Button(label="Cancel")
+        cancel = Gtk.Button(label=_("Cancel"))
         cancel.connect("clicked", lambda *_: self.close())
-        execute = Gtk.Button(label="Execute")
+        execute = Gtk.Button(label=_("Execute"))
         execute.add_css_class("destructive-action")
         execute.connect("clicked", self._on_execute_clicked)
         header.pack_start(cancel)
@@ -1727,10 +1728,10 @@ class TableTab(Gtk.Box):
 
         bar = Gtk.ActionBar()
         self._prev = Gtk.Button(icon_name="go-previous-symbolic")
-        describe(self._prev, "Previous page")
+        describe(self._prev, _("Previous page"))
         self._prev.connect("clicked", self._on_prev)
         self._next = Gtk.Button(icon_name="go-next-symbolic")
-        describe(self._next, "Next page")
+        describe(self._next, _("Next page"))
         self._next.connect("clicked", self._on_next)
         self._page_label = Gtk.Label()
         bar.pack_start(self._prev)
@@ -1738,18 +1739,18 @@ class TableTab(Gtk.Box):
         bar.pack_start(self._next)
 
         refresh = Gtk.Button(icon_name="view-refresh-symbolic")
-        describe(refresh, "Refresh (discards unsaved edits)")
+        describe(refresh, _("Refresh (discards unsaved edits)"))
         refresh.connect("clicked", lambda *_: self.reload())
         self._filter_toggle = Gtk.ToggleButton(icon_name="edit-find-symbolic")
-        describe(self._filter_toggle, "Filter rows")
+        describe(self._filter_toggle, _("Filter rows"))
         self._filter_toggle.connect("toggled", self._on_filter_toggled)
         self._sort_toggle = Gtk.ToggleButton(
             icon_name="view-sort-descending-symbolic"
         )
-        describe(self._sort_toggle, "Sort rows")
+        describe(self._sort_toggle, _("Sort rows"))
         self._sort_toggle.connect("toggled", self._on_sort_toggled)
         self._edit_toggle = Gtk.ToggleButton(icon_name="document-edit-symbolic")
-        describe(self._edit_toggle, "Unlock editing")
+        describe(self._edit_toggle, _("Unlock editing"))
         self._edit_toggle.set_sensitive(False)
         self._edit_toggle.connect("toggled", self._on_edit_toggled)
         self._save = Gtk.Button()
@@ -1793,12 +1794,12 @@ class TableTab(Gtk.Box):
         row = Gtk.CenterBox(margin_top=6, margin_bottom=6, visible=False)
         linked = Gtk.Box(spacing=0)
         linked.add_css_class("linked")
-        self._data_toggle = Gtk.ToggleButton(label="Data", active=True)
-        describe(self._data_toggle, "The table's rows")
-        self._map_toggle = Gtk.ToggleButton(label="Map", visible=False)
+        self._data_toggle = Gtk.ToggleButton(label=_("Data"), active=True)
+        describe(self._data_toggle, _("The table's rows"))
+        self._map_toggle = Gtk.ToggleButton(label=_("Map"), visible=False)
         describe(
             self._map_toggle,
-            "The rows' geometries drawn on a map",
+            _("The rows' geometries drawn on a map"),
         )
         self._map_toggle.set_group(self._data_toggle)
         self._data_toggle.connect("toggled", self._on_view_toggled)
@@ -2104,15 +2105,15 @@ class TableTab(Gtk.Box):
         panel.append(self._filter_rows_box)
 
         controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        add = Gtk.Button(label="Add condition")
+        add = Gtk.Button(label=_("Add condition"))
         add.connect("clicked", lambda *_: self._add_filter_row())
         controls.append(add)
 
         controls.append(Gtk.Box(hexpand=True))
-        clear = Gtk.Button(label="Clear")
+        clear = Gtk.Button(label=_("Clear"))
         clear.connect("clicked", lambda *_: self._clear_filters())
         controls.append(clear)
-        apply = Gtk.Button(label="Apply")
+        apply = Gtk.Button(label=_("Apply"))
         apply.add_css_class("suggested-action")
         apply.connect("clicked", lambda *_: self._apply_filters())
         controls.append(apply)
@@ -2141,14 +2142,14 @@ class TableTab(Gtk.Box):
         panel.append(self._sort_rows_box)
 
         controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        add = Gtk.Button(label="Add sort column")
+        add = Gtk.Button(label=_("Add sort column"))
         add.connect("clicked", lambda *_: self._add_sort_row())
         controls.append(add)
         controls.append(Gtk.Box(hexpand=True))
-        clear = Gtk.Button(label="Clear")
+        clear = Gtk.Button(label=_("Clear"))
         clear.connect("clicked", lambda *_: self._clear_sort())
         controls.append(clear)
-        apply = Gtk.Button(label="Apply")
+        apply = Gtk.Button(label=_("Apply"))
         apply.add_css_class("suggested-action")
         apply.connect("clicked", lambda *_: self._apply_sort())
         controls.append(apply)
@@ -2390,10 +2391,11 @@ class TableTab(Gtk.Box):
             toggle.set_active(False)
             confirm.present(
                 self,
-                heading=f"Edit “{self.table}” on production?",
-                body="Cells you change here are written to "
-                f"{confirm.describe_connection(self.profile)} when you "
-                "save.",
+                heading=_("Edit “%s” on production?") % self.table,
+                body=_(
+                    "Cells you change here are written to %s when you save."
+                )
+                % confirm.describe_connection(self.profile),
                 confirm_label="Unlock Editing",
                 on_confirm=self._unlock_after_confirm,
             )

@@ -44,6 +44,7 @@ from sqlide.backend.workspaces import Workspace
 from sqlide.frontend.backup_destinations import DestinationsWindow
 from sqlide.frontend.backup_restore import RestoreWindow
 from sqlide.frontend.util import icon_button, run_async
+from sqlide.i18n import _
 
 _CONTENT_LABELS = ("Schema and data", "Schema only", "Data only")
 _COMPRESSION_LABELS = ("None (.sql)", "gzip (.sql.gz)")
@@ -83,16 +84,16 @@ class BackupsTab(Gtk.Box):
             spacing=6,
             margin_top=6, margin_bottom=6, margin_start=6, margin_end=6,
         )
-        title = Gtk.Label(label="Backups", xalign=0, hexpand=True)
+        title = Gtk.Label(label=_("Backups"), xalign=0, hexpand=True)
         title.add_css_class("heading")
         bar.append(title)
-        new_job = Gtk.Button(label="New Job")
+        new_job = Gtk.Button(label=_("New Job"))
         new_job.connect("clicked", lambda *_: self._new_job())
         bar.append(new_job)
-        destinations = Gtk.Button(label="Destinations…")
+        destinations = Gtk.Button(label=_("Destinations…"))
         destinations.connect("clicked", lambda *_: self._open_destinations())
         bar.append(destinations)
-        restore = Gtk.Button(label="Restore…")
+        restore = Gtk.Button(label=_("Restore…"))
         restore.connect("clicked", lambda *_: self._open_restore(None))
         bar.append(restore)
         self.append(bar)
@@ -136,7 +137,7 @@ class BackupsTab(Gtk.Box):
     def _empty_page(self) -> Gtk.Widget:
         status = Adw.StatusPage(
             icon_name="drive-harddisk-symbolic",
-            title="No backup job selected",
+            title=_("No backup job selected"),
             description="A job says what to dump, where to put it and how "
             "often. Start with New Job — or Restore… to put an existing "
             "backup back.",
@@ -284,40 +285,40 @@ class _JobEditor(Adw.PreferencesPage):
         self._history_rows: list[Gtk.Widget] = []
 
         # What
-        what = Adw.PreferencesGroup(title="What to back up")
-        self._name = Adw.EntryRow(title="Job name")
+        what = Adw.PreferencesGroup(title=_("What to back up"))
+        self._name = Adw.EntryRow(title=_("Job name"))
         what.add(self._name)
         self._kind = Adw.ComboRow(
-            title="Contents",
+            title=_("Contents"),
             model=Gtk.StringList.new(list(_KIND_LABELS)),
         )
         self._kind.connect("notify::selected", lambda *_: self._sync_visibility())
         what.add(self._kind)
-        self._connection = Adw.ComboRow(title="Connection")
+        self._connection = Adw.ComboRow(title=_("Connection"))
         self._connection.connect(
             "notify::selected", lambda *_: self._sync_visibility()
         )
         what.add(self._connection)
         self._database = Adw.EntryRow(
-            title="Database",
+            title=_("Database"),
             # Left empty, the connection's own database is dumped —
             # the same one the sidebar shows.
         )
         what.add(self._database)
-        self._schema = Adw.EntryRow(title="Schema (PostgreSQL)")
+        self._schema = Adw.EntryRow(title=_("Schema (PostgreSQL)"))
         what.add(self._schema)
         self._content = Adw.ComboRow(
-            title="Include",
+            title=_("Include"),
             model=Gtk.StringList.new(list(_CONTENT_LABELS)),
         )
         self._content.connect("notify::selected", lambda *_: self._refresh_preview())
         what.add(self._content)
         self._tables = Adw.ActionRow(
-            title="Tables",
-            subtitle="Every table",
+            title=_("Tables"),
+            subtitle=_("Every table"),
             activatable=True,
         )
-        choose = Gtk.Button(label="Choose…", valign=Gtk.Align.CENTER)
+        choose = Gtk.Button(label=_("Choose…"), valign=Gtk.Align.CENTER)
         choose.connect("clicked", lambda *_: self._choose_tables())
         self._tables.add_suffix(choose)
         self._tables.set_activatable_widget(choose)
@@ -325,14 +326,14 @@ class _JobEditor(Adw.PreferencesPage):
         self.add(what)
 
         # Where
-        where = Adw.PreferencesGroup(title="Where it goes")
-        self._destination = Adw.ComboRow(title="Destination")
-        manage = Gtk.Button(label="Manage…", valign=Gtk.Align.CENTER)
+        where = Adw.PreferencesGroup(title=_("Where it goes"))
+        self._destination = Adw.ComboRow(title=_("Destination"))
+        manage = Gtk.Button(label=_("Manage…"), valign=Gtk.Align.CENTER)
         manage.connect("clicked", lambda *_: self._tab._open_destinations())
         self._destination.add_suffix(manage)
         where.add(self._destination)
         self._compression = Adw.ComboRow(
-            title="Compression",
+            title=_("Compression"),
             model=Gtk.StringList.new(list(_COMPRESSION_LABELS)),
         )
         self._compression.connect(
@@ -340,9 +341,9 @@ class _JobEditor(Adw.PreferencesPage):
         )
         where.add(self._compression)
         self._keep = Adw.SpinRow(
-            title="Keep",
-            subtitle="How many of this job's backups to keep there. "
-            "0 keeps every one.",
+            title=_("Keep"),
+            subtitle=_("How many of this job's backups to keep there. "
+            "0 keeps every one."),
             adjustment=Gtk.Adjustment(
                 lower=0, upper=999, step_increment=1, value=7
             ),
@@ -352,49 +353,49 @@ class _JobEditor(Adw.PreferencesPage):
 
         # When
         when = Adw.PreferencesGroup(
-            title="When it runs",
+            title=_("When it runs"),
             description="The in-app schedule only fires while sqlide is "
             "open, and catches up on one missed run when it reopens. "
             "For backups that must happen with the app closed, install "
             "the system timer.",
         )
         self._enabled = Adw.SwitchRow(
-            title="Job enabled",
-            subtitle="Off pauses the schedule; the job can still be run "
-            "by hand.",
+            title=_("Job enabled"),
+            subtitle=_("Off pauses the schedule; the job can still be run "
+            "by hand."),
             active=True,
         )
         when.add(self._enabled)
         self._mode = Adw.ComboRow(
-            title="Schedule",
+            title=_("Schedule"),
             model=Gtk.StringList.new(list(_SCHEDULE_LABELS)),
         )
         self._mode.connect("notify::selected", lambda *_: self._sync_visibility())
         when.add(self._mode)
         self._every = Adw.SpinRow(
-            title="Every (minutes)",
+            title=_("Every (minutes)"),
             adjustment=Gtk.Adjustment(
                 lower=1, upper=10080, step_increment=5, value=60
             ),
         )
         when.add(self._every)
         self._minute = Adw.SpinRow(
-            title="Minutes past the hour",
+            title=_("Minutes past the hour"),
             adjustment=Gtk.Adjustment(
                 lower=0, upper=59, step_increment=1, value=0
             ),
         )
         when.add(self._minute)
-        self._at = Adw.EntryRow(title="At (HH:MM)")
+        self._at = Adw.EntryRow(title=_("At (HH:MM)"))
         when.add(self._at)
         self._weekday = Adw.ComboRow(
-            title="Day", model=Gtk.StringList.new(list(_WEEKDAY_LABELS))
+            title=_("Day"), model=Gtk.StringList.new(list(_WEEKDAY_LABELS))
         )
         when.add(self._weekday)
         self._systemd = Adw.SwitchRow(
-            title="Install a system timer",
-            subtitle="Runs this job through systemd, so it happens even "
-            "when sqlide is closed.",
+            title=_("Install a system timer"),
+            subtitle=_("Runs this job through systemd, so it happens even "
+            "when sqlide is closed."),
         )
         self._systemd.connect(
             "notify::active", lambda *_: self._toggle_systemd()
@@ -403,7 +404,7 @@ class _JobEditor(Adw.PreferencesPage):
         self.add(when)
 
         # The command, and the buttons that act on all of the above
-        run_group = Adw.PreferencesGroup(title="Run")
+        run_group = Adw.PreferencesGroup(title=_("Run"))
         self._preview = Gtk.Label(
             xalign=0, wrap=True, wrap_mode=2, selectable=True,
             margin_top=6, margin_bottom=6, margin_start=12, margin_end=12,
@@ -411,8 +412,8 @@ class _JobEditor(Adw.PreferencesPage):
         self._preview.add_css_class("monospace")
         self._preview.add_css_class("dim-label")
         preview_row = Adw.ExpanderRow(
-            title="Command",
-            subtitle="Exactly what sqlide will run",
+            title=_("Command"),
+            subtitle=_("Exactly what sqlide will run"),
         )
         preview_row.add_row(_wrap(self._preview))
         run_group.add(preview_row)
@@ -422,17 +423,17 @@ class _JobEditor(Adw.PreferencesPage):
         self._status.add_css_class("dim-label")
 
         buttons = Gtk.Box(spacing=6, margin_top=6, halign=Gtk.Align.END)
-        save = Gtk.Button(label="Save")
+        save = Gtk.Button(label=_("Save"))
         save.add_css_class("suggested-action")
         save.connect("clicked", lambda *_: self._save())
-        run_now = Gtk.Button(label="Back Up Now")
+        run_now = Gtk.Button(label=_("Back Up Now"))
         run_now.connect("clicked", lambda *_: self._run_now())
-        restore = Gtk.Button(label="Restore…")
+        restore = Gtk.Button(label=_("Restore…"))
         restore.connect(
             "clicked", lambda *_: self._tab._open_restore(self._job)
         )
         delete = icon_button(
-            "user-trash-symbolic", "Delete This Job", self._delete
+            "user-trash-symbolic", _("Delete This Job"), self._delete
         )
         delete.add_css_class("flat")
         for button in (delete, restore, run_now, save):
@@ -441,7 +442,7 @@ class _JobEditor(Adw.PreferencesPage):
         run_group.add(_wrap(buttons))
         self.add(run_group)
 
-        self._history = Adw.PreferencesGroup(title="History")
+        self._history = Adw.PreferencesGroup(title=_("History"))
         self.add(self._history)
 
     # Loading a job into the form
@@ -543,7 +544,7 @@ class _JobEditor(Adw.PreferencesPage):
             return
         profile = self._profile()
         if profile is None:
-            self._preview.set_text("Pick a connection.")
+            self._preview.set_text(_("Pick a connection."))
             return
         try:
             self._preview.set_text(dump.command_for(profile, job).preview())
@@ -605,11 +606,11 @@ class _JobEditor(Adw.PreferencesPage):
         dialog = Adw.MessageDialog(
             transient_for=self.get_root(),
             heading=f"Delete {job.name}?",
-            body="The job and its run history go away. Backups already "
-            "written to the destination are left alone.",
+            body=_("The job and its run history go away. Backups already "
+            "written to the destination are left alone."),
         )
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("delete", "Delete")
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("delete", _("Delete"))
         dialog.set_response_appearance(
             "delete", Adw.ResponseAppearance.DESTRUCTIVE
         )
@@ -671,8 +672,8 @@ class _JobEditor(Adw.PreferencesPage):
         runs = self._tab.store.runs_for(job.id)[:10]
         if not runs:
             row = Adw.ActionRow(
-                title="No runs yet",
-                subtitle="Back Up Now runs this job straight away.",
+                title=_("No runs yet"),
+                subtitle=_("Back Up Now runs this job straight away."),
             )
             self._history.add(row)
             self._history_rows.append(row)
@@ -761,7 +762,7 @@ class _TablePicker(Adw.Window):
         **kwargs,
     ) -> None:
         super().__init__(
-            title="Choose Tables", default_width=380, default_height=520,
+            title=_("Choose Tables"), default_width=380, default_height=520,
             **kwargs,
         )
         self._on_done = on_done
@@ -781,9 +782,9 @@ class _TablePicker(Adw.Window):
         page = Adw.PreferencesPage()
         page.add(group)
 
-        clear = Gtk.Button(label="All Tables")
+        clear = Gtk.Button(label=_("All Tables"))
         clear.connect("clicked", lambda *_: self._finish([]))
-        apply = Gtk.Button(label="Use Selection")
+        apply = Gtk.Button(label=_("Use Selection"))
         apply.add_css_class("suggested-action")
         apply.connect("clicked", lambda *_: self._finish(self._selected()))
         header = Adw.HeaderBar()

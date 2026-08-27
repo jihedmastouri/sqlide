@@ -164,6 +164,7 @@ from sqlide.backend.settings import store as settings_store
 from sqlide.frontend import identity as identity_ui
 from sqlide.frontend import tree_search
 from sqlide.frontend.util import describe, run_async
+from sqlide.i18n import _
 
 _EXPANDABLE = (
     "connection", "database", "schema", "category", "table", "view",
@@ -458,14 +459,14 @@ class Sidebar(Gtk.ScrolledWindow):
         self._view.connect("activate", self._on_activate)
 
         add_connection = Gtk.Button(
-            label="Add Connection", halign=Gtk.Align.CENTER
+            label=_("Add Connection"), halign=Gtk.Align.CENTER
         )
         add_connection.add_css_class("suggested-action")
         add_connection.add_css_class("pill")
         add_connection.connect("clicked", lambda *_: on_add_connection())
         self._empty_page = Adw.StatusPage(
             icon_name="network-server-symbolic",
-            title="No connections yet",
+            title=_("No connections yet"),
             description="A workspace holds the databases you work on "
             "together. Add the first one to browse its tables.",
             child=add_connection,
@@ -1202,7 +1203,7 @@ class Sidebar(Gtk.ScrolledWindow):
         icon = Gtk.Image()
         icon.set_visible(False)
         label = Gtk.Label(xalign=0, hexpand=True)
-        pk = Gtk.Label(label="PK")
+        pk = Gtk.Label(label=_("PK"))
         pk.add_css_class("caption")
         pk.add_css_class("accent")
         badge = identity_ui.environment_badge(identity.UNSET)
@@ -1775,7 +1776,7 @@ class Sidebar(Gtk.ScrolledWindow):
             # First hover: kick off the fetch and show a placeholder;
             # the widget re-queries the tooltip when the DDL arrives.
             self._fetch_ddl(node, widget)
-            tooltip.set_text("Loading DDL…")
+            tooltip.set_text(_("Loading DDL…"))
             return True
         if not node.ddl:
             return _name_tooltip(node, tooltip)

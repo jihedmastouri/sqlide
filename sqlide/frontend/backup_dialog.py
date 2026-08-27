@@ -17,12 +17,13 @@ from pathlib import Path
 from gi.repository import Adw, Gio, GLib, Gtk
 
 from sqlide.backend import backup
+from sqlide.i18n import _
 
 
 class BackupWindow(Adw.Window):
     def __init__(self, **kwargs) -> None:
         super().__init__(
-            title="Backup & Restore",
+            title=_("Backup & Restore"),
             default_width=460,
             default_height=360,
             **kwargs,
@@ -31,13 +32,13 @@ class BackupWindow(Adw.Window):
         page = Adw.PreferencesPage()
 
         backup_group = Adw.PreferencesGroup(
-            title="Backup",
+            title=_("Backup"),
             description="Save settings, saved snippets and queries, and "
             "every workspace (connections, tabs, history) to a zip file.",
         )
         backup_row = Adw.ActionRow(
-            title="Back Up Everything",
-            subtitle="Choose where to write the zip file",
+            title=_("Back Up Everything"),
+            subtitle=_("Choose where to write the zip file"),
             activatable=True,
         )
         backup_row.add_suffix(Gtk.Image(icon_name="document-save-symbolic"))
@@ -46,14 +47,14 @@ class BackupWindow(Adw.Window):
         page.add(backup_group)
 
         restore_group = Adw.PreferencesGroup(
-            title="Restore",
+            title=_("Restore"),
             description="Extract a backup zip over the current "
             "configuration. Files in the backup replace their current "
             "versions; everything else is kept.",
         )
         restore_row = Adw.ActionRow(
-            title="Restore From Backup…",
-            subtitle="Takes effect after restarting sqlide",
+            title=_("Restore From Backup…"),
+            subtitle=_("Takes effect after restarting sqlide"),
             activatable=True,
         )
         restore_row.add_suffix(Gtk.Image(icon_name="document-open-symbolic"))
@@ -92,7 +93,7 @@ class BackupWindow(Adw.Window):
 
     def _pick_backup_target(self, *_args) -> None:
         dialog = Gtk.FileDialog(
-            title="Save Backup",
+            title=_("Save Backup"),
             initial_name=f"sqlide-backup-{date.today().isoformat()}.zip",
         )
         dialog.save(self, None, self._backup_picked)
@@ -118,7 +119,7 @@ class BackupWindow(Adw.Window):
         zips.add_suffix("zip")
         filters = Gio.ListStore.new(Gtk.FileFilter)
         filters.append(zips)
-        dialog = Gtk.FileDialog(title="Restore Backup", filters=filters)
+        dialog = Gtk.FileDialog(title=_("Restore Backup"), filters=filters)
         dialog.open(self, None, self._restore_picked)
 
     def _restore_picked(self, dialog: Gtk.FileDialog, result) -> None:

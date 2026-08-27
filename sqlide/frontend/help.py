@@ -10,6 +10,7 @@ from __future__ import annotations
 from gi.repository import Adw, Gtk
 
 from sqlide.frontend import keymap
+from sqlide.i18n import _
 
 # The bindings themselves live in keymap.py, which also backs the
 # shortcuts window and the Preferences editor — one registry, so none
@@ -102,7 +103,7 @@ _SECTIONS = (
 
 def help_dialog() -> Adw.Dialog:
     dialog = Adw.Dialog(
-        title="Help", content_width=560, content_height=620
+        title=_("Help"), content_width=560, content_height=620
     )
     box = Gtk.Box(
         orientation=Gtk.Orientation.VERTICAL,
@@ -143,7 +144,7 @@ def _section(title: str, lines: tuple[str, ...]) -> Gtk.Box:
 
 def _shortcuts_section() -> Gtk.Box:
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-    heading = Gtk.Label(label="Keyboard Shortcuts", xalign=0)
+    heading = Gtk.Label(label=_("Keyboard Shortcuts"), xalign=0)
     heading.add_css_class("heading")
     box.append(heading)
     grid = Gtk.Grid(column_spacing=24, row_spacing=4)

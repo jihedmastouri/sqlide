@@ -24,6 +24,7 @@ from gi.repository import Adw, Gtk
 
 from sqlide.backend import identity, settings as app_settings, sql_risk
 from sqlide.backend.connections import ConnectionProfile
+from sqlide.i18n import _
 
 
 def describe_connection(profile: ConnectionProfile | None) -> str:
@@ -112,7 +113,7 @@ def present(
         extra.append(entry)
     dialog.set_extra_child(extra)
 
-    dialog.add_response("cancel", "Cancel")
+    dialog.add_response("cancel", _("Cancel"))
     dialog.add_response("confirm", confirm_label)
     dialog.set_response_appearance(
         "confirm", Adw.ResponseAppearance.DESTRUCTIVE

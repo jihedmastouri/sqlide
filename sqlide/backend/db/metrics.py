@@ -704,17 +704,6 @@ def _went_backwards(previous: Sample, sample: Sample) -> bool:
 # Formatting, shared by the panels
 
 
-def format_bytes(size: int | None) -> str:
-    if size is None:
-        return "—"
-    value = float(size)
-    for unit in ("B", "kB", "MB", "GB", "TB"):
-        if value < 1024 or unit == "TB":
-            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{value:.1f} TB"
-
-
 def format_duration(seconds: float | None) -> str:
     if seconds is None:
         return ""

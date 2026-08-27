@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import pytest
 
+from sqlide import i18n
 from sqlide.backend.db import metrics
 from sqlide.backend.db.base import ConnectorError, ResultSet
 
@@ -126,9 +127,9 @@ def test_the_window_drops_samples_that_fell_out_of_it() -> None:
 
 
 def test_sizes_and_durations_read_as_words() -> None:
-    assert metrics.format_bytes(None) == "—"
-    assert metrics.format_bytes(512) == "512 B"
-    assert metrics.format_bytes(1536) == "1.5 kB"
+    assert i18n.format_size(None) == "—"
+    assert i18n.format_size(512) == "512 B"
+    assert i18n.format_size(1536) == "1.5 kB"
     assert metrics.format_duration(None) == ""
     assert metrics.format_duration(0.05) == "50 ms"
     assert metrics.format_duration(90) == "1m 30s"

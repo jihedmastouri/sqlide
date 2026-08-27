@@ -31,6 +31,7 @@ from sqlide.backend.db.base import ColumnInfo, Connector, TypeSpec
 from sqlide.frontend.data_grid import UpdatePreviewDialog
 from sqlide.frontend.sql_editor import SqlEditor
 from sqlide.frontend.util import describe, run_async
+from sqlide.i18n import _
 
 # Last entry of every type dropdown: free text, for the types no list
 # can enumerate (domains, extensions, arrays).
@@ -72,12 +73,12 @@ class _ColumnRow(Gtk.ListBoxRow):
             Gtk.PropertyExpression.new(Gtk.StringObject, None, "string")
         )
         self._type.set_enable_search(True)
-        describe(self._type, "Column type")
+        describe(self._type, _("Column type"))
         self._type.connect("notify::selected", self._on_type_selected)
         # One entry per argument the selected type takes; hidden for the
         # types that take none.
         self._params = []
-        for _ in range(_MAX_PARAMS):
+        for _index in range(_MAX_PARAMS):
             entry = Gtk.Entry(width_chars=8, visible=False)
             entry.connect("changed", lambda *_: on_changed())
             self._params.append(entry)
@@ -87,15 +88,15 @@ class _ColumnRow(Gtk.ListBoxRow):
         self._custom.connect("changed", lambda *_: on_changed())
         up = Gtk.Button(icon_name="go-up-symbolic")
         up.add_css_class("flat")
-        describe(up, "Move this column up")
+        describe(up, _("Move this column up"))
         up.connect("clicked", lambda *_: on_move(self, -1))
         down = Gtk.Button(icon_name="go-down-symbolic")
         down.add_css_class("flat")
-        describe(down, "Move this column down")
+        describe(down, _("Move this column down"))
         down.connect("clicked", lambda *_: on_move(self, 1))
         remove = Gtk.Button(icon_name="user-trash-symbolic")
         remove.add_css_class("flat")
-        describe(remove, "Remove this column")
+        describe(remove, _("Remove this column"))
         remove.connect("clicked", lambda *_: on_remove(self))
         for child in (
             self.name, self._type, *self._params, self._custom,
@@ -105,16 +106,16 @@ class _ColumnRow(Gtk.ListBoxRow):
         outer.append(top)
 
         below = Gtk.Box(spacing=12)
-        self.pk = Gtk.CheckButton(label="Primary key")
+        self.pk = Gtk.CheckButton(label=_("Primary key"))
         self.pk.connect("toggled", self._on_pk_toggled)
         # NOT NULL rather than the "NULL" it negates: the checkbox
         # should read the way the DDL it writes does.
-        self.not_null = Gtk.CheckButton(label="Not null")
+        self.not_null = Gtk.CheckButton(label=_("Not null"))
         self.not_null.connect("toggled", lambda *_: on_changed())
-        default_label = Gtk.Label(label="Default")
+        default_label = Gtk.Label(label=_("Default"))
         default_label.add_css_class("dim-label")
         self.default = Gtk.Entry(
-            placeholder_text="SQL expression", width_chars=14
+            placeholder_text=_("SQL expression"), width_chars=14
         )
         self.default.set_tooltip_text(
             "DEFAULT expression, inserted verbatim (quote string literals)"
@@ -242,15 +243,15 @@ class TableDesignerTab(Gtk.Box):
             margin_start=6,
             margin_end=6,
         )
-        name_label = Gtk.Label(label="Table")
+        name_label = Gtk.Label(label=_("Table"))
         name_label.add_css_class("dim-label")
         self._table_name = Gtk.Entry(
             placeholder_text="table_name", hexpand=True
         )
         self._table_name.connect("changed", lambda *_: self._refresh())
-        add = Gtk.Button(label="Add Column")
+        add = Gtk.Button(label=_("Add Column"))
         add.connect("clicked", lambda *_: self._add_row(focus=True))
-        self._create = Gtk.Button(label="Create")
+        self._create = Gtk.Button(label=_("Create"))
         self._create.add_css_class("suggested-action")
         self._create.connect("clicked", self._on_create_clicked)
         bar.append(name_label)
@@ -266,12 +267,14 @@ class TableDesignerTab(Gtk.Box):
         preview_bar = Gtk.Box(
             spacing=6, margin_start=6, margin_end=6, margin_top=6
         )
-        caption = Gtk.Label(label="Generated statement", xalign=0, hexpand=True)
+        caption = Gtk.Label(
+            label=_("Generated statement"), xalign=0, hexpand=True
+        )
         caption.add_css_class("dim-label")
         caption.add_css_class("caption")
         copy = Gtk.Button(icon_name="edit-copy-symbolic")
         copy.add_css_class("flat")
-        describe(copy, "Copy the generated statement")
+        describe(copy, _("Copy the generated statement"))
         copy.connect("clicked", lambda *_: self._copy_sql())
         preview_bar.append(caption)
         preview_bar.append(copy)

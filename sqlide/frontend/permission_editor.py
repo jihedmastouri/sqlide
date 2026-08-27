@@ -59,6 +59,7 @@ from sqlide.backend.db.metadata import (
     PermissionSet,
 )
 from sqlide.frontend.util import describe, run_async
+from sqlide.i18n import _, ngettext
 
 #: Node kinds worth expanding. A leaf that has children the editor
 #: cannot grant on (an index's columns) is not one of them.
@@ -139,7 +140,7 @@ class PermissionEditor(Gtk.Box):
 
         self._status = Adw.StatusPage(
             icon_name="dialog-password-symbolic",
-            title="Pick an object",
+            title=_("Pick an object"),
             description=(
                 "The privileges "
                 f"{_label(user)} holds on it appear here."
@@ -161,12 +162,14 @@ class PermissionEditor(Gtk.Box):
         paned.set_end_child(self._right)
 
         header = Adw.HeaderBar()
-        self._save = Gtk.Button(label="Save…")
+        self._save = Gtk.Button(label=_("Save…"))
         self._save.add_css_class("suggested-action")
-        describe(self._save, "Review and run the pending permission changes")
+        describe(
+            self._save, _("Review and run the pending permission changes")
+        )
         self._save.connect("clicked", lambda *_: self._review())
-        self._revert = Gtk.Button(label="Revert")
-        describe(self._revert, "Discard every pending change")
+        self._revert = Gtk.Button(label=_("Revert"))
+        describe(self._revert, _("Discard every pending change"))
         self._revert.connect("clicked", lambda *_: self._revert_all())
         header.pack_end(self._save)
         header.pack_end(self._revert)
@@ -216,7 +219,7 @@ class PermissionEditor(Gtk.Box):
         self._view.set_content(
             Adw.StatusPage(
                 icon_name="dialog-information-symbolic",
-                title="No permissions to edit",
+                title=_("No permissions to edit"),
                 description=(
                     f"{self.profile.name} runs an engine with no "
                     "privilege system: it grants nothing to anyone, so "
@@ -287,7 +290,7 @@ class PermissionEditor(Gtk.Box):
         marker = label.get_next_sibling()
         marker.set_visible(node.key in self._pending)
         describe(
-            marker, "This object has permission changes waiting to be saved"
+            marker, _("This object has permission changes waiting to be saved")
         )
         self._markers[node.key] = marker
 
@@ -328,7 +331,7 @@ class PermissionEditor(Gtk.Box):
 
         self._right.set_child(
             Adw.StatusPage(
-                title="Loading…", icon_name="content-loading-symbolic"
+                title=_("Loading…"), icon_name="content-loading-symbolic"
             )
         )
         run_async(work, done, lambda exc: self._show_error(str(exc)))
@@ -340,7 +343,7 @@ class PermissionEditor(Gtk.Box):
             self._right.set_child(
                 Adw.StatusPage(
                     icon_name="dialog-information-symbolic",
-                    title="Nothing to grant here",
+                    title=_("Nothing to grant here"),
                     description=(
                         f"{_object_label(node.ref)} carries no privileges of "
                         "its own on this engine."
@@ -362,15 +365,15 @@ class PermissionEditor(Gtk.Box):
                 row.set_subtitle(f"via role {entry.inherited_from}")
                 row.set_sensitive(False)
             elif entry.granted != granted or entry.grantable != grantable:
-                row.set_subtitle("changed — not saved yet")
+                row.set_subtitle(_("changed — not saved yet"))
             grant_option = Gtk.CheckButton(
                 active=grantable,
                 sensitive=granted and entry.editable,
                 valign=Gtk.Align.CENTER,
             )
-            describe(grant_option, "May pass this privilege on to others")
+            describe(grant_option, _("May pass this privilege on to others"))
             option_label = Gtk.Label(
-                label="grant option", valign=Gtk.Align.CENTER
+                label=_("grant option"), valign=Gtk.Align.CENTER
             )
             option_label.add_css_class("dim-label")
             check = Gtk.CheckButton(active=granted, valign=Gtk.Align.CENTER)
@@ -436,8 +439,17 @@ class PermissionEditor(Gtk.Box):
         self._pending_label.set_label(
             ""
             if not objects
-            else f"{changes} pending change{'' if changes == 1 else 's'} "
-            f"on {objects} object{'' if objects == 1 else 's'}"
+            else _("%(changes)s on %(objects)s")
+            % {
+                "changes": ngettext(
+                    "%d pending change", "%d pending changes", changes
+                )
+                % changes,
+                "objects": ngettext(
+                    "%d object", "%d objects", objects
+                )
+                % objects,
+            }
         )
         for key, marker in self._markers.items():
             marker.set_visible(key in self._pending)
@@ -492,8 +504,12 @@ class PermissionEditor(Gtk.Box):
             body.append(text)
         transactional = self._provider.capabilities().transactional_grants
         dialog = Adw.AlertDialog(
-            heading=f"Apply {len(statements)} statement"
-            f"{'' if len(statements) == 1 else 's'}?",
+            heading=ngettext(
+                "Apply %d statement?",
+                "Apply %d statements?",
+                len(statements),
+            )
+            % len(statements),
             body=(
                 f"These run on {self.profile.name} as written"
                 + (
@@ -511,8 +527,8 @@ class PermissionEditor(Gtk.Box):
                 propagate_natural_width=True,
             ),
         )
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("run", "Run")
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("run", _("Run"))
         dialog.set_response_appearance(
             "run", Adw.ResponseAppearance.DESTRUCTIVE
         )

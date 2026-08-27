@@ -37,6 +37,7 @@ from sqlide.frontend.canvas import (
     text_size,
 )
 from sqlide.frontend.util import describe, run_async
+from sqlide.i18n import _
 
 _ZOOM_STEPS = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)
 _PAD_X = 8  # text padding inside a row
@@ -98,16 +99,16 @@ class RelationGraphTab(Gtk.Box):
         refresh = Gtk.Button(icon_name="view-refresh-symbolic")
         refresh.add_css_class("flat")
         describe(refresh, 
-            "Reload tables and relations (recomputes the layout)"
+            _("Reload tables and relations (recomputes the layout)")
         )
         refresh.connect("clicked", lambda *_: self.reload())
         zoom_box = Gtk.Box()
         zoom_box.add_css_class("linked")
         zoom_out = Gtk.Button(icon_name="zoom-out-symbolic")
-        describe(zoom_out, "Zoom out")
+        describe(zoom_out, _("Zoom out"))
         zoom_out.connect("clicked", lambda *_: self._step_zoom(-1))
         zoom_in = Gtk.Button(icon_name="zoom-in-symbolic")
-        describe(zoom_in, "Zoom in")
+        describe(zoom_in, _("Zoom in"))
         zoom_in.connect("clicked", lambda *_: self._step_zoom(1))
         zoom_box.append(zoom_out)
         zoom_box.append(zoom_in)
@@ -137,7 +138,7 @@ class RelationGraphTab(Gtk.Box):
 
         self._placeholder = Adw.StatusPage(
             icon_name="network-workgroup-symbolic",
-            title="No Relations",
+            title=_("No Relations"),
             vexpand=True,
         )
         self._stack = Gtk.Stack(vexpand=True)
@@ -163,7 +164,7 @@ class RelationGraphTab(Gtk.Box):
     # Loading
 
     def reload(self) -> None:
-        self._status.set_text("Loading…")
+        self._status.set_text(_("Loading…"))
 
         def work():
             connector = self._ensure(self.profile)

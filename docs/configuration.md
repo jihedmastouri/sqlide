@@ -119,6 +119,7 @@ key with a value outside its set is reported and falls back.
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `theme` | `"system"` \| `"light"` \| `"dark"` | `"system"` | Colour scheme override. |
+| `language` | `"system"` \| a shipped language code | `"system"` | Which language the UI is in. `"system"` follows the environment's locale. Overridden for one run by `--language CODE`. Applies at startup, so a change asks for a restart. See [Languages](#languages). |
 | `editor_font_size` | integer ≥ 1 | `11` | SQL editor font size, in points. |
 | `vim_mode` | boolean | `false` | Modal Vim editing in SQL editors (GtkSourceView only). |
 | `confirm_destructive` | `"always"` \| `"non-dev"` \| `"never"` | `"non-dev"` | When a destructive statement asks first. `"non-dev"` runs development connections without a prompt. |
@@ -154,6 +155,77 @@ max_result_rows = 5000
 [keymap]
 "win.run-query" = "<Control>Return"
 ```
+
+## Languages
+
+sqlide's interface is translatable, through gettext. Which language it
+speaks is the first of these that resolves:
+
+1. `--language CODE` on the command line — `sqlide --language fr`.
+   Handy for checking a translation without touching your settings.
+2. `language` in `settings.toml`, or the **Interface Language** row at
+   the top of Preferences → General, which writes that key.
+3. The system locale: `$LANGUAGE`, `$LC_ALL`, `$LC_MESSAGES`, `$LANG`.
+4. English, which is what the strings in the source already say.
+
+A language sqlide has no catalogue for is not an error — it simply
+leaves the UI in English. Neither is a partial catalogue: a string the
+translation does not carry falls back to English on its own, so a
+translation is useful from its first line and never leaves a blank
+label behind.
+
+Preferences lists only the languages that actually ship with a
+compiled catalogue, so nothing there is a promise the app cannot keep.
+
+### What ships today
+
+| Code | Language | State |
+| --- | --- | --- |
+| `en` | English | The source strings. Complete by definition. |
+| `fr` | Français | **Partial and unreviewed.** Around 270 of 460 strings: menus, tabs, buttons, dialogs, the settings pages and every plural form. Written to prove the pipeline end to end, not by a native reviewer — corrections welcome. |
+
+### Adding a language
+
+Everything lives under `po/`, and one target drives the whole thing:
+
+```
+po/sqlide.pot                    # the template, extracted from the source
+po/fr.po                         # one per language, the file you edit
+sqlide/locale/fr/LC_MESSAGES/    # the compiled catalogue the app loads
+```
+
+1. `make i18n` — re-extracts `po/sqlide.pot` from every string marked
+   in the source, merges it into each existing `.po`, and compiles the
+   catalogues. Run it whenever a user-visible string changes.
+2. Start your language from the template:
+
+   ```sh
+   msginit --locale=de --input=po/sqlide.pot --output=po/de.po
+   ```
+
+3. Translate `po/de.po` in any PO editor (Poedit, Gtranslator, an
+   ordinary text editor). Leave a string empty rather than guessing —
+   an empty one falls back to English, a wrong one does not.
+   `msgstr[0]` / `msgstr[1]` are the plural forms; the header's
+   `Plural-Forms` line says how many your language takes.
+4. Add the code and the language's own name to `LANGUAGES` in
+   `sqlide/i18n.py`, so Preferences can offer it.
+5. `make i18n` again, then `sqlide --language de` to see it.
+
+Two rules keep the strings translatable:
+
+- Never build a sentence by concatenation, and never pick a plural
+  with `if n == 1` — word order and plural rules are the translator's
+  to decide. Use one format string with named placeholders, and
+  `ngettext()` for anything counted.
+- Numbers, dates and byte sizes go through the helpers in
+  `sqlide/i18n.py` (`format_number`, `format_datetime`, `format_size`)
+  rather than `f"{n:,}"`, which is English punctuation hard-coded.
+
+Digit grouping and month names come from the machine's own locale
+data. On a system where that locale is not built — common in a
+container — sqlide keeps neutral formatting; the translations
+themselves still work, since gettext does not need the locale.
 
 ## `notes.toml`
 

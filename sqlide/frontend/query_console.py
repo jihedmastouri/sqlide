@@ -87,7 +87,13 @@ from sqlide.frontend.lsp_completion import LspCompletionProvider
 from sqlide.frontend.plan_graph import plan_graph
 from sqlide.frontend.results_panel import ResultsPanel
 from sqlide.frontend.sql_editor import SqlEditor
-from sqlide.frontend.util import describe, font_size_stepper, run_async
+from sqlide.frontend.util import (
+    describe,
+    font_size_stepper,
+    row_count,
+    run_async,
+)
+from sqlide.i18n import _
 from sqlide.lsp import servers as lsp_servers
 
 
@@ -149,20 +155,20 @@ class QueryConsole(Gtk.Box):
             margin_start=6,
             margin_end=6,
         )
-        self._run_button = Gtk.Button(label="Run")
+        self._run_button = Gtk.Button(label=_("Run"))
         self._run_button.add_css_class("suggested-action")
         self._run_button.set_tooltip_text(
             "Run the selection or the statement at the cursor (Ctrl+Enter)"
         )
         self._run_button.connect("clicked", lambda *_: self._run())
-        self._run_all_button = Gtk.Button(label="Run All")
+        self._run_all_button = Gtk.Button(label=_("Run All"))
         self._run_all_button.set_tooltip_text(
             "Run every statement in the editor (Ctrl+Shift+Enter)"
         )
         self._run_all_button.connect(
             "clicked", lambda *_: self._run(run_all=True)
         )
-        self._explain_button = Gtk.Button(label="Explain")
+        self._explain_button = Gtk.Button(label=_("Explain"))
         self._explain_button.set_tooltip_text(
             "Show the plan of the selection or the statement at the "
             "cursor instead of running it"
@@ -170,7 +176,7 @@ class QueryConsole(Gtk.Box):
         self._explain_button.connect(
             "clicked", lambda *_: self._run(explain=True)
         )
-        self._cancel_button = Gtk.Button(label="Cancel")
+        self._cancel_button = Gtk.Button(label=_("Cancel"))
         self._cancel_button.add_css_class("destructive-action")
         self._cancel_button.set_tooltip_text(
             "Ask the server to stop the running statement"
@@ -178,12 +184,12 @@ class QueryConsole(Gtk.Box):
         self._cancel_button.set_visible(False)
         self._cancel_button.connect("clicked", lambda *_: self._cancel())
         self._dropdown = Gtk.DropDown(model=connection_names)
-        self._dropdown.set_tooltip_text("Connection to run against")
+        self._dropdown.set_tooltip_text(_("Connection to run against"))
         self._db_dropdown = Gtk.DropDown(visible=False)
-        self._db_dropdown.set_tooltip_text("Database on the server")
+        self._db_dropdown.set_tooltip_text(_("Database on the server"))
         self._db_seq = 0  # discards stale list_databases results
         self._schema_dropdown = Gtk.DropDown(visible=False)
-        self._schema_dropdown.set_tooltip_text("Schema within the database")
+        self._schema_dropdown.set_tooltip_text(_("Schema within the database"))
         self._schema_seq = 0  # discards stale list_schemas results
         # The effective search path, beside the picker: which schema an
         # unqualified name lands in is not something to guess at, and
@@ -204,8 +210,8 @@ class QueryConsole(Gtk.Box):
                 ["Automatic", "Off", *self._lsp_choices[2:]]
             )
         )
-        self._lsp_dropdown.set_tooltip_text("Completion language server")
-        hint = Gtk.Label(label="Ctrl+Enter")
+        self._lsp_dropdown.set_tooltip_text(_("Completion language server"))
+        hint = Gtk.Label(label=_("Ctrl+Enter"))
         hint.add_css_class("dim-label")
 
         # Transaction statements over this console's connection. The
@@ -241,20 +247,20 @@ class QueryConsole(Gtk.Box):
         self._saved_text = ""
         open_button = Gtk.Button(icon_name="document-open-symbolic")
         open_button.add_css_class("flat")
-        describe(open_button, "Open a file in the editor")
+        describe(open_button, _("Open a file in the editor"))
         open_button.connect("clicked", self._open_file)
         save_button = Gtk.Button(icon_name="document-save-symbolic")
         save_button.add_css_class("flat")
         describe(save_button, 
-            "Save the editor to a file (the first save asks where)"
+            _("Save the editor to a file (the first save asks where)")
         )
         save_button.connect("clicked", self._save_file)
         external_button = Gtk.Button(icon_name="text-editor-symbolic")
         external_button.add_css_class("flat")
         describe(
             external_button,
-            "Open the editor's contents in the system text editor "
-            "(saves first)",
+            _("Open the editor's contents in the system text editor "
+            "(saves first)"),
         )
         external_button.connect("clicked", self._open_in_text_editor)
 
@@ -358,12 +364,12 @@ class QueryConsole(Gtk.Box):
             margin_start=6,
             margin_end=6,
         )
-        font_label = Gtk.Label(label="Editor font size", xalign=0)
+        font_label = Gtk.Label(label=_("Editor font size"), xalign=0)
         font_label.add_css_class("dim-label")
         box.append(font_label)
         box.append(font_size_stepper())
         box.append(Gtk.Separator(margin_top=6, margin_bottom=6))
-        label = Gtk.Label(label="Completion language server", xalign=0)
+        label = Gtk.Label(label=_("Completion language server"), xalign=0)
         label.add_css_class("dim-label")
         box.append(label)
         box.append(self._lsp_dropdown)
@@ -371,7 +377,7 @@ class QueryConsole(Gtk.Box):
             icon_name="emblem-system-symbolic",
             popover=Gtk.Popover(child=box),
         )
-        button.set_tooltip_text("Console settings (this console only)")
+        button.set_tooltip_text(_("Console settings (this console only)"))
         return button
 
     def selected_connection(self) -> str:
@@ -1000,7 +1006,7 @@ class QueryConsole(Gtk.Box):
     # Files
 
     def _open_file(self, *_args) -> None:
-        dialog = Gtk.FileDialog(title="Open File")
+        dialog = Gtk.FileDialog(title=_("Open File"))
         dialog.open(self.get_root(), None, self._open_finished)
 
     def _open_finished(self, dialog: Gtk.FileDialog, result) -> None:
@@ -1022,7 +1028,7 @@ class QueryConsole(Gtk.Box):
         if self._file_path is not None:
             self._write_file(self._file_path)
             return
-        dialog = Gtk.FileDialog(title="Save File", initial_name="query.sql")
+        dialog = Gtk.FileDialog(title=_("Save File"), initial_name="query.sql")
         dialog.save(self.get_root(), None, self._save_finished)
 
     def _save_finished(self, dialog: Gtk.FileDialog, result) -> None:
@@ -1101,9 +1107,9 @@ class QueryConsole(Gtk.Box):
                     else grid
                 )
                 counts.append(
-                    f"first {len(result)} row(s)"
+                    _("first %s") % row_count(len(result))
                     if result.truncated
-                    else f"{len(result)} row(s)"
+                    else row_count(len(result))
                 )
                 if result.truncated:
                     # A capped result that says nothing reads as the
@@ -1115,8 +1121,9 @@ class QueryConsole(Gtk.Box):
                 page = feedback.error_page(str(result), sql)
                 error = result
             else:
-                page = feedback.message_page(f"{result} row(s) affected")
-                counts.append(f"{result} row(s) affected")
+                affected = _("%s affected") % row_count(result)
+                page = feedback.message_page(affected)
+                counts.append(affected)
             page.set_tooltip_text(sql)
             self._append_result_page(page, title)
 
@@ -1194,14 +1201,14 @@ def _status_page(
     for i, (sql, result, elapsed) in enumerate(outcomes):
         if isinstance(result, ResultSet):
             outcome, failed = (
-                f"OK · first {len(result)} row(s) of a larger result"
+                _("OK · first %s of a larger result") % row_count(len(result))
                 if result.truncated
-                else f"OK · {len(result)} row(s)"
+                else _("OK · %s") % row_count(len(result))
             ), False
         elif isinstance(result, Exception):
-            outcome, failed = f"Failed · {result}", True
+            outcome, failed = _("Failed · %s") % result, True
         else:
-            outcome, failed = f"OK · {result} row(s) affected", False
+            outcome, failed = _("OK · %s affected") % row_count(result), False
         head = Gtk.Label(
             label=f"Statement {i + 1} · {outcome} · {_format_elapsed(elapsed)}",
             xalign=0,
@@ -1305,16 +1312,16 @@ class PlaceholderDialog(Adw.Dialog):
         values: dict[str, str],
         on_run: Callable[[dict[str, str]], None],
     ) -> None:
-        super().__init__(title="Placeholder Values", content_width=420)
+        super().__init__(title=_("Placeholder Values"), content_width=420)
         self._values = values
         self._on_run = on_run
 
         header = Adw.HeaderBar()
         header.set_show_start_title_buttons(False)
         header.set_show_end_title_buttons(False)
-        cancel = Gtk.Button(label="Cancel")
+        cancel = Gtk.Button(label=_("Cancel"))
         cancel.connect("clicked", lambda *_: self.close())
-        run = Gtk.Button(label="Run")
+        run = Gtk.Button(label=_("Run"))
         run.add_css_class("suggested-action")
         run.connect("clicked", lambda *_: self._run())
         header.pack_start(cancel)
@@ -1330,10 +1337,10 @@ class PlaceholderDialog(Adw.Dialog):
             self._rows.append((name, row))
 
         caption = Gtk.Label(
-            label="Values go into the SQL as literals (numbers, NULL, "
+            label=_("Values go into the SQL as literals (numbers, NULL, "
             "TRUE and FALSE go in bare, everything else quoted) and are "
             "remembered in this workspace's file, so the next run is "
-            "prefilled.",
+            "prefilled."),
             xalign=0,
             wrap=True,
         )

@@ -111,6 +111,7 @@ from sqlide.frontend.sidebar import Sidebar, schema_profile
 from sqlide.frontend.status_bar import StatusBar
 from sqlide.frontend.table_designer import TableDesignerTab
 from sqlide.frontend.monitor_tab import MonitorTab
+from sqlide.frontend.pragmas_tab import PragmasTab
 from sqlide.frontend.users_tab import UsersTab
 from sqlide.frontend import transfer
 
@@ -378,6 +379,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_view_indexes=self.open_indexes,
             on_manage_users=self.open_users,
             on_monitor=self.open_monitor,
+            on_pragmas=self.open_pragmas,
             on_query_builder=self.open_query_builder,
             on_drop_object=self._drop_object,
             on_extension_action=self._extension_action,
@@ -1714,6 +1716,9 @@ class MainWindow(Adw.ApplicationWindow):
                 elif tab.kind == "monitor":
                     if profile is not None:
                         self.open_monitor(profile)
+                elif tab.kind == "pragmas":
+                    if profile is not None:
+                        self.open_pragmas(profile)
                 elif tab.kind == "object":
                     if profile is not None:
                         self.open_object(profile, objects.ObjectRef(
@@ -2565,6 +2570,45 @@ class MainWindow(Adw.ApplicationWindow):
             f"Users and permissions on {profile.name}",
         )
         return tab
+
+    def open_pragmas(self, profile: ConnectionProfile) -> None:
+        """The connection's PRAGMA settings (SQ-02). One per
+        connection: the pragmas are that connection's, so a second tab
+        would be a second view of the same values.
+
+        Only offered where the provider declares the `pragmas`
+        capability — the engines without one are not sent here at all,
+        rather than shown an empty list."""
+        if not registry.capabilities(profile.kind).pragmas:
+            self.show_error(
+                f"{profile.kind} connections have no PRAGMA settings."
+            )
+            return
+        key = ("pragmas", profile.name)
+        if self._focus_tab(key):
+            return
+        tab = PragmasTab(
+            profile,
+            self.ensure_connector,
+            self.show_error,
+            self._save_pragma_defaults,
+        )
+        self._append_tab(
+            tab,
+            key,
+            f"{profile.name} ▸ pragmas",
+            f"PRAGMA settings on {profile.name}",
+        )
+
+    def _save_pragma_defaults(
+        self, profile: ConnectionProfile, lines: list[str]
+    ) -> None:
+        """Store a connection's PRAGMA defaults on its profile
+        (CORE-13). The profile object is mutated in place, as
+        connection editing does, so tabs already open on it keep a
+        valid reference."""
+        profile.pragmas = list(lines)
+        self._store.save(self.workspace)
 
     def open_monitor(self, profile: ConnectionProfile) -> None:
         """The connection's monitoring dashboard (CORE-15). One per

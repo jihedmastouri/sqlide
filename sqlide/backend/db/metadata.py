@@ -68,6 +68,7 @@ from sqlide.backend.db.base import (
     Connector,
     ConnectorError,
     PrivilegeInfo,
+    ResultSet,
     UserInfo,
 )
 
@@ -576,6 +577,32 @@ class MetadataProvider:
             if state.trait.has("spatial"):
                 return f"{state.name} {state.version}".strip()
         return ""
+
+    # PRAGMAs (SQ-02). SQLite's settings surface: a catalog of
+    # declarations (db/sqlite/pragmas.py) read through the connector.
+    # Every engine answers, and every engine but SQLite answers with
+    # nothing — the `pragmas` capability says which is which, so the
+    # UI asks the provider rather than the engine's name.
+
+    def list_pragmas(self, advanced: bool = False) -> list:
+        """The connection's pragmas, as `PragmaState` rows: name,
+        current value, documented default and description.
+
+        The expensive checks (`integrity_check` and friends) are listed
+        with an empty value — they are run on request, through
+        `run_pragma_check`, never as part of drawing the list.
+        """
+        return []
+
+    def set_pragma(self, name: str, value) -> object:
+        """Apply one pragma and return its state re-read from the
+        database. Never trusts the write: see `PragmaState`."""
+        raise ConnectorError("This connection has no PRAGMA settings")
+
+    def run_pragma_check(self, name: str) -> ResultSet:
+        """Run one of the informational pragmas and return its rows —
+        `integrity_check`, `compile_options`, `database_list`."""
+        raise ConnectorError("This connection has no PRAGMA settings")
 
     def root(self, name: str = "") -> NodeRef:
         """The connection node the tree starts at."""

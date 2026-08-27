@@ -207,6 +207,7 @@ One `[[connection]]` table per connection. Every key is optional except
 | `color` | identity colour or `"none"` | `"none"` | all |
 | `environment` | `"development"` \| `"staging"` \| `"production"` \| `"unset"` | `"unset"` | all — drives the destructive-action ladder |
 | `file_path` | string | `""` | sqlite: the database file |
+| `pragmas` | array of strings | `[]` | sqlite: PRAGMA defaults applied on every connect, one `"name = value"` an entry |
 | `host` | string | `"localhost"` | mysql, postgres |
 | `port` | integer | `0` | mysql, postgres — `0` means the engine default (3306 / 5432) |
 | `user` | string | `""` | mysql, postgres, jdbc |
@@ -238,6 +239,16 @@ database = "app"
 password = ""        # keyring
 environment = "production"
 color = "red"        # so a prod tab never looks like a dev one
+
+[[connection]]
+name = "notes"
+kind = "sqlite"
+file_path = "/home/me/notes.db"
+# Applied every time this connection opens. Written by Save as
+# Defaults in the connection's PRAGMAs tab, and readable by hand:
+# an unknown name or a value the pragma does not take is skipped
+# with a message, and the rest still apply.
+pragmas = ["foreign_keys = 1", "busy_timeout = 5000"]
 ```
 
 ## `workspaces/<id>/state.json`

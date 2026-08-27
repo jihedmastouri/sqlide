@@ -11,7 +11,7 @@ they fall back to plain text in the file, as in earlier versions.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 from sqlide.backend import identity
 
@@ -26,6 +26,11 @@ class ConnectionProfile:
     color: str = identity.NONE
     environment: str = identity.UNSET
     file_path: str = ""  # sqlite only
+    # sqlite only: PRAGMA defaults applied on every connect (SQ-02),
+    # one "name = value" a line. A list of strings rather than a table
+    # because connections are an array of tables and the writer keeps
+    # config one level deep; a nested table would be dropped on save.
+    pragmas: list[str] = field(default_factory=list)
     host: str = "localhost"
     port: int = 0  # 0 -> adapter default (3306 / 5432)
     user: str = ""
@@ -87,7 +92,10 @@ class ConnectionProfile:
     def connect_params(self) -> dict:
         """Keyword args for registry.create_connector()."""
         if self.kind == "sqlite":
-            return {"file_path": self.file_path}
+            return {
+                "file_path": self.file_path,
+                "pragmas": tuple(self.pragmas or ()),
+            }
         if self.kind == "jdbc":
             return {
                 "url": self.jdbc_url,

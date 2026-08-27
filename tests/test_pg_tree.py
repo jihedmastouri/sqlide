@@ -106,10 +106,12 @@ def test_administer_holds_the_server_wide_listings() -> None:
     ] == ["Roles", "Storage", "System Info"]
 
 
-@pytest.mark.parametrize("kind", ["sqlite"])
+@pytest.mark.parametrize("kind", ["jdbc"])
 def test_an_engine_without_these_folders_declares_none(kind) -> None:
     # The generic Tables/Views/Functions set is not a declaration: an
-    # engine that has nothing extra keeps what the tree always did.
+    # engine that has nothing extra — JDBC, which falls back to the
+    # generic provider — keeps what the tree always did. (SQLite
+    # declares its own folders since SQ-01.)
     assert registry.level_categories(kind, "schema") == ()
     assert registry.level_categories(kind, "connection") == ()
 

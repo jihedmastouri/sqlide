@@ -737,6 +737,7 @@ class Sidebar(Gtk.ScrolledWindow):
             return
         kind = _relation_kind(node.category)
         rows = _category_rows(node)
+        engine = node.profile.kind if node.profile is not None else ""
         for info in rows:
             node.store.append(Node(
                 kind, info.name,
@@ -745,6 +746,11 @@ class Sidebar(Gtk.ScrolledWindow):
                 # plain one without a second icon vocabulary (PG-02).
                 detail=getattr(info, "detail", ""),
                 profile=node.profile,
+                # An object the engine owns rather than the user —
+                # SQLite's sqlite_* tables, which share the one
+                # namespace there is — is dimmed like a system schema
+                # (SQ-01, PG-03).
+                system=node.system or _is_system_object(engine, info.name),
             ))
         if not rows:
             node.store.append(Node("note", "(none)"))
@@ -1283,10 +1289,14 @@ class Sidebar(Gtk.ScrolledWindow):
         if node.kind == "function" and node.profile is not None:
             menu = Gio.Menu()
             menu.append("Object Info", "schema.object-info")
-            menu.append("Edit Definition", "schema.edit-function")
+            # A function is editable and droppable only where the
+            # engine has stored functions at all. SQLite's are built
+            # into the library or registered by the process: they list
+            # and they open, and there is nothing to edit or drop
+            # (SQ-01).
+            if "function" in root.ddl_kinds:
+                menu.append("Edit Definition", "schema.edit-function")
             menu.append("Refresh", "schema.refresh")
-            # SQLite lists its triggers under Functions; they drop from
-            # the Triggers category instead, so no "function" kind here.
             if can_drop and "function" in root.ddl_kinds:
                 menu.append("Drop…", "schema.drop-object")
             return menu
@@ -1782,6 +1792,19 @@ def _is_system_schema(kind: str, name: str) -> bool:
         return False
     try:
         return registry.is_system_schema(kind, name)
+    except Exception:  # an adapter the registry doesn't know
+        return False
+
+
+def _is_system_object(kind: str, name: str) -> bool:
+    """Whether `name` is an object the engine owns rather than the user
+    — the provider layer's answer again (registry.is_system_object,
+    SQ-01). False on the engines that keep their catalog in a schema of
+    its own, which the schema question already covers."""
+    if not kind:
+        return False
+    try:
+        return registry.is_system_object(kind, name)
     except Exception:  # an adapter the registry doesn't know
         return False
 

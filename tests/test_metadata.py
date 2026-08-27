@@ -277,6 +277,11 @@ def test_property_sections_follow_capabilities() -> None:
     # MySQL partitions tables but has no policies or rewrite rules.
     assert "partitions" in mysql
     assert "policies" not in mysql and "rules" not in mysql
+    # Keys are a section of their own only where the engine asks for
+    # one: SQLite does (SQ-01), the server engines list them among the
+    # constraints.
+    assert "keys" in sqlite
+    assert "keys" not in postgres and "keys" not in mysql
     # SQLite has none of the three.
     for slug in ("partitions", "policies", "rules", "dependencies"):
         assert slug not in sqlite
@@ -300,7 +305,7 @@ def test_sqlite_table_properties(sqlite_db) -> None:
     info = provider.table_properties(NodeRef("table", "tags"))
     titles = [t.title for t in info.tables]
     assert titles == [
-        "Columns", "Constraints", "Foreign keys", "References",
+        "Columns", "Keys", "Constraints", "Foreign keys", "References",
         "Indexes", "Triggers",
     ]
     assert ("Primary key", "id") in info.summary

@@ -118,6 +118,15 @@ def is_system_database(kind: str, name: str) -> bool:
     return provider_class(kind).is_system_database(name)
 
 
+def is_system_object(kind: str, name: str) -> bool:
+    """Is `name` an object `kind`'s engine owns rather than the user
+    (SQ-01)? False wherever the engine keeps its catalog in a schema of
+    its own; true for SQLite's `sqlite_*` objects, which share the one
+    namespace there is. Answerable without a connection.
+    """
+    return provider_class(kind).is_system_object(name)
+
+
 def level_categories(kind: str, level: str) -> tuple[tuple[str, str], ...]:
     """(slug, label) for the folders `kind` hangs off one level of its
     tree — a connection, a database, a schema (PG-02). Answerable

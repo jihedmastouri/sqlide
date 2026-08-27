@@ -29,6 +29,13 @@ the Aggregate page of the right side panel — the menu's "Aggregate"
 item only brings that page to the front, it is not what computes the
 summary.
 
+Geometry columns (PG-04) are rendered as a readable summary — *Point,
+SRID 4326, 1 point* — instead of WKB hex, and the cell menu's "Show on
+Map" opens them in the map view. Both are gated on the owner setting
+`geo_enabled`, which a table tab does only once the server answers that
+it has a spatial extension: on every other connection a column of hex
+strings is still just a column of hex strings.
+
 TableTab: a ResultGrid bound to one table — paged loading, refresh, and
 primary-key-based cell editing. Editing is opt-in: a toggle in the
 action bar unlocks the cells, edits accumulate locally (highlighted in
@@ -38,6 +45,11 @@ pending edits. A NULL and an empty string look the same once typed
 into an EditableLabel, so setting a cell to NULL instead goes through
 the cell's right-click menu ("Set Cell to NULL", enabled only while
 unlocked) — it calls on_edit with None rather than "".
+
+A table whose rows hold geometries grows a third side, Map, next to
+Data and Properties (frontend/map_view.py): the loaded rows drawn on
+OpenStreetMap tiles, with selection running both ways — clicking a
+feature selects its row, selecting a row highlights its feature.
 """
 
 from __future__ import annotations
@@ -52,7 +64,7 @@ from decimal import Decimal
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
 from sqlide.backend.connections import ConnectionProfile
-from sqlide.backend.db import objects
+from sqlide.backend.db import geo, objects, registry
 from sqlide.backend.db.base import (
     CONJUNCTIONS,
     FILTER_OPERATORS,
@@ -63,6 +75,7 @@ from sqlide.backend.db.base import (
     SortSpec,
 )
 from sqlide.backend.workspaces import TabState
+from sqlide.backend.settings import max_map_features as settings_max_map_features
 from sqlide.backend.settings import store as settings_store
 from sqlide.frontend import confirm, feedback, keymap
 from sqlide.frontend.object_info import TablePropertiesView
@@ -117,6 +130,16 @@ class ResultGrid(Gtk.ScrolledWindow):
         # as (name, descending) pairs, primary first, so the owner can
         # re-query.
         self._on_header_sort = on_header_sort
+        # Geometry rendering is off until the owner says the server has
+        # a spatial extension (PG-04): without that gate a column of
+        # ordinary hex strings would be summarised as geometries on
+        # every engine. on_show_map(row, column name) opens the map.
+        self.geo_enabled = False
+        self.on_show_map: Callable[[int, str], None] | None = None
+        # on_row_selected(row index or None) — the map's half of the
+        # two-way selection.
+        self.on_row_selected: Callable[[int | None], None] | None = None
+        self._geo_columns: set[int] = set()
         self._sort_order: list[tuple[str, bool]] = []
         # Used by "Copy As > INSERT Statement"; falls back to a placeholder.
         self.table_name = table_name
@@ -175,6 +198,7 @@ class ResultGrid(Gtk.ScrolledWindow):
             ("move-left", lambda *_: self._move_menu_column(-1)),
             ("move-right", lambda *_: self._move_menu_column(1)),
             ("set-null", self._on_set_null),
+            ("show-map", self._on_show_map),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", callback)
@@ -182,6 +206,9 @@ class ResultGrid(Gtk.ScrolledWindow):
             if name == "set-null":
                 action.set_enabled(False)  # only while editing is unlocked
                 self._set_null_action = action
+            if name == "show-map":
+                action.set_enabled(False)  # only on a geometry cell
+                self._show_map_action = action
         copy_as = Gio.SimpleAction.new("copy-as", GLib.VariantType.new("s"))
         copy_as.connect(
             "activate", lambda _a, param: self.copy_selection(param.get_string())
@@ -204,6 +231,7 @@ class ResultGrid(Gtk.ScrolledWindow):
             copy_as_menu.append(label, f"grid.copy-as::{fmt}")
         copy_section.append_submenu("Copy As", copy_as_menu)
         copy_section.append("Aggregate", "grid.aggregate")
+        copy_section.append("Show on Map", "grid.show-map")
         menu.append_section(None, copy_section)
         if on_edit is not None:
             edit_section = Gio.Menu()
@@ -303,6 +331,7 @@ class ResultGrid(Gtk.ScrolledWindow):
         of it), or over the grid's corner when nothing is selected."""
         if self._sel_rows and self._sel_cols:
             self._menu_cell = (min(self._sel_rows), min(self._sel_cols))
+        self._refresh_map_action()
         rect = Gdk.Rectangle()
         rect.x = rect.y = 8
         rect.width = rect.height = 1
@@ -374,6 +403,15 @@ class ResultGrid(Gtk.ScrolledWindow):
 
         editable = editable and self._on_edit is not None
         self._editable_grid = editable
+        # Which columns hold WKB, decided from the values themselves
+        # (a bare `SELECT geom` carries no type information) and only
+        # where the connection actually has a spatial extension.
+        self._geo_columns = set()
+        if self.geo_enabled:
+            names = geo.geometry_columns(list(columns), rows)
+            self._geo_columns = {
+                index for index, name in enumerate(columns) if name in names
+            }
 
         # Row-number stub: untitled, fixed width (sized to the largest
         # number it will show), not resizable, never reordered. Clicking
@@ -465,6 +503,7 @@ class ResultGrid(Gtk.ScrolledWindow):
             copy_as.append(label, f"grid.copy-as::{fmt}")
         copy_section.append_submenu("Copy As", copy_as)
         copy_section.append("Aggregate", "grid.aggregate")
+        copy_section.append("Show on Map", "grid.show-map")
         menu.append_section(None, copy_section)
         move_section = Gio.Menu()
         move_section.append("Move Column Left", "grid.move-left")
@@ -509,7 +548,7 @@ class ResultGrid(Gtk.ScrolledWindow):
             label.set_text("NULL")
             label.add_css_class("dim-label")
         else:
-            label.set_text(_display_text(value))
+            label.set_text(self._cell_display(index, value))
             label.remove_css_class("dim-label")
         self._register_cell(label, list_item, index)
 
@@ -567,12 +606,62 @@ class ResultGrid(Gtk.ScrolledWindow):
     def _bind_editable(self, factory, list_item, index) -> None:
         widget = list_item.get_child()
         value = list_item.get_item().values[index]
-        widget.set_text("" if value is None else _display_text(value))
+        widget.set_text("" if value is None else self._cell_display(index, value))
         # A binary cell renders as an abbreviated hex summary, so
         # committing the box's text would replace the blob with that
         # summary. Show it, never edit it.
-        widget.set_editable(self._unlocked and not is_binary(value))
+        # A geometry renders as a summary for the same reason a blob
+        # does: committing the text on screen would replace the value
+        # with a description of it.
+        widget.set_editable(
+            self._unlocked
+            and not is_binary(value)
+            and index not in self._geo_columns
+        )
         self._register_cell(widget, list_item, index)
+
+    def _cell_display(self, index: int, value: Any) -> str:
+        """A cell's text: a geometry as its readable summary (type,
+        SRID, point count — PG-04), anything else as usual."""
+        if index in self._geo_columns:
+            summary = geo.summarize(value)
+            if summary:
+                return summary
+        return _display_text(value)
+
+    def geometry_at(self, row: int, column: int):
+        """The parsed geometry of one cell, or None if that cell holds
+        no geometry. Used by the map and by the cell menu."""
+        if column not in self._geo_columns:
+            return None
+        position = row - self._row_offset
+        if position < 0 or position >= self._store.get_n_items():
+            return None
+        value = self._store.get_item(position).values[column]
+        if value is None:
+            return None
+        try:
+            return geo.parse(value)
+        except geo.GeometryError:
+            return None
+
+    def geometry_columns(self) -> list[str]:
+        """The names of the loaded result's geometry columns."""
+        return [self._column_names[i] for i in sorted(self._geo_columns)]
+
+    def _refresh_map_action(self) -> None:
+        """"Show on Map" is live only over a geometry cell, and only
+        where there is a map to show it on."""
+        _row, column = self._menu_cell
+        self._show_map_action.set_enabled(
+            self.on_show_map is not None and column in self._geo_columns
+        )
+
+    def _on_show_map(self, *_args) -> None:
+        row, column = self._menu_cell
+        if self.on_show_map is None or column not in self._geo_columns:
+            return
+        self.on_show_map(row, self._column_names[column])
 
     def set_unlocked(self, unlocked: bool) -> None:
         """Allow or forbid starting cell edits (the lock is enforced in
@@ -676,6 +765,11 @@ class ResultGrid(Gtk.ScrolledWindow):
         # the selection changes and is simply there when it is opened.
         if self._aggregate_cb is not None and rows and cols:
             self._aggregate_cb(self._aggregate_lines(), True)
+        # The map follows the grid's selection (PG-04): one row
+        # selected highlights that row's feature, anything else clears
+        # the highlight rather than guessing which row was meant.
+        if self.on_row_selected is not None:
+            self.on_row_selected(min(rows) if len(rows) == 1 else None)
 
     def _on_cell_pressed(self, gesture, _n_press, x, y) -> None:
         widget = gesture.get_widget()
@@ -955,6 +1049,20 @@ class ResultGrid(Gtk.ScrolledWindow):
         cols = set(order[first : last + 1])
         self._select(rows, cols, "block")
 
+    def select_row(self, row: int) -> None:
+        """Select one whole row from outside — what a click on the map
+        does to the grid."""
+        position = row - self._row_offset
+        if position < 0 or position >= self._store.get_n_items():
+            return
+        self._anchor = (position, 0)
+        self._select(
+            {position}, set(range(len(self._column_names))), "row"
+        )
+        self._view.scroll_to(
+            position, None, Gtk.ListScrollFlags.NONE, None
+        )
+
     def _on_select_row(self, *_args) -> None:
         row, _col = self._menu_cell
         self._select({row}, set(range(len(self._column_names))), "row")
@@ -973,6 +1081,7 @@ class ResultGrid(Gtk.ScrolledWindow):
         self._on_edit(item, col, None)
 
     def _popup_menu(self, widget, x, y) -> None:
+        self._refresh_map_action()
         ok, bounds = widget.compute_bounds(self._view)
         rect = Gdk.Rectangle()
         rect.x = int(bounds.origin.x + x) if ok else 0
@@ -1605,6 +1714,9 @@ class TableTab(Gtk.Box):
         self._base_offset = 0
         self._loaded_rows = 0
         self._loading_more = False
+        # The rows behind the current grid page, kept for the map.
+        self._loaded_result_rows: list[tuple] = []
+        self._map_column = ""
 
         bar = Gtk.ActionBar()
         self._prev = Gtk.Button(icon_name="go-previous-symbolic")
@@ -1644,6 +1756,16 @@ class TableTab(Gtk.Box):
         bar.pack_end(self._save)
         data.append(bar)
 
+        self._grid.on_show_map = self._on_show_map_requested
+        self._grid.on_row_selected = self._on_grid_row_selected
+        # The map is built the first time a result turns out to hold
+        # geometries, so a table tab on a server without PostGIS never
+        # pays for one (PG-04).
+        self._map = None
+        # None = not asked yet, "" = this server has no spatial
+        # extension, otherwise its name.
+        self._spatial = None
+
         self._properties = TablePropertiesView(
             profile, table, ensure_connector, show_error, on_open_object
         )
@@ -1675,18 +1797,34 @@ class TableTab(Gtk.Box):
             "Everything else about the table: columns, keys, indexes, DDL",
         )
         self._properties_toggle.set_group(self._data_toggle)
+        # Map is a third side, offered only once a load finds geometry
+        # columns on a server that has a spatial extension.
+        self._map_toggle = Gtk.ToggleButton(label="Map", visible=False)
+        describe(
+            self._map_toggle,
+            "The rows' geometries drawn on a map",
+        )
+        self._map_toggle.set_group(self._data_toggle)
         self._data_toggle.connect("toggled", self._on_view_toggled)
+        self._properties_toggle.connect("toggled", self._on_view_toggled)
+        self._map_toggle.connect("toggled", self._on_view_toggled)
         linked.append(self._data_toggle)
         linked.append(self._properties_toggle)
+        linked.append(self._map_toggle)
         row.set_center_widget(linked)
         return row
 
     def _on_view_toggled(self, button: Gtk.ToggleButton) -> None:
         # Grouped toggles fire the signal on the button that lost the
-        # state as well; reading the group's active member is what
-        # keeps one switch from being handled twice.
-        if button.get_active():
+        # state as well; only the one that gained it is a switch.
+        if not button.get_active():
+            return
+        if button is self._data_toggle:
             self._stack.set_visible_child_name("data")
+            return
+        if button is self._map_toggle:
+            self._stack.set_visible_child_name("map")
+            self._refresh_map()
             return
         self._stack.set_visible_child_name("properties")
         self._properties.ensure_loaded()
@@ -1706,6 +1844,94 @@ class TableTab(Gtk.Box):
         self._properties.ensure_loaded()
         if section:
             self._properties.select_section(section)
+
+    def show_map(self, column: str = "", row: int | None = None) -> None:
+        """Switch this tab to the Map side, optionally on one column
+        and with one row's feature already highlighted — where the
+        cell menu's "Show on Map" lands."""
+        if not self._map_toggle.get_visible():
+            return
+        self._map_column = column or self._map_column
+        self._map_toggle.set_active(True)
+        self._stack.set_visible_child_name("map")
+        self._refresh_map()
+        if row is not None and self._map is not None:
+            self._map.select_row(row)
+
+    def _ensure_map(self):
+        """The map widget, built on first use."""
+        if self._map is None:
+            from sqlide.frontend.map_view import MapView
+
+            self._map = MapView(on_select=self._on_map_row_selected)
+            self._stack.add_named(self._map, "map")
+        return self._map
+
+    def _refresh_map(self) -> None:
+        """Rebuild the map's features from the rows now in the grid."""
+        if not self._map_toggle.get_visible():
+            return
+        view = self._ensure_map()
+        view.set_features(
+            geo.build_features(
+                self._result_names,
+                self._loaded_result_rows,
+                column=self._map_column,
+                cap=settings_max_map_features(),
+            )
+        )
+
+    def _on_show_map_requested(self, row: int, column: str) -> None:
+        self.show_map(column=column, row=row - self._base_offset)
+
+    def _on_map_row_selected(self, row: int) -> None:
+        """A click on the map selects the feature's row in the grid."""
+        self._grid.select_row(row + self._base_offset)
+
+    def _on_grid_row_selected(self, row: int | None) -> None:
+        if self._map is not None:
+            self._map.select_row(row)
+
+    def _update_map_availability(self) -> None:
+        """Offer the Map side when this result has geometry columns and
+        this server has the extension to make sense of them.
+
+        The extension check runs once per tab, on a worker thread; until
+        it answers, the grid renders geometry columns as it renders any
+        other value and there is no Map toggle — a screen is never shown
+        half-gated (PG-04).
+        """
+        if self._spatial is None:
+            self._spatial = ""
+
+            def work():
+                connector = self._ensure(self.profile)
+                provider = registry.create_provider(self.profile.kind, connector)
+                return provider.spatial_extension()
+
+            def done(name: str) -> None:
+                self._spatial = name
+                if name:
+                    self._grid.geo_enabled = True
+                    # Re-render the loaded page now that geometry cells
+                    # can be summarised rather than shown as hex.
+                    self.reload()
+
+            run_async(work, done, lambda _exc: None)
+            return
+        if not self._spatial:
+            return
+        self._grid.geo_enabled = True
+        has_geo = bool(self._grid.geometry_columns())
+        self._map_toggle.set_visible(has_geo)
+        if not has_geo:
+            if self._map_toggle.get_active():
+                self._data_toggle.set_active(True)
+            return
+        if not self._map_column:
+            self._map_column = self._grid.geometry_columns()[0]
+        if self._stack.get_visible_child_name() == "map":
+            self._refresh_map()
 
     def unsaved_work(self) -> str:
         """The edits sitting in this grid that were never written, as a
@@ -1842,6 +2068,8 @@ class TableTab(Gtk.Box):
             self._grid.set_result(
                 result.columns, result.rows, editable=editable, row_offset=offset
             )
+            # The map draws the rows the grid is showing, so keep them.
+            self._loaded_result_rows = list(result.rows)
             self._grid.set_sort_state(
                 [(s.column, s.descending) for s in order_by]
             )
@@ -1872,6 +2100,7 @@ class TableTab(Gtk.Box):
                 "cannot be edited here",
             )
             self._row_range = page
+            self._update_map_availability()
             if self.on_ran is not None:
                 self.on_ran(history_sql, True)
 
@@ -2147,6 +2376,11 @@ class TableTab(Gtk.Box):
         def done(result):
             self._loading_more = False
             self._grid.append_rows(result.rows)
+            # The map draws whatever the grid holds, appended pages
+            # included, so a scroll grows the map with the grid.
+            self._loaded_result_rows.extend(result.rows)
+            if self._stack.get_visible_child_name() == "map":
+                self._refresh_map()
             count = len(result)
             self._loaded_rows += count
             self._offset = offset

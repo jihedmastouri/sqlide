@@ -856,3 +856,38 @@ def test_the_tree_sorts_system_schemas_last(postgres):
     assert flags == sorted(flags)  # every user schema before every system one
     assert dict(zip(names, flags))["information_schema"] is True
     assert dict(zip(names, flags))["public"] is False
+
+
+def test_postgis_detection_survives_its_absence(postgres):
+    """The geo viewer's gate (PG-04).
+
+    Whether the server has PostGIS is a catalog question, and the
+    answer on a plain image is "no" — which has to come back as an
+    empty string, not an error, or every table tab on a PostgreSQL
+    connection without PostGIS breaks on load.
+    """
+    from sqlide.backend.db import registry
+
+    _, db = postgres
+    provider = registry.create_provider("postgres", db)
+    assert provider.capabilities().geometry  # the engine could have it
+    found = provider.spatial_extension()  # this server may not
+    assert found == "" or found.startswith("postgis ")
+
+
+def test_geometry_values_read_without_postgis_installed(postgres):
+    """The WKB the grid summarises is parsed here, not by the server:
+    a hex EWKB literal round-trips through a query and comes back as a
+    readable geometry even where PostGIS is not installed."""
+    from sqlide.backend.db import geo
+
+    _, db = postgres
+    # A Point(2.35 48.85) with SRID 4326, as PostGIS would return it.
+    wkb = "0101000020E6100000CDCCCCCCCCCC0240CDCCCCCCCC6C4840"
+    result = db.execute(f"SELECT 1 AS id, '{wkb}' AS geom")
+    built = geo.build_features(result.columns, result.rows)
+    assert len(built.features) == 1
+    assert built.features[0].geometry.kind == "Point"
+    assert built.features[0].geometry.srid == 4326
+    lon, lat = built.features[0].geometry.shapes[0].coords[0]
+    assert round(lon, 2) == 2.35 and round(lat, 2) == 48.85

@@ -59,6 +59,7 @@ class PostgresMetadata(MetadataProvider):
         grants=True,
         roles=True,
         extensions=True,
+        geometry=True,
         partitions=True,
         constraints=True,
         rules=True,
@@ -228,6 +229,24 @@ class PostgresMetadata(MetadataProvider):
                 )
             ]
         return children
+
+    def spatial_extension(self) -> str:
+        """"postgis 3.4.2" when the database has PostGIS, "" when it
+        does not — the check the Map view is gated on (PG-04).
+
+        Asked of pg_extension rather than of a geometry column, so it
+        costs one small catalog query and answers before any result is
+        on screen. A server too old for the query, or one the user
+        cannot read the catalog on, answers "" and simply has no map.
+        """
+        rows = _safe(
+            lambda: self.connector.list_catalog("extensions"), []
+        )
+        for info in rows:
+            if info.name == "postgis":
+                version = (info.detail or "").split(" in ")[0]
+                return f"postgis {version}".strip()
+        return ""
 
     def _current_database(self) -> str:
         return getattr(self.connector, "database", "") or ""

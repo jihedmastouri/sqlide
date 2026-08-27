@@ -161,6 +161,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
         )
         safety.add(confirm_row)
         page.add(safety)
+        page.add(self._map_group(settings))
 
         backup_group = Adw.PreferencesGroup(
             title="Backup",
@@ -181,6 +182,70 @@ class PreferencesDialog(Adw.PreferencesDialog):
         return page
 
     # Workspace transfer (XML export/import)
+
+    def _map_group(self, settings: Settings) -> Adw.PreferencesGroup:
+        """The geo viewer's tile source (PG-04).
+
+        Configurable because the default is somebody else's donated
+        bandwidth: OpenStreetMap's tile policy asks that heavy users
+        run or pay for their own server, and a machine with no network
+        should be able to turn tiles off outright rather than wait for
+        them. The credit line is a setting because it belongs to the
+        server the tiles come from — blanking it turns tiles off
+        instead of drawing them uncredited.
+        """
+        group = Adw.PreferencesGroup(
+            title="Map",
+            description="How the geo viewer draws geometry columns. "
+            "Tiles are cached on disk and re-used offline; with tiles "
+            "off, geometries are drawn on a plain background and no "
+            "request leaves the machine.",
+        )
+        enable_row = Adw.SwitchRow(
+            title="Show Map Tiles",
+            subtitle="Fetch background tiles from the tile server below",
+        )
+        enable_row.set_active(settings.map_tiles_enabled)
+        enable_row.connect(
+            "notify::active",
+            lambda row, *_: store.update(map_tiles_enabled=row.get_active()),
+        )
+        group.add(enable_row)
+
+        url_row = Adw.EntryRow(title="Tile URL")
+        url_row.set_text(settings.map_tile_url)
+        url_row.set_show_apply_button(True)
+        url_row.connect(
+            "apply",
+            lambda row, *_: store.update(map_tile_url=row.get_text().strip()),
+        )
+        group.add(url_row)
+
+        credit_row = Adw.EntryRow(title="Attribution")
+        credit_row.set_text(settings.map_attribution)
+        credit_row.set_show_apply_button(True)
+        credit_row.connect(
+            "apply",
+            lambda row, *_: store.update(
+                map_attribution=row.get_text().strip()
+            ),
+        )
+        group.add(credit_row)
+
+        cap_row = Adw.SpinRow.new_with_range(1, 100_000, 100)
+        cap_row.set_title("Maximum Features Drawn")
+        cap_row.set_subtitle(
+            "Past this many geometries the map says \"showing N of M\""
+        )
+        cap_row.set_value(settings.map_max_features)
+        cap_row.connect(
+            "notify::value",
+            lambda row, *_: store.update(
+                map_max_features=int(row.get_value())
+            ),
+        )
+        group.add(cap_row)
+        return group
 
     def _transfer_group(self) -> Adw.PreferencesGroup:
         """The XML transfer actions, which used to be a section of the

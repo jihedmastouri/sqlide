@@ -112,6 +112,27 @@ information from `java.sql.DatabaseMetaData` instead of dialect SQL.
 Pagination is emulated client-side. Experimental; requires a JVM and the
 driver jar path in the profile.
 
+## The geo viewer
+
+A `geometry`/`geography` column is hex in a grid and a map everywhere
+else. `backend/db/geo.py` parses WKB and PostGIS EWKB itself — no
+PostGIS, GDAL or shapely on the client — so a cell can read *Point,
+SRID 4326, 1 point* and a result can be drawn as features.
+`frontend/map_view.py` draws them over slippy-map tiles, with selection
+running both ways between the map and the grid.
+
+Two gates keep it honest. The engine declares the `geometry`
+capability, and the provider's `spatial_extension()` asks the server
+whether PostGIS is actually installed; a connection that answers "no"
+never grows a Map toggle. And `backend/tiles.py` owns everything about
+fetching somebody else's tiles: the URL template is a setting
+(`map_tile_url`), the attribution travels with it and is always drawn,
+tiles are cached on disk and re-used, and being offline is decided
+*before* a request — so a disconnected machine gets geometries on a
+plain background and a one-line notice instead of a hang. Nothing in
+the test suite touches the network: the loader's transport and its
+online probe are arguments.
+
 ## Workspaces and connections
 
 A **workspace** is the unit you open: it owns zero or more connection
@@ -138,6 +159,7 @@ sqlide/
 │   ├── saved.py           # saved snippets/queries
 │   ├── notes.py           # free-form notes (notes.toml)
 │   ├── secrets.py         # connection passwords: system keyring or plain text
+│   ├── tiles.py           # map tiles: projection, disk cache, offline policy
 │   ├── backup.py          # zip/restore of the config directory itself
 │   ├── backups/           # database backups: jobs, dumps, destinations
 │   │   ├── jobs.py        # Destination/Job/Run + backups.json store
@@ -153,6 +175,7 @@ sqlide/
 │       ├── registry.py     # kind -> adapter, driver availability
 │       ├── objects.py      # per-node object descriptors (the info view)
 │       ├── metadata.py     # per-engine metadata providers (hierarchy, caps)
+│       ├── geo.py          # WKB/EWKB -> drawable geometries (no PostGIS needed)
 │       ├── monitoring.py   # which monitoring sources a connection may read
 │       ├── metrics.py      # sampling those sources: counters, sessions, sizes
 │       ├── sqlite/
@@ -174,7 +197,8 @@ sqlide/
     ├── backup_destinations.py  # destination list + per-kind editor
     ├── backup_restore.py    # pick artifact -> pick target -> confirm -> run
     ├── notes_panel.py       # side panel Notes page + Markdown editor
-    ├── data_grid.py         # ResultGrid + TableTab (Data | Properties)
+    ├── data_grid.py         # ResultGrid + TableTab (Data | Properties | Map)
+    ├── map_view.py          # geometries drawn on OpenStreetMap tiles
     ├── query_console.py
     ├── sql_editor.py        # GtkSourceView 5 with TextView fallback
     └── completion.py        # completion popup + keyword provider

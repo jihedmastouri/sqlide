@@ -42,6 +42,15 @@ Settings:
   MAX_INTERVAL. The dashboard's own spin control writes here, so the
   interval you settle on is the one every later dashboard opens with;
   storage keeps its own much slower timer. See backend/db/metrics.py.
+- sql_keyword_case: the case keyword completions are inserted in —
+  "upper" (the default: SELECT), "lower" (select), or "follow" (match
+  the case of the prefix already typed; an all-lower-case prefix gives
+  lower, anything with a capital in it gives upper, and an empty
+  prefix falls back to the default). The ticket names it
+  `sql.keyword_case`; settings.toml is flat, so it is spelled
+  `sql_keyword_case` here. Keywords only — identifier completions keep
+  whatever case the catalog reports, since those can be case
+  sensitive. See apply_keyword_case().
 - lsp_enabled: master switch for completion language servers
 - lsp_defaults: connection kind -> what an "auto" console LSP choice
   resolves to ("auto" keeps the built-in resolution in
@@ -103,6 +112,11 @@ TIME_ZONES = ("local", "utc", "server")
 DEFAULT_TIME_ZONE = "local"
 DEFAULT_FONT_SIZE = 11
 DEFAULT_MAX_RESULT_ROWS = 5000
+# How completion inserts a keyword (CORE-48). "follow" takes its cue
+# from the prefix the user typed; with nothing typed there is no cue,
+# so it falls back to the default.
+KEYWORD_CASES = ("upper", "lower", "follow")
+DEFAULT_KEYWORD_CASE = "upper"
 # The connections sidebar: how wide it starts, and how far a drag of
 # its handle may take it either way.
 DEFAULT_SIDEBAR_WIDTH = 280
@@ -132,6 +146,7 @@ class Settings:
     confirm_destructive: str = DEFAULT_CONFIRM_MODE
     max_result_rows: int = DEFAULT_MAX_RESULT_ROWS
     time_zone: str = DEFAULT_TIME_ZONE
+    sql_keyword_case: str = DEFAULT_KEYWORD_CASE
     monitor_interval: int = metrics.DEFAULT_INTERVAL
     lsp_enabled: bool = True
     #: Show the server's own schemas (information_schema, pg_catalog)
@@ -214,6 +229,9 @@ class Settings:
                 "max_result_rows", DEFAULT_MAX_RESULT_ROWS
             ),
             time_zone=choice("time_zone", TIME_ZONES, DEFAULT_TIME_ZONE),
+            sql_keyword_case=choice(
+                "sql_keyword_case", KEYWORD_CASES, DEFAULT_KEYWORD_CASE
+            ),
             monitor_interval=metrics.clamp_interval(
                 number("monitor_interval", metrics.DEFAULT_INTERVAL)
             ),
@@ -312,6 +330,26 @@ def _local_time_zone() -> str:
     sign = "-" if total < 0 else "+"
     hours, minutes = divmod(abs(total) // 60, 60)
     return f"{sign}{hours:02d}:{minutes:02d}"
+
+
+def apply_keyword_case(keyword: str, typed: str = "") -> str:
+    """`keyword` spelled the way the user asked completion to spell
+    keywords, given the prefix they have `typed` so far.
+
+    The one place the setting is applied, so the built-in keyword list
+    and a language server's keyword items come out alike. Identifiers
+    never come through here: a table or column name keeps the case the
+    catalog reported, because the server may treat it as significant.
+    """
+    mode = store.settings.sql_keyword_case
+    if mode == "follow":
+        if not typed:  # nothing typed, nothing to follow
+            mode = DEFAULT_KEYWORD_CASE
+        elif typed.islower():  # sel -> select
+            mode = "lower"
+        else:  # a capital anywhere (SEL, Sel, sElect) -> SELECT
+            mode = "upper"
+    return keyword.lower() if mode == "lower" else keyword.upper()
 
 
 def result_row_cap() -> int | None:

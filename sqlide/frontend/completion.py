@@ -6,6 +6,11 @@ the built-in keyword provider and the language-server provider (see
 lsp_completion.py). Providers run on a worker thread (via run_async),
 so complete() may block on I/O.
 
+Keyword suggestions — from either provider — are spelled the way the
+sql_keyword_case setting asks (see backend/settings.apply_keyword_case).
+That happens here, once, on everything a provider marks as a keyword,
+so identifier suggestions are left in the case the catalog reported.
+
 Triggers: automatically after typing a word of MIN_WORD characters,
 or Ctrl+Space. Up/Down select, Tab/Enter accept, Escape dismisses.
 """
@@ -17,9 +22,13 @@ from dataclasses import dataclass
 
 from gi.repository import Gdk, Gtk
 
+from sqlide.backend.settings import apply_keyword_case
 from sqlide.frontend.util import run_async
 
 MIN_WORD = 2
+# The detail a provider marks a keyword suggestion with. Matching it is
+# what makes the case setting apply to a suggestion.
+KEYWORD_DETAIL = "keyword"
 MAX_RESULTS = 50
 
 
@@ -35,6 +44,12 @@ class Completion:
     text: str  # replaces the current word when accepted
     detail: str = ""  # dim annotation, e.g. "keyword" or "table"
 
+    @property
+    def is_keyword(self) -> bool:
+        """Whether the case setting applies to this suggestion. Only
+        keywords: an identifier keeps the catalog's own spelling."""
+        return self.detail == KEYWORD_DETAIL
+
 
 class CompletionProvider(ABC):
     @abstractmethod
@@ -43,16 +58,17 @@ class CompletionProvider(ABC):
 
 
 class KeywordCompletionProvider(CompletionProvider):
-    """Prefix-matches a fixed word list, following the typed case."""
+    """Prefix-matches a fixed word list. Case is not this provider's
+    business — the controller spells every keyword suggestion the way
+    the setting asks."""
 
     def __init__(self, keywords: list[str]) -> None:
         self._keywords = sorted(k.lower() for k in keywords)
 
     def complete(self, context: CompletionContext) -> list[Completion]:
         prefix = context.word.lower()
-        upper = context.word[:1].isupper()
         return [
-            Completion(k.upper() if upper else k, detail="keyword")
+            Completion(k, detail=KEYWORD_DETAIL)
             for k in self._keywords
             if k.startswith(prefix) and k != prefix
         ]
@@ -114,10 +130,20 @@ class CompletionController:
         seq = self._seq
         providers = list(self._providers)
 
+        def cased(item: Completion, typed: str) -> Completion:
+            """Read per request, so a change to the setting reaches the
+            next popup without a restart."""
+            if not item.is_keyword:
+                return item
+            return Completion(
+                apply_keyword_case(item.text, typed), detail=item.detail
+            )
+
         def work():
             items: list[Completion] = []
             for provider in providers:
                 items.extend(provider.complete(context))
+            items = [cased(c, context.word) for c in items]
             seen: set[str] = set()
             unique = [
                 c for c in items

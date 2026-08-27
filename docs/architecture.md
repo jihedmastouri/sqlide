@@ -32,7 +32,9 @@ class Connector(ABC):
     def list_columns(self, table) -> list[ColumnInfo] # name, type, pk, nullable
     def list_functions(self) -> list[FunctionInfo]    # concrete default: []
     def list_routines(self, kind) -> list[FunctionInfo]  # one kind of routine
-    def fetch_rows(self, table, offset, limit) -> ResultSet
+    def fetch_rows(self, table, offset, limit, ..., cursor) -> ResultSet
+    def row_key_columns(self, table) -> list[str]     # what identifies a row
+    def paging_strategy(self, table, order_by) -> PagePlan
     def execute(self, sql) -> ResultSet | int         # rows or affected count
     def update_cell(self, table, pk_values, column, value) -> None
     def quote_ident(self, name) -> str
@@ -41,6 +43,34 @@ class Connector(ABC):
 Shared dataclasses: `TableInfo(name, kind)`, `ColumnInfo(name, type,
 is_pk, nullable)`, `FunctionInfo(name)`, `ResultSet(columns, rows)`. All
 driver errors are re-raised as `ConnectorError` with a readable message.
+
+### Paging the grid
+
+The grid reads a table one page at a time, and two pages of the same
+table have to agree about where a row belongs — otherwise page two
+repeats or skips rows and the user has no way to tell. So the adapter,
+not the grid, decides how to page: `paging_strategy()` returns a
+`PagePlan` saying what order it will apply and how it will walk it.
+
+* The plan always orders. The user's sort comes first; the row key —
+  `row_key_columns()`, the primary key by default, PostgreSQL's other
+  total NOT NULL unique indexes, SQLite's `rowid` — is appended as a
+  tiebreaker so the order is total.
+* Where that order is unique-prefixed and uniform in direction, the
+  page is a keyset page: `WHERE (k1, k2) > (v1, v2) … LIMIT n`, no
+  OFFSET, carrying `ResultSet.cursor` forward from the previous page.
+  Deep pages then cost what the first one did.
+* Mixed ASC/DESC sorts, a key the projection does not carry (SQLite's
+  `rowid`) and a jump to an arbitrary page number keep `OFFSET`, still
+  in the deterministic order.
+* A relation with no key at all — a view, a heap with no primary
+  key — pages by offset in an order no engine guarantees. That is not
+  papered over: the result comes back `stable=False` and the tab's
+  status line says "order not guaranteed".
+
+`ResultSet.statement` carries the statement that actually ran, values
+inlined, so the tab's "describe query" line and the query history show
+the tiebreaker and the key comparison rather than an idealised SELECT.
 
 ## The metadata provider
 
@@ -214,6 +244,8 @@ sqlide/
 │   │   ├── targets.py     # local, S3-compatible, SFTP, FTP(S)
 │   │   ├── runner.py      # one job: dump -> upload -> prune -> record
 │   │   ├── restore.py     # a dump back in through psql / mysql / sqlite3
+│   │   ├── snapshot.py    # portable dump/restore through a Connector (JDBC, SSH)
+│   │   ├── oneoff.py      # one backup now: picks vendor tool or snapshot
 │   │   ├── schedule.py    # next-due maths + systemd user timers
 │   │   └── cli.py         # `sqlide-backup`, the headless entry point
 │   ├── mcp/                # the read-only MCP server
@@ -243,6 +275,7 @@ sqlide/
     ├── monitor_tab.py       # live dashboard: sessions, throughput, storage
     ├── backups_tab.py       # backup manager: jobs, schedules, run history
     ├── backup_destinations.py  # destination list + per-kind editor
+    ├── backup_oneoff.py     # one-off backup dialog (every connection kind)
     ├── backup_restore.py    # pick artifact -> pick target -> confirm -> run
     ├── notes_panel.py       # side panel Notes page + Markdown editor
     ├── extension_dialog.py  # install/update/drop an extension, confirmed

@@ -293,6 +293,53 @@ class SortSpec:
     descending: bool = False
 
 
+@dataclass(frozen=True)
+class PageCursor:
+    """Where the last page stopped, for the next one to carry forward.
+
+    `columns` are the order columns the page was sorted by (the user's
+    sort plus the key tiebreaker), `values` the last row's values for
+    them, and `descending` the single direction they all share — a row
+    comparison only works one way at a time.
+    """
+
+    columns: list[str]
+    values: tuple[Any, ...]
+    descending: bool = False
+
+
+@dataclass(frozen=True)
+class PagePlan:
+    """How one relation can be paged through (CORE-40).
+
+    `order_by` is the order the adapter will actually apply: the user's
+    sort with the row key appended as a tiebreaker, so two pages of the
+    same table never disagree about where a row belongs. `keyset` says
+    the order is unique-prefixed and uniform in direction, which is what
+    a `(k1, k2) > (v1, v2)` comparison needs; without it the adapter
+    keeps OFFSET. `stable` is False only when the relation has no usable
+    key at all (a view, a heap with no primary key), in which case
+    `note` says so in words the status line can show.
+    """
+
+    order_by: list[SortSpec] = field(default_factory=list)
+    keyset: bool = False
+    stable: bool = True
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class PageQuery:
+    """One page's statement: SQL with placeholders, its parameters, the
+    plan behind it, and the same statement with the values inlined —
+    which is what the tab shows, so what is shown is what ran."""
+
+    sql: str
+    params: list[Any]
+    plan: PagePlan
+    display: str
+
+
 @dataclass
 class ResultSet:
     columns: list[str]
@@ -301,6 +348,19 @@ class ResultSet:
     # and the statement had more rows to give. The UI must say so:
     # a silently short result reads as the whole answer.
     truncated: bool = False
+    # Where this page stopped, when the adapter paged by key; None when
+    # it paged by offset (see PagePlan). The caller hands it back to
+    # fetch_rows() for the next page and drops it on any change of
+    # filter, sort or a jump to an arbitrary page.
+    cursor: PageCursor | None = None
+    # False when the rows came back in an order the engine does not
+    # guarantee, so paging may repeat or skip rows. `order_note` says
+    # why, for the UI to repeat to the user.
+    stable: bool = True
+    order_note: str = ""
+    # The statement that produced these rows, values inlined, for the
+    # tab's "describe query" line and the query history.
+    statement: str = ""
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -383,6 +443,58 @@ def build_filter_clauses(
             for s in order_by
         )
     return where, order, params
+
+
+def build_keyset_clause(
+    cursor: PageCursor | None,
+    order_by: list[SortSpec],
+    quote: Any,
+    placeholder: str = "?",
+) -> tuple[str, list[Any]]:
+    """The row comparison that resumes after `cursor`, as
+    ``(k1, k2) > (?, ?)`` — ``<`` for a descending page.
+
+    Empty when there is no cursor, when it belongs to a different order
+    (the sort changed under it) or when one of its values is NULL, which
+    a row comparison cannot answer. Every engine here understands the
+    comparison and uses the index the key already has for it, so the
+    cost of a page does not grow with how far down it sits.
+    """
+    if cursor is None or not order_by:
+        return "", []
+    names = [s.column for s in order_by]
+    if list(cursor.columns) != names or len(cursor.values) != len(names):
+        return "", []
+    if any(v is None for v in cursor.values):
+        return "", []
+    if cursor.descending != bool(order_by[0].descending):
+        return "", []
+    columns = ", ".join(quote(n) for n in names)
+    marks = ", ".join([placeholder] * len(names))
+    op = "<" if cursor.descending else ">"
+    return f"({columns}) {op} ({marks})", list(cursor.values)
+
+
+def inline_params(sql: str, params: list[Any], placeholder: str = "?") -> str:
+    """`sql` with its bound values written in, for showing the user the
+    statement that ran. Never sent to a server — the adapters bind the
+    real values."""
+    parts = sql.split(placeholder)
+    out = parts[0]
+    for index, rest in enumerate(parts[1:]):
+        mark = sql_literal(params[index]) if index < len(params) else placeholder
+        out += mark + rest
+    return out
+
+
+def sql_literal(value: Any) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"
 
 
 class Connector(ABC):
@@ -1041,7 +1153,147 @@ class Connector(ABC):
         limit: int = 500,
         filters: list[FilterCondition] | None = None,
         order_by: list[SortSpec] | None = None,
-    ) -> ResultSet: ...
+        cursor: PageCursor | None = None,
+    ) -> ResultSet:
+        """One page of `table`.
+
+        With `cursor` set — the cursor a previous page came back with —
+        the adapter carries on from where that page stopped and ignores
+        `offset`; without one it starts at `offset`. Either way the
+        result says which it did (ResultSet.cursor) and whether the
+        order it used is one the engine guarantees (ResultSet.stable).
+        """
+
+    # Paging (CORE-40)
+
+    def row_key_columns(self, table: str) -> list[str]:
+        """Columns that identify a row of `table` uniquely, in the order
+        a page should sort by them.
+
+        The primary key by default, which is what every engine here can
+        name from list_columns(). An adapter with something better for
+        keyless relations (SQLite's rowid) overrides this; one with
+        nothing to offer returns [] and the relation pages by offset in
+        an order nobody guarantees, which paging_strategy() says out
+        loud rather than hiding.
+        """
+        return [c.name for c in self.list_columns(table) if c.is_pk]
+
+    def paging_strategy(
+        self, table: str, order_by: list[SortSpec] | None = None
+    ) -> PagePlan:
+        """How this relation can be paged, given the user's sort.
+
+        The one place the choice is made: the grid asks for a page and
+        is told what it got, rather than deciding per engine itself.
+        """
+        user = list(order_by or [])
+        try:
+            key = self.row_key_columns(table)
+            selectable = {c.name for c in self.list_columns(table)}
+        except ConnectorError:
+            key, selectable = [], set()
+        if not key:
+            return PagePlan(
+                order_by=user,
+                keyset=False,
+                stable=False,
+                note=(
+                    "no primary key or row id, so the order of rows "
+                    "between pages is not guaranteed"
+                ),
+            )
+        used = {s.column for s in user}
+        tail = [k for k in key if k not in used]
+        # The tiebreaker takes the direction of the sort it closes, so a
+        # descending sort stays uniform and keyset-able.
+        direction = user[-1].descending if user else False
+        effective = user + [SortSpec(k, direction) for k in tail]
+        uniform = len({s.descending for s in effective}) <= 1
+        # A key the projection does not carry (SQLite's rowid) can order
+        # a page but cannot be carried forward as a cursor value.
+        covered = all(s.column in selectable for s in effective)
+        note = ""
+        if not uniform:
+            note = "sort directions are mixed, so pages use OFFSET"
+        elif not covered:
+            note = "the row key is not one of the columns, so pages use OFFSET"
+        return PagePlan(
+            order_by=effective,
+            keyset=uniform and covered,
+            stable=True,
+            note=note,
+        )
+
+    def _page_query(
+        self,
+        table: str,
+        offset: int,
+        limit: int,
+        filters: list[FilterCondition] | None,
+        order_by: list[SortSpec] | None,
+        cursor: PageCursor | None,
+        placeholder: str = "?",
+    ) -> PageQuery:
+        """Build one page's statement, keyset where the plan allows it.
+
+        Shared by every adapter whose dialect spells the tail
+        `LIMIT n [OFFSET n]`, which is all three of them.
+        """
+        plan = self.paging_strategy(table, order_by)
+        where, order, params = build_filter_clauses(
+            filters, plan.order_by, self.quote_ident, placeholder
+        )
+        keyset, key_params = build_keyset_clause(
+            cursor if plan.keyset else None,
+            plan.order_by,
+            self.quote_ident,
+            placeholder,
+        )
+        if keyset:
+            where = f"{where} AND {keyset}" if where else f" WHERE {keyset}"
+            params = [*params, *key_params, max(limit, 0)]
+            tail = f" LIMIT {placeholder}"
+        else:
+            params = [*params, max(limit, 0), max(offset, 0)]
+            tail = f" LIMIT {placeholder} OFFSET {placeholder}"
+        sql = f"SELECT * FROM {self.quote_ident(table)}{where}{order}{tail}"
+        return PageQuery(
+            sql=sql,
+            params=params,
+            plan=plan,
+            display=inline_params(sql, params, placeholder),
+        )
+
+    def _page_result(
+        self, columns: list[str], rows: list[tuple], query: PageQuery
+    ) -> ResultSet:
+        """Wrap a page's rows, working out the cursor the next page
+        carries forward."""
+        plan = query.plan
+        cursor = None
+        if plan.keyset and rows:
+            names = [s.column for s in plan.order_by]
+            try:
+                values = tuple(rows[-1][columns.index(n)] for n in names)
+            except ValueError:
+                values = None
+            # A NULL key value makes the row comparison return NULL and
+            # silently drop rows, so the next page falls back to offset.
+            if values is not None and all(v is not None for v in values):
+                cursor = PageCursor(
+                    columns=names,
+                    values=values,
+                    descending=bool(plan.order_by[0].descending),
+                )
+        return ResultSet(
+            columns=columns,
+            rows=rows,
+            cursor=cursor,
+            stable=plan.stable,
+            order_note=plan.note if not plan.stable else "",
+            statement=query.display,
+        )
 
     def _assert_filter_columns(
         self,

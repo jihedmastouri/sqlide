@@ -17,6 +17,7 @@ from sqlide.backend.db.base import (
     FunctionInfo,
     IndexInfo,
     ObjectSummary,
+    PageCursor,
     RelationInfo,
     ResultSet,
     SortSpec,
@@ -24,7 +25,6 @@ from sqlide.backend.db.base import (
     TableStats,
     TriggerInfo,
     TypeSpec,
-    build_filter_clauses,
 )
 from sqlide.backend.db.sqlite import pragmas as pragma_rules
 
@@ -589,6 +589,35 @@ class SqliteConnector(Connector):
         more = f" and {len(rows) - 5} more" if len(rows) > 5 else ""
         return f"Foreign-key violations after the rebuild: {detail}{more}"
 
+    def row_key_columns(self, table: str) -> list[str]:
+        """The primary key, in its declared key order, and otherwise
+        the rowid where the table has one (CORE-40).
+
+        PRAGMA table_info numbers the key columns from 1, so a composite
+        key comes back in the order it was declared rather than in
+        column order. A rowid cannot be a keyset cursor value — it is
+        not one of the columns SELECT * returns — but it does give a
+        keyless table a deterministic order, which is the half of the
+        problem that is a correctness bug. Views and WITHOUT ROWID
+        tables with no key have neither, and page unordered.
+        """
+        _, rows, _ = self._run(
+            f"PRAGMA table_info({self.quote_ident(table)})"
+        )
+        key = sorted(
+            ((pk, name) for _cid, name, _t, _n, _d, pk in rows if pk > 0)
+        )
+        if key:
+            return [name for _pk, name in key]
+        _, master, _ = self._run(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        )
+        if not master:
+            return []
+        ddl = (master[0][0] or "").upper()
+        return [] if "WITHOUT ROWID" in ddl else ["rowid"]
+
     def fetch_rows(
         self,
         table: str,
@@ -596,18 +625,16 @@ class SqliteConnector(Connector):
         limit: int = 500,
         filters: list[FilterCondition] | None = None,
         order_by: list[SortSpec] | None = None,
+        cursor: PageCursor | None = None,
     ) -> ResultSet:
         self._assert_known_table(table)
         self._assert_filter_columns(table, filters, order_by)
-        where, order, params = build_filter_clauses(
-            filters, order_by, self.quote_ident
+        query = self._page_query(
+            table, offset, limit, filters, order_by, cursor,
+            placeholder="?",
         )
-        columns, rows, _ = self._run(
-            f"SELECT * FROM {self.quote_ident(table)}{where}{order} "
-            "LIMIT ? OFFSET ?",
-            (*params, max(limit, 0), max(offset, 0)),
-        )
-        return ResultSet(columns=columns, rows=rows)
+        columns, rows, _ = self._run(query.sql, tuple(query.params))
+        return self._page_result(columns, rows, query)
 
     def execute(self, sql: str, max_rows: int | None = None) -> ResultSet | int:
         # One row past the cap: the extra is what tells truncated from

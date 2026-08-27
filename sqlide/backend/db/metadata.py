@@ -140,6 +140,12 @@ class NodeRef:
     table: str = ""
     category: str = ""
     detail: str = ""  # one-line note for the row (a type, a table)
+    #: A schema the server owns rather than the user — `pg_catalog`,
+    #: `information_schema`. Browsable like any other, but shown
+    #: dimmed, sorted last, and skipped by search unless it is asked
+    #: for (PG-03). Whether a name is one is the provider's call
+    #: (`is_system_schema`), never the UI's.
+    system: bool = False
 
     #: The kinds that live *inside* a schema, and so are qualified by
     #: one. A database or a schema names itself; a column and an index
@@ -400,6 +406,13 @@ class MetadataProvider:
     #: keys of PRINCIPAL_FIELDS. The generic provider knows only what
     #: every account has.
     PRINCIPAL_COLUMNS: tuple[str, ...] = ("Name", "Type", "Login")
+    #: The schemas the server owns: exact names, and the prefixes a
+    #: whole family of them shares (PostgreSQL's `pg_*`). Declared per
+    #: engine so the sidebar can dim and sort them without knowing
+    #: which engine it is looking at (PG-03); empty for the engines
+    #: with no schema level at all.
+    SYSTEM_SCHEMAS: tuple[str, ...] = ()
+    SYSTEM_SCHEMA_PREFIXES: tuple[str, ...] = ()
 
     def __init__(self, connector: Connector) -> None:
         self.connector = connector
@@ -408,6 +421,18 @@ class MetadataProvider:
 
     def hierarchy(self) -> tuple[str, ...]:
         return self.HIERARCHY
+
+    @classmethod
+    def is_system_schema(cls, name: str) -> bool:
+        """Is `name` a schema the server owns rather than the user?
+        Answerable without a connection, so a row can be styled as it
+        is built (PG-03)."""
+        lowered = name.lower()
+        if lowered in cls.SYSTEM_SCHEMAS:
+            return True
+        return bool(cls.SYSTEM_SCHEMA_PREFIXES) and lowered.startswith(
+            cls.SYSTEM_SCHEMA_PREFIXES
+        )
 
     def capabilities(self) -> Capabilities:
         return self.CAPABILITIES

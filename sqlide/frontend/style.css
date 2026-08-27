@@ -247,3 +247,10 @@ entry.cli-entry {
   padding-left: 9px;
   margin-left: -12px;
 }
+
+/* System schemas (information_schema, pg_catalog and friends): present
+   and fully usable, just quieter than the schemas you made — dimmed,
+   never insensitive, so they still expand and open (PG-03). */
+listview.schema-tree .system-row {
+  opacity: 0.55;
+}

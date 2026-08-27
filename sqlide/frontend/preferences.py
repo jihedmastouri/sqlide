@@ -90,6 +90,20 @@ class PreferencesDialog(Adw.PreferencesDialog):
         )
         group.add(vim_row)
 
+        system_row = Adw.SwitchRow(
+            title="Show System Schemas",
+            subtitle="Keep information_schema and the server's own "
+            "catalog in the object tree, dimmed and last",
+        )
+        system_row.set_active(settings.show_system_schemas)
+        system_row.connect(
+            "notify::active",
+            lambda row, *_: store.update(
+                show_system_schemas=row.get_active()
+            ),
+        )
+        group.add(system_row)
+
         page.add(group)
 
         results = Adw.PreferencesGroup(

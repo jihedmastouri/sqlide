@@ -177,8 +177,14 @@ def test_postgres_tree_walks(postgres) -> None:
 def test_postgres_lists_schema_objects_without_the_search_path(postgres) -> None:
     _version, connector = postgres
     provider = registry.create_provider("postgres", connector)
-    schemas = provider.list_children(NodeRef("database", "sqlide"))
-    assert [s.kind for s in schemas] == ["schema"] * len(schemas)
+    children = provider.list_children(NodeRef("database", "sqlide"))
+    schemas = [c for c in children if c.kind == "schema"]
+    # The schemas come first; the database's own folders — what belongs
+    # to it rather than to any schema in it — follow (PG-02).
+    assert [c.kind for c in children] == (
+        ["schema"] * len(schemas) + ["category"] * (len(children) - len(schemas))
+    )
+    assert schemas
     public = next(s for s in schemas if s.name == "public")
     tables = provider.list_children(
         public.child("category", "Tables", category="tables")

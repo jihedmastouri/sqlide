@@ -143,6 +143,26 @@ _USER_SCHEMAS = (
 # the schema an unqualified reference would actually hit.
 _SEARCH_PATH_RANK = "array_position(current_schemas(false), n.nspname)"
 
+# relkind -> the note a relation row carries when it is a special case
+# of its kind. A plain table and a plain view say nothing; the three
+# that behave differently — a partitioned table you can nest into, a
+# foreign table that lives on another server, a materialized view that
+# holds rows of its own — say which they are, so the tree distinguishes
+# them without a second icon vocabulary (PG-02).
+_RELKIND_DETAIL = {
+    "p": "partitioned",
+    "f": "foreign",
+    "m": "materialized",
+}
+
+
+def _relation_detail(relkind: str, is_partition: bool) -> str:
+    """A relation's note: "partition" wins over everything, because a
+    partition is reached through the table it belongs to and a schema
+    listing that repeats every one of them buries the tables people
+    came for (PG-02)."""
+    return "partition" if is_partition else _RELKIND_DETAIL.get(relkind, "")
+
 
 class PostgresConnector(Connector):
     def __init__(
@@ -555,7 +575,7 @@ class PostgresConnector(Connector):
         not come into it, so a schema node shows what it holds even
         when the same name exists nearer the front of the path."""
         _, rows, _ = self._run(
-            "SELECT c.relname, c.relkind "
+            "SELECT c.relname, c.relkind, c.relispartition "
             "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
             "WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') "
             "AND n.nspname = %s "
@@ -566,8 +586,9 @@ class PostgresConnector(Connector):
             TableInfo(
                 name=name,
                 kind="view" if relkind in ("v", "m") else "table",
+                detail=_relation_detail(relkind, is_partition),
             )
-            for name, relkind in rows
+            for name, relkind, is_partition in rows
         ]
 
     def grant_scopes(self) -> list[GrantScope]:
@@ -718,7 +739,8 @@ class PostgresConnector(Connector):
         # of them would put rows in the tree that resolve to a single
         # table.
         _, rows, _ = self._run(
-            "SELECT DISTINCT ON (c.relname) c.relname, c.relkind "
+            "SELECT DISTINCT ON (c.relname) c.relname, c.relkind, "
+            "c.relispartition "
             "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
             "WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') "
             f"AND n.nspname IN ({_USER_SCHEMAS}) "
@@ -728,8 +750,9 @@ class PostgresConnector(Connector):
             TableInfo(
                 name=name,
                 kind="view" if relkind in ("v", "m") else "table",
+                detail=_relation_detail(relkind, is_partition),
             )
-            for name, relkind in rows
+            for name, relkind, is_partition in rows
         ]
 
     def list_columns(self, table: str) -> list[ColumnInfo]:
@@ -768,6 +791,9 @@ class PostgresConnector(Connector):
             "SELECT p.proname AS name "
             "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
             f"WHERE n.nspname IN ({_USER_SCHEMAS}) "
+            # Aggregates have no body to edit and a folder of their
+            # own in the tree (PG-02).
+            "AND p.oid NOT IN (SELECT aggfnoid FROM pg_aggregate) "
             "UNION "
             "SELECT t.tgname AS name FROM pg_trigger t "
             "JOIN pg_class c ON c.oid = t.tgrelid "
@@ -963,6 +989,210 @@ class PostgresConnector(Connector):
             )
             for name, trigger in rows
         ]
+
+    # The catalog folders the object tree grows beyond tables and
+    # views (PG-02). One method, one slug per folder — see
+    # Connector.list_catalog for why they are not a method each.
+
+    def list_catalog(self, slug: str, schema: str = "") -> list[ObjectSummary]:
+        reader = {
+            "sequences": self._catalog_sequences,
+            "data_types": self._catalog_data_types,
+            "aggregates": self._catalog_aggregates,
+            "extensions": self._catalog_extensions,
+            "event_triggers": self._catalog_event_triggers,
+            "storage": self._catalog_storage,
+            "system_info": self._catalog_system_info,
+        }.get(slug)
+        if reader is None:
+            return []
+        return reader(schema or self.current_schema())
+
+    def _catalog_sequences(self, schema: str) -> list[ObjectSummary]:
+        # pg_class rather than pg_sequences: the view is only readable
+        # for sequences the account may select from, and a sequence it
+        # may not read is still a sequence that is there.
+        _, rows, _ = self._run(
+            "SELECT c.relname, pg_get_userbyid(c.relowner) "
+            "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE c.relkind = 'S' AND n.nspname = %s ORDER BY c.relname",
+            (schema,),
+        )
+        return [
+            ObjectSummary(name=name, kind="sequence", detail=f"owner {owner}")
+            for name, owner in rows
+        ]
+
+    def _catalog_data_types(self, schema: str) -> list[ObjectSummary]:
+        # Only types someone declared: the row type every table gets
+        # for free, and the array type every type gets for free, are
+        # the catalog's business and not a node in anybody's tree.
+        _, rows, _ = self._run(
+            "SELECT t.typname, t.typtype, format_type(t.oid, NULL) "
+            "FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace "
+            "LEFT JOIN pg_class c ON c.oid = t.typrelid "
+            "WHERE n.nspname = %s "
+            "AND t.typtype IN ('b', 'c', 'd', 'e', 'r') "
+            "AND (c.oid IS NULL OR c.relkind = 'c') "
+            "AND NOT EXISTS ("
+            " SELECT 1 FROM pg_type e"
+            " WHERE e.oid = t.typelem AND e.typarray = t.oid) "
+            "ORDER BY t.typname",
+            (schema,),
+        )
+        kinds = {
+            "b": "base", "c": "composite", "d": "domain",
+            "e": "enum", "r": "range",
+        }
+        return [
+            ObjectSummary(
+                name=name,
+                kind="data_type",
+                detail=kinds.get(typtype, ""),
+                definition=printed or "",
+            )
+            for name, typtype, printed in rows
+        ]
+
+    def _catalog_aggregates(self, schema: str) -> list[ObjectSummary]:
+        # pg_aggregate rather than prokind = 'a': PostgreSQL 10 has no
+        # prokind column, and the membership test reads the same on
+        # every supported version.
+        _, rows, _ = self._run(
+            "SELECT p.proname, pg_get_function_identity_arguments(p.oid), "
+            "format_type(p.prorettype, NULL) "
+            "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+            "WHERE n.nspname = %s "
+            "AND p.oid IN (SELECT aggfnoid FROM pg_aggregate) "
+            "ORDER BY p.proname",
+            (schema,),
+        )
+        return [
+            ObjectSummary(
+                name=name,
+                kind="aggregate",
+                detail=f"({args}) → {returns}" if args else f"→ {returns}",
+            )
+            for name, args, returns in rows
+        ]
+
+    def _catalog_extensions(self, _schema: str) -> list[ObjectSummary]:
+        _, rows, _ = self._run(
+            "SELECT e.extname, e.extversion, n.nspname "
+            "FROM pg_extension e "
+            "JOIN pg_namespace n ON n.oid = e.extnamespace "
+            "ORDER BY e.extname"
+        )
+        return [
+            ObjectSummary(
+                name=name,
+                kind="extension",
+                detail=f"{version} in {schema}",
+            )
+            for name, version, schema in rows
+        ]
+
+    def _catalog_event_triggers(self, _schema: str) -> list[ObjectSummary]:
+        _, rows, _ = self._run(
+            "SELECT evtname, evtevent, evtenabled, "
+            "pg_get_userbyid(evtowner) "
+            "FROM pg_event_trigger ORDER BY evtname"
+        )
+        return [
+            ObjectSummary(
+                name=name,
+                kind="event_trigger",
+                detail=(
+                    f"{event}"
+                    + ("" if enabled == "O" else " · disabled")
+                    + f" · owner {owner}"
+                ),
+            )
+            for name, event, enabled, owner in rows
+        ]
+
+    def _catalog_storage(self, _schema: str) -> list[ObjectSummary]:
+        # Tablespaces and their owners only: a size per tablespace
+        # needs pg_tablespace_size(), which walks the whole directory
+        # and is refused outright to an unprivileged account — neither
+        # belongs in a folder that opens on expand (PG-02).
+        _, rows, _ = self._run(
+            "SELECT spcname, pg_get_userbyid(spcowner) "
+            "FROM pg_tablespace ORDER BY spcname"
+        )
+        return [
+            ObjectSummary(
+                name=name, kind="tablespace", detail=f"owner {owner}"
+            )
+            for name, owner in rows
+        ]
+
+    #: The server settings the System Info folder reports, in the
+    #: order it shows them. A curated list rather than all of
+    #: pg_settings: three hundred rows is a catalog dump, not a tree.
+    _SYSTEM_SETTINGS = (
+        "server_version",
+        "server_encoding",
+        "lc_collate",
+        "lc_ctype",
+        "TimeZone",
+        "max_connections",
+        "shared_buffers",
+        "work_mem",
+        "data_checksums",
+        "is_superuser",
+    )
+
+    def _catalog_system_info(self, _schema: str) -> list[ObjectSummary]:
+        """The server and the connected database, as name/value rows.
+
+        pg_settings is served from memory and the database row reads
+        one pg_database tuple, so the folder costs no scan however big
+        the cluster is.
+        """
+        _, rows, _ = self._run(
+            "SELECT name, setting, short_desc FROM pg_settings "
+            "WHERE name = ANY(%s)",
+            (list(self._SYSTEM_SETTINGS),),
+        )
+        order = {name: i for i, name in enumerate(self._SYSTEM_SETTINGS)}
+        found = sorted(rows, key=lambda row: order.get(row[0], len(order)))
+        entries = [
+            ObjectSummary(
+                name=name, kind="setting", detail=value or "",
+                definition=description or "",
+            )
+            for name, value, description in found
+        ]
+        _, extra, _ = self._run(
+            "SELECT current_database(), "
+            "pg_encoding_to_char(d.encoding), d.datcollate, "
+            "pg_get_userbyid(d.datdba), "
+            "pg_size_pretty(pg_database_size(d.datname)) "
+            "FROM pg_database d WHERE d.datname = current_database()"
+        )
+        for name, encoding, collation, owner, size in extra:
+            entries += [
+                ObjectSummary(
+                    name="database", kind="setting", detail=name,
+                    definition="The database this connection is attached to",
+                ),
+                ObjectSummary(
+                    name="database_encoding", kind="setting",
+                    detail=encoding or "",
+                ),
+                ObjectSummary(
+                    name="database_collation", kind="setting",
+                    detail=collation or "",
+                ),
+                ObjectSummary(
+                    name="database_owner", kind="setting", detail=owner or "",
+                ),
+                ObjectSummary(
+                    name="database_size", kind="setting", detail=size or "",
+                ),
+            ]
+        return entries
 
     def _relation_ref(self, name: str) -> str:
         """`name` as text to_regclass() can resolve.

@@ -98,3 +98,24 @@ def principal_columns(kind: str) -> tuple[str, ...]:
 def hierarchy(kind: str) -> tuple[str, ...]:
     """The levels `kind` nests, outermost first."""
     return provider_class(kind).HIERARCHY
+
+
+def level_categories(kind: str, level: str) -> tuple[tuple[str, str], ...]:
+    """(slug, label) for the folders `kind` hangs off one level of its
+    tree — a connection, a database, a schema (PG-02). Answerable
+    without a connection, so the sidebar can lay a level out before it
+    has asked the server anything.
+    """
+    return provider_class(kind).level_categories(level)
+
+
+def administer_categories(kind: str) -> tuple[tuple[str, str], ...]:
+    """(slug, label) for the folders inside `kind`'s Administer
+    folder, empty for an engine that has none."""
+    provider = provider_class(kind)
+    from sqlide.backend.db.metadata import CATEGORY_LABELS
+
+    return tuple(
+        (slug, CATEGORY_LABELS[slug])
+        for slug in provider.ADMINISTER_CATEGORIES
+    )

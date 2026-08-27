@@ -38,6 +38,56 @@ CATEGORY_KINDS = {
     "events": "event",
 }
 
+#: The folders beyond tables and views the object tree can grow:
+#: slug -> (label, the object kind its rows hold). The rows come from
+#: `Connector.list_catalog(slug)` — one shapeless listing per folder —
+#: except the two that are assembled rather than queried: "roles" is
+#: the account list, and "administer" holds folders rather than
+#: objects (PG-02).
+#:
+#: Declared here rather than in db/metadata.py because both layers
+#: need it and this one is the layer metadata imports; the providers
+#: pick which folders their engine has (see postgres/metadata.py).
+CATALOG_CATEGORIES = {
+    "foreign_tables": ("Foreign Tables", "table"),
+    "materialized_views": ("Materialized Views", "view"),
+    "sequences": ("Sequences", "sequence"),
+    "data_types": ("Data Types", "data_type"),
+    "aggregates": ("Aggregate Functions", "aggregate"),
+    "event_triggers": ("Event Triggers", "event_trigger"),
+    "extensions": ("Extensions", "extension"),
+    "storage": ("Storage", "tablespace"),
+    "system_info": ("System Info", "setting"),
+    "roles": ("Roles", "principal"),
+    "administer": ("Administer", "category"),
+}
+
+#: The folders whose rows come from the relation listing rather than
+#: from a catalog listing of their own: slug -> (the node kind its rows
+#: are, the relation notes that put a row in it). A plain table and a
+#: plain view carry no note (postgres/connector.py's _RELKIND_DETAIL);
+#: a partitioned table is still a table, so it stays in Tables and says
+#: so on the row, while a partition of one does not — it belongs under
+#: the table it is part of, and listing it here as well would double
+#: the schema (PG-02).
+RELATION_FOLDERS = {
+    "tables": ("table", ("", "partitioned")),
+    "foreign_tables": ("table", ("foreign",)),
+    "views": ("view", ("",)),
+    "materialized_views": ("view", ("materialized",)),
+}
+
+#: The object kinds that live in a catalog folder and are described
+#: from that folder's listing rather than from a catalog query of
+#: their own — a sequence, an extension, a server setting. "table" and
+#: "view" are excluded on purpose: those folders hold real relations,
+#: which already have a descriptor that says far more.
+CATALOG_KINDS = frozenset(
+    kind
+    for slug, (_label, kind) in CATALOG_CATEGORIES.items()
+    if kind not in ("table", "view", "category", "principal")
+)
+
 #: Human name per kind, for the header line.
 TYPE_LABELS = {
     "connection": "Connection",
@@ -50,6 +100,14 @@ TYPE_LABELS = {
     "index": "Index",
     "trigger": "Trigger",
     "event": "Event",
+    "sequence": "Sequence",
+    "data_type": "Data type",
+    "aggregate": "Aggregate function",
+    "event_trigger": "Event trigger",
+    "extension": "Extension",
+    "tablespace": "Tablespace",
+    "setting": "Setting",
+    "principal": "Account",
 }
 
 
@@ -123,14 +181,26 @@ def describe(
     category: str = "",
     path: str = "",
     detail: str = "",
+    schema: str = "",
 ) -> ObjectInfo:
     """The descriptor for one sidebar node. Never raises for an
-    unknown kind: it falls back to the generic summary."""
+    unknown kind: it falls back to the generic summary.
+
+    `schema` is the schema the node was found in, on the engines that
+    have schemas as a level (PG-01): the catalog folders are listed per
+    schema, so a row from one of them needs to say which (PG-02).
+    """
     builder = _BUILDERS.get(kind)
+    if kind in CATALOG_KINDS:
+        return _catalog_row(
+            connector, kind, name,
+            category=category, path=path, detail=detail, schema=schema,
+        )
     if builder is None:
         return _generic(connector, kind, name, path=path, detail=detail)
     info = builder(
-        connector, kind, name, table=table, category=category, path=path
+        connector, kind, name,
+        table=table, category=category, path=path, schema=schema,
     )
     return _replace_path(info, path)
 
@@ -177,7 +247,7 @@ def _ddl(connector: Connector, name: str) -> str:
 # can dispatch on a dict.
 
 
-def _connection(connector, kind, name, *, table, category, path):
+def _connection(connector, kind, name, *, table, category, path, schema):
     databases = _safe(connector.list_databases, [])
     schemas = _safe(connector.list_schemas, [])
     objects = _safe(connector.list_tables, []) if not databases else []
@@ -205,7 +275,7 @@ def _connection(connector, kind, name, *, table, category, path):
     )
 
 
-def _database(connector, kind, name, *, table, category, path):
+def _database(connector, kind, name, *, table, category, path, schema):
     objects = _safe(connector.list_tables, [])
     views = [o for o in objects if o.kind == "view"]
     summary = [
@@ -233,7 +303,7 @@ def _objects_table(objects) -> DetailTable:
     )
 
 
-def _category(connector, kind, name, *, table, category, path):
+def _category(connector, kind, name, *, table, category, path, schema):
     """A folder row: the list of what is inside it, most relevant
     columns first, every row opening its own info view."""
     slug = (category or name).lower()
@@ -289,6 +359,9 @@ def _category(connector, kind, name, *, table, category, path):
             rows=[(e,) for e in events],
             links=[ObjectRef("event", e) for e in events],
         )
+    elif slug in CATALOG_CATEGORIES:
+        child = CATALOG_CATEGORIES[slug][1]
+        detail = _catalog_table(connector, name, slug, schema)
     else:
         detail = DetailTable(title=name, columns=["Name"], rows=[], links=[])
     return ObjectInfo(
@@ -299,7 +372,94 @@ def _category(connector, kind, name, *, table, category, path):
     )
 
 
-def _table(connector, kind, name, *, table, category, path):
+def _catalog_table(
+    connector: Connector, label: str, slug: str, schema: str
+) -> DetailTable:
+    """One catalog folder as a list: name, what it is, and the line of
+    explanation the listing carried. Every row opens the object it
+    names, so the folder view and the tree reach the same places
+    (CORE-01)."""
+    if slug == "roles":
+        accounts = _safe(connector.list_users, [])
+        return DetailTable(
+            title=label,
+            columns=["Name", "Kind", "Detail"],
+            rows=[(u.name, u.kind, u.detail) for u in accounts],
+            links=[ObjectRef("principal", u.name) for u in accounts],
+            empty_note="(no accounts)",
+        )
+    if slug == "administer":
+        folders = _ADMINISTER_FOLDERS
+        return DetailTable(
+            title=label,
+            columns=["Name", "Holds"],
+            rows=[
+                (CATALOG_CATEGORIES[name][0], CATALOG_CATEGORIES[name][1])
+                for name in folders
+            ],
+            links=[
+                ObjectRef(
+                    "category", CATALOG_CATEGORIES[name][0], category=name
+                )
+                for name in folders
+            ],
+        )
+    kind = CATALOG_CATEGORIES[slug][1]
+    rows = _safe(lambda: connector.list_catalog(slug, schema), [])
+    return DetailTable(
+        title=label,
+        columns=["Name", "Kind", "Detail"],
+        rows=[(r.name, r.kind or kind, r.detail) for r in rows],
+        links=[
+            ObjectRef(r.kind or kind, r.name, category=slug, schema=schema)
+            for r in rows
+        ],
+        empty_note=f"(no {label.lower()})",
+    )
+
+
+#: The folders an Administer row lists. Kept beside the catalog
+#: vocabulary rather than in a provider, so the folder's *view* and
+#: the folder's *tree rows* cannot drift apart.
+_ADMINISTER_FOLDERS = ("roles", "storage", "system_info")
+
+
+def _catalog_row(
+    connector: Connector, kind: str, name: str, *,
+    category: str = "", path: str = "", detail: str = "", schema: str = "",
+) -> ObjectInfo:
+    """One row of a catalog folder — a sequence, an extension, a
+    tablespace, a server setting.
+
+    These have no catalog query of their own: the folder's listing
+    already carries everything the server records about them, so the
+    descriptor is that row, found again by name. A row whose folder
+    cannot be re-read still opens, on whatever the tree knew about it.
+    """
+    found = None
+    if category:
+        for row in _safe(
+            lambda: connector.list_catalog(category, schema), []
+        ):
+            if row.name == name:
+                found = row
+                break
+    summary = [("Name", name), ("Kind", _label(kind))]
+    if schema and kind not in ("setting", "tablespace", "extension"):
+        summary.append(("Schema", schema))
+    note = found.detail if found is not None else detail
+    if note:
+        summary.append(("Detail", note))
+    if found is not None and found.definition:
+        summary.append(("Definition", found.definition))
+    return ObjectInfo(
+        kind=kind, name=name, type_label=_label(kind), path=path,
+        summary=summary,
+        ddl=_ddl(connector, name) if kind not in ("setting",) else "",
+    )
+
+
+def _table(connector, kind, name, *, table, category, path, schema):
     columns = _safe(lambda: connector.list_columns(name), [])
     indexes = [
         i for i in _safe(connector.list_indexes, []) if i.table == name
@@ -379,7 +539,7 @@ def _own_relations(connector, table: str, column: str = "") -> list:
     return here or found
 
 
-def _column(connector, kind, name, *, table, category, path):
+def _column(connector, kind, name, *, table, category, path, schema):
     owner = table
     column = None
     for candidate in _safe(lambda: connector.list_columns(owner), []):
@@ -408,7 +568,7 @@ def _column(connector, kind, name, *, table, category, path):
     )
 
 
-def _index(connector, kind, name, *, table, category, path):
+def _index(connector, kind, name, *, table, category, path, schema):
     match = None
     for candidate in _safe(connector.list_indexes, []):
         if candidate.name == name and (not table or candidate.table == table):
@@ -448,7 +608,7 @@ def _mentions(ddl: str, column: str) -> bool:
     return column.lower() in body.lower()
 
 
-def _trigger(connector, kind, name, *, table, category, path):
+def _trigger(connector, kind, name, *, table, category, path, schema):
     match = None
     for candidate in _safe(connector.list_triggers, []):
         if candidate.name == name and (not table or candidate.table == table):
@@ -483,7 +643,7 @@ def _trigger_summary(ddl: str) -> list[tuple[str, str]]:
     return summary
 
 
-def _function(connector, kind, name, *, table, category, path):
+def _function(connector, kind, name, *, table, category, path, schema):
     ddl = _ddl(connector, name)
     return ObjectInfo(
         kind=kind, name=name, type_label=_label(kind),
@@ -492,7 +652,7 @@ def _function(connector, kind, name, *, table, category, path):
     )
 
 
-def _event(connector, kind, name, *, table, category, path):
+def _event(connector, kind, name, *, table, category, path, schema):
     ddl = _ddl(connector, name)
     return ObjectInfo(
         kind=kind, name=name, type_label=_label(kind),
@@ -576,6 +736,9 @@ SECTION_CHILD_KINDS = {
     "columns": "column",
     "indexes": "index",
     "triggers": "trigger",
+    # A partition is a table, so the section expands into the pieces
+    # of a partitioned table and each of them opens as one (PG-02).
+    "partitions": "table",
 }
 
 

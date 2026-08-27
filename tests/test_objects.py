@@ -156,11 +156,13 @@ def test_empty_category_still_renders(sqlite_db: Connector) -> None:
 def test_unknown_kind_falls_back_to_the_generic_view(
     sqlite_db: Connector,
 ) -> None:
-    info = objects.describe(sqlite_db, "sequence", "notes", path="db ▸ notes")
-    assert info.kind == "sequence"
-    assert info.type_label == "Sequence"
+    # A kind no engine here has a descriptor for — not one of the
+    # catalog kinds, which are described from their folder's listing.
+    info = objects.describe(sqlite_db, "synonym", "notes", path="db ▸ notes")
+    assert info.kind == "synonym"
+    assert info.type_label == "Synonym"  # titled from the kind itself
     assert info.path == "db ▸ notes"
-    assert dict(info.summary)["Kind"] == "sequence"
+    assert dict(info.summary)["Kind"] == "synonym"
     assert info.note  # says why it is generic
     assert "CREATE TABLE" in info.ddl.upper()  # whatever the catalog knew
 

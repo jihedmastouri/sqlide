@@ -64,7 +64,15 @@ class MetadataProvider:
     def apply_permissions(self, statements) -> None
     def qualified_name(self, ref) -> str       # "staging.orders" or "orders"
     def quoted_name(self, ref) -> str          # the same, per-part quoted
+    def level_categories(level) -> tuple      # the folders a level shows
 ```
+
+The folders hanging off a level — Tables and Sequences under a schema,
+Extensions and Roles under a database, Administer under a connection —
+are a declaration (`LEVEL_CATEGORIES`), so the sidebar grows an engine's
+tree without naming it. Their rows come from `Connector.list_catalog`,
+one shapeless listing per folder, and each row resolves to the same
+generic info view every other node opens.
 
 One implementation per engine, in that engine's folder
 (`postgres/metadata.py`, …). PostgreSQL nests `connection → database →

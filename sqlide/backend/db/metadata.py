@@ -143,8 +143,13 @@ class NodeRef:
 
     #: The kinds that live *inside* a schema, and so are qualified by
     #: one. A database or a schema names itself; a column and an index
-    #: are named through the table above them.
-    QUALIFIED_KINDS = ("table", "view", "function", "procedure")
+    #: are named through the table above them; a tablespace, an
+    #: extension and a server setting belong to the cluster and to no
+    #: schema at all (PG-02).
+    QUALIFIED_KINDS = (
+        "table", "view", "function", "procedure",
+        "sequence", "data_type", "aggregate",
+    )
 
     @property
     def path(self) -> tuple[str, ...]:
@@ -214,6 +219,22 @@ CATEGORIES = (
     ("triggers", "Triggers", "trigger"),
     ("events", "Events", "event"),
 )
+
+
+#: The catalog folders a provider can hang off a level of the tree,
+#: declared in db/objects.py (which this module imports) and re-exported
+#: here so the providers have one place to read the vocabulary from.
+CATALOG_CATEGORIES = objects.CATALOG_CATEGORIES
+
+#: The folders filled from the relation listing (objects.py), likewise
+#: re-exported for the providers.
+RELATION_FOLDERS = objects.RELATION_FOLDERS
+
+#: Every folder label the tree can show, catalog folders included, so
+#: a caller that has only a slug can name it.
+CATEGORY_LABELS = {slug: label for slug, label, _kind in CATEGORIES} | {
+    slug: label for slug, (label, _kind) in CATALOG_CATEGORIES.items()
+}
 
 
 @dataclass(frozen=True)
@@ -422,6 +443,7 @@ class MetadataProvider:
             table=ref.table,
             category=ref.category,
             detail=ref.detail,
+            schema=ref.schema,
         )
         qualified = self.qualified_name(ref)
         if qualified != info.name:
@@ -915,7 +937,7 @@ class MetadataProvider:
                     detail="current" if name == current else "",
                 )
                 for name in sorted(names, key=lambda n: n != current)
-            ]
+            ] + self.tree_categories(ref)
         return self.categories(ref)
 
     def _database_children(self, ref: NodeRef) -> list[NodeRef]:
@@ -943,6 +965,79 @@ class MetadataProvider:
             if available:
                 children.append(ref.child("category", label, category=slug))
         return children
+
+    #: The sub-folders an "Administer" folder holds, by slug, for the
+    #: engines that have one. Empty here: a generic engine has no
+    #: server-wide administration the tree can browse.
+    ADMINISTER_CATEGORIES: tuple[str, ...] = ()
+
+    #: The folders each *level* of this engine's tree shows alongside
+    #: the level rows under it: level name -> folder slugs, in display
+    #: order. Empty here — a generic engine hangs its categories off
+    #: the innermost level and shows nothing else (see
+    #: postgres/metadata.py, PG-02).
+    LEVEL_CATEGORIES: dict[str, tuple[str, ...]] = {}
+
+    @classmethod
+    def level_categories(cls, level: str) -> tuple[tuple[str, str], ...]:
+        """(slug, label) for the folders `level` shows, decided by the
+        declaration alone so the sidebar can lay a level out before it
+        has asked the server anything (CORE-02)."""
+        return tuple(
+            (slug, CATEGORY_LABELS[slug])
+            for slug in cls.LEVEL_CATEGORIES.get(level, ())
+        )
+
+    def tree_categories(self, ref: NodeRef) -> list[NodeRef]:
+        """The folders that hang off one *level* row — a connection, a
+        database, a schema — alongside the level rows under it.
+
+        The default is the shape every engine had before there were
+        catalog folders: the object categories hang off the innermost
+        level this engine has, and the levels above it list only their
+        children. An engine with more to show at a level says so by
+        overriding this (see postgres/metadata.py), and the sidebar
+        renders whatever it answers rather than deciding per engine.
+        """
+        if ref.kind == "connection":
+            return [] if self.CAPABILITIES.databases else self.categories(ref)
+        if ref.kind == "database":
+            return [] if self.CAPABILITIES.schemas else self.categories(ref)
+        if ref.kind == "schema":
+            return self.categories(ref)
+        return []
+
+    def catalog_category(self, ref: NodeRef, slug: str) -> NodeRef:
+        """One catalog folder under `ref`, labelled the one way
+        CATALOG_CATEGORIES spells it."""
+        label, _kind = CATALOG_CATEGORIES[slug]
+        return ref.child("category", label, category=slug)
+
+    def _catalog_children(self, ref: NodeRef, slug: str) -> list[NodeRef]:
+        """The rows of a catalog folder: the accounts, the sub-folders
+        of Administer, or whatever the adapter's `list_catalog` gives
+        for this slug."""
+        if slug == "roles":
+            return [
+                ref.child("principal", user.name, detail=user.detail)
+                for user in self.list_principals()
+            ]
+        if slug == "administer":
+            return [
+                self.catalog_category(ref, name)
+                for name in self.ADMINISTER_CATEGORIES
+            ]
+        kind = CATALOG_CATEGORIES[slug][1]
+        rows = _safe(
+            lambda: self.connector.list_catalog(slug, ref.schema), []
+        )
+        return [
+            ref.child(
+                row.kind or kind, row.name,
+                category=slug, detail=row.detail,
+            )
+            for row in rows
+        ]
 
     def _category_children(self, ref: NodeRef) -> list[NodeRef]:
         slug = ref.category or ref.name.lower()
@@ -979,6 +1074,8 @@ class MetadataProvider:
                 ref.child("event", name)
                 for name in _safe(self.connector.list_events, [])
             ]
+        if slug in CATALOG_CATEGORIES:
+            return self._catalog_children(ref, slug)
         return []
 
     def _objects(self, ref: NodeRef):

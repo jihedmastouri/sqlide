@@ -25,6 +25,7 @@ from sqlide.backend.db.base import (
     GrantScope,
     IndexInfo,
     ObjectSummary,
+    PageCursor,
     PrivilegeInfo,
     RelationInfo,
     ResultSet,
@@ -34,7 +35,6 @@ from sqlide.backend.db.base import (
     TriggerInfo,
     TypeSpec,
     UserInfo,
-    build_filter_clauses,
 )
 from sqlide.backend.settings import session_time_zone
 
@@ -916,18 +916,16 @@ class MysqlConnector(Connector):
         limit: int = 500,
         filters: list[FilterCondition] | None = None,
         order_by: list[SortSpec] | None = None,
+        cursor: PageCursor | None = None,
     ) -> ResultSet:
         self._assert_known_table(table)
         self._assert_filter_columns(table, filters, order_by)
-        where, order, params = build_filter_clauses(
-            filters, order_by, self.quote_ident, placeholder="%s"
+        query = self._page_query(
+            table, offset, limit, filters, order_by, cursor,
+            placeholder="%s",
         )
-        columns, rows, _ = self._run(
-            f"SELECT * FROM {self.quote_ident(table)}{where}{order} "
-            "LIMIT %s OFFSET %s",
-            (*params, max(limit, 0), max(offset, 0)),
-        )
-        return ResultSet(columns=columns, rows=rows)
+        columns, rows, _ = self._run(query.sql, tuple(query.params))
+        return self._page_result(columns, rows, query)
 
     def execute(self, sql: str, max_rows: int | None = None) -> ResultSet | int:
         # One row past the cap: the extra is what tells truncated from

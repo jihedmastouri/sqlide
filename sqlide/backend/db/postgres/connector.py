@@ -50,6 +50,7 @@ from sqlide.backend.db.base import (
     GrantScope,
     IndexInfo,
     ObjectSummary,
+    PageCursor,
     PrivilegeInfo,
     RelationInfo,
     ResultSet,
@@ -59,7 +60,6 @@ from sqlide.backend.db.base import (
     TriggerInfo,
     TypeSpec,
     UserInfo,
-    build_filter_clauses,
 )
 from sqlide.backend.db.extensions import ExtensionState
 from sqlide.backend.settings import session_time_zone
@@ -1671,6 +1671,44 @@ class PostgresConnector(Connector):
             f"ALTER COLUMN {self.quote_ident(column.name)} {null_action}"
         )
 
+    def row_key_columns(self, table: str) -> list[str]:
+        """The columns of the narrowest usable unique key (CORE-40).
+
+        The primary key first, then any other valid, total, non-partial
+        unique index whose columns are all NOT NULL — a table without a
+        declared primary key very often has one of those, and it orders
+        and pages exactly as well.
+
+        Deliberately not ctid: it is unique at any instant but an UPDATE
+        or a VACUUM moves a row to a new one, so a cursor carrying a
+        ctid forward would skip rows the moment the table changed under
+        the user. A relation with no key of its own pages by offset and
+        says the order is not guaranteed instead.
+        """
+        _, rows, _ = self._run(
+            "SELECT i.indexrelid, i.indisprimary, a.attname, k.ord, "
+            "array_length(i.indkey::int2[], 1) "
+            "FROM pg_index i "
+            "JOIN LATERAL generate_subscripts(i.indkey::int2[], 1) AS k(ord) "
+            "ON true "
+            "JOIN pg_attribute a ON a.attrelid = i.indrelid "
+            "AND a.attnum = (i.indkey::int2[])[k.ord] "
+            "WHERE i.indrelid = to_regclass(%s) "
+            "AND i.indisunique AND i.indisvalid AND i.indpred IS NULL "
+            "AND a.attnotnull AND NOT a.attisdropped "
+            "ORDER BY i.indisprimary DESC, i.indexrelid, k.ord",
+            (self._relation_ref(table),),
+        )
+        indexes: dict[Any, tuple[int, list[str]]] = {}
+        for oid, _primary, name, _ord, width in rows:
+            indexes.setdefault(oid, (width, []))[1].append(name)
+        for width, names in indexes.values():
+            # A short group means the index also covers a nullable or an
+            # expression column, which is no key for paging.
+            if width == len(names):
+                return names
+        return []
+
     def fetch_rows(
         self,
         table: str,
@@ -1678,18 +1716,16 @@ class PostgresConnector(Connector):
         limit: int = 500,
         filters: list[FilterCondition] | None = None,
         order_by: list[SortSpec] | None = None,
+        cursor: PageCursor | None = None,
     ) -> ResultSet:
         self._assert_known_table(table)
         self._assert_filter_columns(table, filters, order_by)
-        where, order, params = build_filter_clauses(
-            filters, order_by, self.quote_ident, placeholder="%s"
+        query = self._page_query(
+            table, offset, limit, filters, order_by, cursor,
+            placeholder="%s",
         )
-        columns, rows, _ = self._run(
-            f"SELECT * FROM {self.quote_ident(table)}{where}{order} "
-            "LIMIT %s OFFSET %s",
-            (*params, max(limit, 0), max(offset, 0)),
-        )
-        return ResultSet(columns=columns, rows=rows)
+        columns, rows, _ = self._run(query.sql, tuple(query.params))
+        return self._page_result(columns, rows, query)
 
     def execute(self, sql: str, max_rows: int | None = None) -> ResultSet | int:
         # One row past the cap: the extra is what tells truncated from

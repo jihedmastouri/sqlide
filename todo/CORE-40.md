@@ -1,6 +1,6 @@
 ## CORE-40 — Stable, efficient data-grid pagination
 
-- **Status:** todo
+- **Status:** done
 - **From:** RS-04 (see `docs/dbeaver-comparison.md`)
 
 ### Problem
@@ -52,16 +52,16 @@ the cost growing with how far down the user has scrolled.
 
 ### Acceptance criteria
 
-- [ ] With no user sort, the generated SQL always carries an
+- [x] With no user sort, the generated SQL always carries an
       `ORDER BY` on a key, or the UI declares the order unguaranteed.
-- [ ] Reading a fixture table page by page returns every row exactly
+- [x] Reading a fixture table page by page returns every row exactly
       once, on all three engines, including with a filter and with a
       non-unique user sort.
-- [ ] Keyset paging emits a row-comparison predicate and no `OFFSET`
+- [x] Keyset paging emits a row-comparison predicate and no `OFFSET`
       when the sort is unique-prefixed; deep-page SQL is identical in
       shape to first-page SQL.
-- [ ] Mixed-direction sorts, and orders with no unique suffix, fall
+- [x] Mixed-direction sorts, and orders with no unique suffix, fall
       back to offset rather than emitting a wrong predicate.
-- [ ] Filter change, sort change and Refresh reset the cursor.
-- [ ] The SQL shown by the tab's "describe query" line matches what is
+- [x] Filter change, sort change and Refresh reset the cursor.
+- [x] The SQL shown by the tab's "describe query" line matches what is
       actually run.

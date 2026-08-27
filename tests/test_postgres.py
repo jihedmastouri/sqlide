@@ -13,6 +13,7 @@ from sqlide.backend.db.base import (
     SortSpec,
     UserInfo,
 )
+from tests.test_paging import walk_pages
 
 
 def test_server_version_matches_fixture(postgres):
@@ -933,3 +934,42 @@ def test_geometry_values_read_without_postgis_installed(postgres):
     assert built.features[0].geometry.srid == 4326
     lon, lat = built.features[0].geometry.shapes[0].coords[0]
     assert round(lon, 2) == 2.35 and round(lat, 2) == 48.85
+
+
+# Paging (CORE-40): every row exactly once, in a stable order.
+
+
+def test_paging_returns_every_row_once(postgres):
+    _, db = postgres
+    ids = [row[0] for row in walk_pages(db, "orders", page=2)]
+    assert ids == [1, 2, 3]
+
+
+def test_paging_with_a_filter_and_a_non_unique_sort(postgres):
+    _, db = postgres
+    rows = walk_pages(
+        db,
+        "orders",
+        page=1,
+        filters=[FilterCondition(column="amount", op=">", value="0")],
+        order_by=[SortSpec(column="user_id")],
+    )
+    assert sorted(row[0] for row in rows) == [1, 2, 3]
+
+
+def test_paging_a_keyed_table_uses_a_key_comparison(postgres):
+    _, db = postgres
+    first = db.fetch_rows("orders", 0, 2)
+    assert first.cursor is not None and first.stable
+    second = db.fetch_rows("orders", 2, 2, cursor=first.cursor)
+    assert "OFFSET" not in second.statement
+    assert ">" in second.statement
+    assert [row[0] for row in second.rows] == [3]
+
+
+def test_paging_a_view_declares_the_order_unguaranteed(postgres):
+    _, db = postgres
+    result = db.fetch_rows("big_orders")
+    assert result.stable is False
+    assert result.cursor is None
+    assert "not guaranteed" in result.order_note

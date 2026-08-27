@@ -22,10 +22,14 @@ from sqlide.backend.db.base import (
     Connector,
     ConnectorError,
     FilterCondition,
+    PageCursor,
+    PageQuery,
     ResultSet,
     SortSpec,
     TableInfo,
     build_filter_clauses,
+    build_keyset_clause,
+    inline_params,
 )
 
 
@@ -138,16 +142,36 @@ class JdbcConnector(Connector):
         limit: int = 500,
         filters: list[FilterCondition] | None = None,
         order_by: list[SortSpec] | None = None,
+        cursor: PageCursor | None = None,
     ) -> ResultSet:
         # No portable LIMIT/OFFSET across JDBC dialects: read and discard
-        # `offset` rows, then keep `limit`.
+        # `offset` rows, then keep `limit`. A key comparison is portable,
+        # though, so a keyset page starts at the cursor and skips
+        # nothing — which is also what keeps the order stable (CORE-40).
         self._assert_filter_columns(table, filters, order_by)
+        plan = self.paging_strategy(table, order_by)
         where, order, params = build_filter_clauses(
-            filters, order_by, self.quote_ident
+            filters, plan.order_by, self.quote_ident
         )
+        keyset, key_params = build_keyset_clause(
+            cursor if plan.keyset else None,
+            plan.order_by,
+            self.quote_ident,
+        )
+        skip = offset
+        if keyset:
+            where = f"{where} AND {keyset}" if where else f" WHERE {keyset}"
+            params = [*params, *key_params]
+            skip = 0
         sql = f"SELECT * FROM {self.quote_ident(table)}{where}{order}"
-        columns, rows = self._query(sql, params=params, skip=offset, limit=limit)
-        return ResultSet(columns=columns, rows=rows)
+        columns, rows = self._query(sql, params=params, skip=skip, limit=limit)
+        query = PageQuery(
+            sql=sql,
+            params=params,
+            plan=plan,
+            display=inline_params(sql, params),
+        )
+        return self._page_result(columns, rows, query)
 
     def execute(self, sql: str, max_rows: int | None = None) -> ResultSet | int:
         if self._conn is None:

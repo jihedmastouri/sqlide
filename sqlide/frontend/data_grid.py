@@ -74,6 +74,7 @@ from sqlide.backend.db.base import (
     ColumnInfo,
     Connector,
     FilterCondition,
+    PageCursor,
     RowOperation,
     SortSpec,
 )
@@ -1725,6 +1726,15 @@ class TableTab(Gtk.Box):
         self._base_offset = 0
         self._loaded_rows = 0
         self._loading_more = False
+        # Where the loaded window stopped, when the connector paged by
+        # key rather than by offset (CORE-40). Handed back on the next
+        # scroll so the following page starts exactly after the last row
+        # shown; dropped by reload(), which every filter change, sort
+        # change, page jump and Refresh goes through.
+        self._cursor: PageCursor | None = None
+        # False once a load comes back from a relation with no usable
+        # key: the status line has to say the order is not guaranteed.
+        self._stable_order = True
         # The rows behind the current grid page, kept for the map.
         self._loaded_result_rows: list[tuple] = []
         self._map_column = ""
@@ -1976,6 +1986,15 @@ class TableTab(Gtk.Box):
         self._filter_toggle.set_active(True)
         self._apply_filters()
 
+    @staticmethod
+    def _order_warning(result) -> str:
+        """The suffix the page label and the status line carry when the
+        rows came back in an order the engine does not guarantee — a
+        view or a table with no key. Paging such a relation can repeat
+        or skip rows, and the honest thing is to say so rather than to
+        let the duplicates look like data."""
+        return "" if result.stable else " (order not guaranteed)"
+
     def _describe_query(self, offset: int) -> str:
         """The SELECT this tab's current state stands for, with filter
         values inlined as literals — recorded in the query history (the
@@ -2003,9 +2022,12 @@ class TableTab(Gtk.Box):
         self._base_offset = offset
         self._loaded_rows = 0
         self._loading_more = False
+        # A reload is a fresh window: whatever page the old cursor
+        # pointed after is not where this one starts.
+        self._cursor = None
         filters = self._filters
         order_by = self._order_by
-        history_sql = self._describe_query(offset)
+        fallback_sql = self._describe_query(offset)
 
         def work():
             connector = self._ensure(self.profile)
@@ -2060,11 +2082,14 @@ class TableTab(Gtk.Box):
             self._grid.set_unlocked(editable and self._edit_toggle.get_active())
             count = len(result)
             self._loaded_rows = count
+            self._cursor = result.cursor
+            self._stable_order = result.stable
             page = f"{offset + 1}–{offset + count}" if count else "no rows"
             if filters:
                 page += " (filtered)"
             if order_by:
                 page += " (sorted)"
+            page += self._order_warning(result)
             self._page_label.set_text(page)
             self._prev.set_sensitive(offset > 0)
             self._next.set_sensitive(count == PAGE_SIZE)
@@ -2081,12 +2106,15 @@ class TableTab(Gtk.Box):
             self._row_range = page
             self._update_map_availability()
             if self.on_ran is not None:
-                self.on_ran(history_sql, True)
+                # What the adapter actually ran, tiebreaker order and
+                # key comparison included, so the history and the
+                # "describe query" line cannot drift from the statement.
+                self.on_ran(result.statement or fallback_sql, True)
 
         def failed(exc):
             self._show_error(str(exc))
             if self.on_ran is not None:
-                self.on_ran(history_sql, False)
+                self.on_ran(fallback_sql, False)
 
         run_async(work, done, failed)
 
@@ -2345,11 +2373,17 @@ class TableTab(Gtk.Box):
         offset = self._base_offset + self._loaded_rows
         filters = self._filters
         order_by = self._order_by
+        cursor = self._cursor
 
         def work():
             connector = self._ensure(self.profile)
             return connector.fetch_rows(
-                self.table, offset, PAGE_SIZE, filters=filters, order_by=order_by
+                self.table,
+                offset,
+                PAGE_SIZE,
+                filters=filters,
+                order_by=order_by,
+                cursor=cursor,
             )
 
         def done(result):
@@ -2363,12 +2397,17 @@ class TableTab(Gtk.Box):
             count = len(result)
             self._loaded_rows += count
             self._offset = offset
+            # Only a page that came back with one can be carried on
+            # from; without it the next scroll falls back to offset.
+            self._cursor = result.cursor
+            self._stable_order = result.stable
             self._next.set_sensitive(count == PAGE_SIZE)
             page = f"{self._base_offset + 1}–{self._base_offset + self._loaded_rows}"
             if filters:
                 page += " (filtered)"
             if order_by:
                 page += " (sorted)"
+            page += self._order_warning(result)
             self._page_label.set_text(page)
             self._row_range = page
 

@@ -105,6 +105,7 @@ from sqlide.frontend.backups_tab import BackupsTab
 from sqlide.frontend.mcp_tab import McpServerTab
 from sqlide.frontend.object_info import (
     ObjectInfoTab,
+    PropertiesSurfaces,
     PropertiesView,
     properties_key,
     tab_key,
@@ -538,12 +539,13 @@ class MainWindow(Adw.ApplicationWindow):
         # default. It sits inside the content area (below the header bar
         # and tab bar), so its edge and toggle stay away from the window
         # controls.
-        # The properties surface the panel shows: one widget the window
-        # owns and retargets as tabs change (CORE-47). A detached
-        # window gets its own instance, so the two never fight over
-        # which object is on screen.
-        self._properties_view = PropertiesView(
-            self.ensure_connector, self.show_error, self.open_object
+        # The properties surfaces the panel shows: one per object,
+        # swapped as tabs change rather than one widget retargeted
+        # (CORE-47, then CORE-50). Opening B leaves A's surface
+        # standing, and a detached window gets its own instance, so no
+        # two surfaces ever fight over which object is on screen.
+        self._properties_view = PropertiesSurfaces(
+            self._make_properties_view
         )
         self._side_panel = SidePanel(
             on_activate=self._history_activated,
@@ -1597,6 +1599,7 @@ class MainWindow(Adw.ApplicationWindow):
             self._confirm_mcp_close(view, page, child)
             return True
         self._mark_panel_closed(page)
+        self._release_properties_surface(page)
         return False  # let the default handler close the page
 
     def _confirm_console_close(
@@ -1620,6 +1623,7 @@ class MainWindow(Adw.ApplicationWindow):
             if force:
                 self._rollback_connections([name])
                 self._mark_panel_closed(page)
+                self._release_properties_surface(page)
             view.close_page_finish(page, force)
 
         dialog.connect("response", respond)
@@ -1649,6 +1653,40 @@ class MainWindow(Adw.ApplicationWindow):
 
         dialog.connect("response", respond)
         dialog.present(view.get_root() or self)
+
+    def _release_properties_surface(self, page: Adw.TabPage) -> None:
+        """A tab about an object is closing: drop the panel surface
+        held for it, unless another open tab is still about the same
+        object (CORE-50 — surfaces are per object, and released with
+        the object's last tab, so they cannot grow without bound).
+
+        Deferred to idle: the page is still open while ::close-page
+        runs, and the panel has yet to follow the tab that takes its
+        place.
+        """
+        child = page.get_child()
+        profile, ref = _properties_target(child)
+        if profile is None or ref is None:
+            return
+        key = properties_key(profile, ref)
+
+        def release() -> bool:
+            for pane in self._all_panes():
+                for i in range(pane.view.get_n_pages()):
+                    other = pane.view.get_nth_page(i).get_child()
+                    if other is child:
+                        continue
+                    target = _properties_target(other)
+                    if (
+                        target[0] is not None
+                        and target[1] is not None
+                        and properties_key(*target) == key
+                    ):
+                        return False
+            self._properties_view.release(key)
+            return False
+
+        GLib.idle_add(release)
 
     def _mark_panel_closed(self, page: Adw.TabPage) -> None:
         title = page.get_title()
@@ -2487,6 +2525,18 @@ class MainWindow(Adw.ApplicationWindow):
         self.open_properties(profile, ref, section)
 
     # Properties (CORE-47): the side panel, and windows torn off it
+
+    def _make_properties_view(
+        self, profile: ConnectionProfile, ref: objects.ObjectRef
+    ) -> PropertiesView:
+        """One object's properties surface, for the panel's stack."""
+        return PropertiesView(
+            self.ensure_connector,
+            self.show_error,
+            self.open_object,
+            profile=profile,
+            ref=ref,
+        )
 
     def open_properties(
         self,

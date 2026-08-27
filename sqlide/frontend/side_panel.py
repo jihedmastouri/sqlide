@@ -15,9 +15,10 @@ through set_context):
 Pages:
 - Properties: everything about the active tab's object — the sections
   its engine has, its DDL, its children (CORE-47). The widget is an
-  object_info.PropertiesView the window owns and retargets as tabs
-  change; the same widget class is what a detached properties window
-  holds. Read-only, here and there.
+  object_info.PropertiesSurfaces the window owns: one
+  PropertiesView per object, swapped as tabs change rather than one
+  view retargeted (CORE-50), and the same view class is what a
+  detached properties window holds. Read-only, here and there.
 - Info: details of the active tab — the DDL of the active table or
   definition tab (highlighted, read-only), or the connection details
   of a console. The window fills it on tab changes (set_definition /
@@ -471,8 +472,10 @@ class SidePanel(Gtk.Box):
     # Properties
 
     def set_properties_target(self, profile, ref) -> None:
-        """Point the Properties page at the active tab's object, or at
-        nothing (both None) for a tab that is about no object."""
+        """Show the active tab's object on the Properties page — its
+        own surface, so the previous object's is left as it was
+        (CORE-50) — or nothing (both None) for a tab about no
+        object."""
         if hasattr(self._properties, "set_target"):
             self._properties.set_target(profile, ref)
 

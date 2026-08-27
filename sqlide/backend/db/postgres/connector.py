@@ -166,6 +166,9 @@ def _relation_detail(relkind: str, is_partition: bool) -> str:
 
 
 class PostgresConnector(Connector):
+    # psycopg binds with %s.
+    placeholder = "%s"
+
     def __init__(
         self,
         host: str,

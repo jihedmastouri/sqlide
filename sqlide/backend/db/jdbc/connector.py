@@ -209,6 +209,23 @@ class JdbcConnector(Connector):
         except Exception as exc:
             raise ConnectorError(str(exc)) from exc
 
+    def _run_operation(self, sql: str, params: tuple) -> int:
+        """One statement of an apply_changes() batch. The generic
+        implementation reaches for a `_run` this adapter does not have,
+        so the cursor work is spelled out here."""
+        if self._conn is None:
+            raise ConnectorError("Not connected")
+        try:
+            with self._lock:
+                cur = self._conn.cursor()
+                try:
+                    cur.execute(sql, params)
+                    return cur.rowcount
+                finally:
+                    cur.close()
+        except Exception as exc:
+            raise ConnectorError(str(exc)) from exc
+
     def update_cell(
         self, table: str, pk_values: dict[str, Any], column: str, value: Any
     ) -> None:

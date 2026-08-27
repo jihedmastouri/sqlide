@@ -255,8 +255,11 @@ def test_saving_a_grid_writes_its_pending_edits(gtk) -> None:
     done = threading.Event()
 
     class Recording:
-        def update_cell(self, table, pk_values, column, value):
-            written.append((table, pk_values, column, value))
+        def apply_changes(self, table, operations):
+            written.extend(
+                (table, op.pk_values, op.column, op.value)
+                for op in operations
+            )
             done.set()
 
     tab = _GridStub(

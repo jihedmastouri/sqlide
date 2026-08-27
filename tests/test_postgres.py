@@ -6,8 +6,10 @@ from __future__ import annotations
 import pytest
 
 from sqlide.backend.db.base import (
+    BatchError,
     ConnectorError,
     FilterCondition,
+    RowOperation,
     SortSpec,
     UserInfo,
 )
@@ -101,6 +103,46 @@ def test_update_cell_rejects_unknown_column(postgres):
     _, db = postgres
     with pytest.raises(ConnectorError, match="Unknown column"):
         db.update_cell("users", {"id": 1}, "nope", "x")
+
+
+def test_apply_changes_is_atomic(postgres):
+    _, db = postgres
+    before = db.execute("SELECT id, email FROM users ORDER BY id").rows
+    ops = [
+        RowOperation(pk_values={"id": 1}, column="email", value="a@x"),
+        RowOperation(pk_values={"id": 2}, column="email", value="b@x"),
+        RowOperation(pk_values={"id": 999}, column="email", value="nobody@x"),
+    ]
+    with pytest.raises(BatchError) as caught:
+        db.apply_changes("users", ops)
+    assert caught.value.index == 2
+    assert "row (id=999) column email" in str(caught.value)
+    assert db.execute("SELECT id, email FROM users ORDER BY id").rows == before
+    assert not db.in_transaction()
+
+    db.apply_changes("users", ops[:2])
+    assert db.execute("SELECT email FROM users ORDER BY id").rows[:2] == [
+        ("a@x",),
+        ("b@x",),
+    ]
+    db.execute("UPDATE users SET email = 'ada@example.com' WHERE id = 1")
+    db.execute("UPDATE users SET email = NULL WHERE id = 2")
+
+
+def test_apply_changes_joins_an_open_transaction(postgres):
+    _, db = postgres
+    db.execute("BEGIN")
+    try:
+        db.apply_changes(
+            "users",
+            [RowOperation(pk_values={"id": 1}, column="email", value="a@x")],
+        )
+        assert db.in_transaction()
+    finally:
+        db.rollback()
+    assert db.execute("SELECT email FROM users WHERE id = 1").rows[0][0] == (
+        "ada@example.com"
+    )
 
 
 def test_transaction_tracking(postgres):

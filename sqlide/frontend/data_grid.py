@@ -40,7 +40,9 @@ TableTab: a ResultGrid bound to one table — paged loading, refresh, and
 primary-key-based cell editing. Editing is opt-in: a toggle in the
 action bar unlocks the cells, edits accumulate locally (highlighted in
 the grid), and Save opens a review dialog showing the UPDATE statements
-before they run through Connector.update_cell(). Refresh discards
+before they run through Connector.apply_changes(), which applies the
+whole Save as one transaction — all of it lands or none of it does.
+Refresh discards
 pending edits. A NULL and an empty string look the same once typed
 into an EditableLabel, so setting a cell to NULL instead goes through
 the cell's right-click menu ("Set Cell to NULL", enabled only while
@@ -72,6 +74,7 @@ from sqlide.backend.db.base import (
     ColumnInfo,
     Connector,
     FilterCondition,
+    RowOperation,
     SortSpec,
 )
 from sqlide.backend.workspaces import TabState
@@ -1932,8 +1935,7 @@ class TableTab(Gtk.Box):
 
         def work():
             connector = self._ensure(self.profile)
-            for pk_values, column, value in updates:
-                connector.update_cell(self.table, pk_values, column, value)
+            connector.apply_changes(self.table, updates)
 
         run_async(work, lambda _r: None, lambda exc: self._show_error(str(exc)))
 
@@ -2437,10 +2439,11 @@ class TableTab(Gtk.Box):
         self._save.set_visible(count > 0)
         self._save.set_label(f"Save ({count})")
 
-    def _pending_updates(self) -> list[tuple[dict[str, Any], str, str | None]]:
-        """Flat (pk values, column, new value) list, one per edited cell."""
+    def _pending_updates(self) -> list[RowOperation]:
+        """The pending edits as the operation list apply_changes() takes,
+        one operation per edited cell, in the order they were made."""
         return [
-            (pk_values, column, value)
+            RowOperation(pk_values=pk_values, column=column, value=value)
             for pk_values, changes in self._pending.values()
             for column, value in changes.items()
         ]
@@ -2450,35 +2453,57 @@ class TableTab(Gtk.Box):
         if not updates:
             return
         statements = [
-            f"UPDATE {self.table} SET {column} = {_sql_literal(value)}"
+            f"UPDATE {self.table} SET {op.column} = {_sql_literal(op.value)}"
             " WHERE "
             + " AND ".join(
-                f"{name} = {_sql_literal(pk)}" for name, pk in pk_values.items()
+                f"{name} = {_sql_literal(pk)}"
+                for name, pk in op.pk_values.items()
             )
             + ";"
-            for pk_values, column, value in updates
+            for op in updates
         ]
+        target = confirm.describe_connection(self.profile)
+        if self._in_open_transaction():
+            atomicity = _(
+                "They join the transaction you already have open on "
+                "%s: nothing is committed until you commit it."
+            ) % target
+        else:
+            atomicity = _(
+                "They run as one transaction against %s: either all of "
+                "them are applied or none of them are."
+            ) % target
         dialog = UpdatePreviewDialog(
             statements,
             lambda: self._execute_updates(updates),
-            caption="Values are bound as parameters when executed. "
-            f"They are written to {confirm.describe_connection(self.profile)}.",
+            caption=_("Values are bound as parameters when executed. ")
+            + atomicity,
         )
         dialog.present(self)
 
-    def _execute_updates(
-        self, updates: list[tuple[dict[str, Any], str, str | None]]
-    ) -> None:
+    def _in_open_transaction(self) -> bool:
+        """Whether the user already has a transaction open on this
+        tab's connection. in_transaction() only reads driver state, so
+        this is safe to ask on the main thread; a connection that is
+        not up yet has nothing open by definition."""
+        try:
+            return self._ensure(self.profile).in_transaction()
+        except Exception:
+            return False
+
+    def _execute_updates(self, updates: list[RowOperation]) -> None:
         def work():
             connector = self._ensure(self.profile)
-            for pk_values, column, value in updates:
-                connector.update_cell(self.table, pk_values, column, value)
+            connector.apply_changes(self.table, updates)
 
         def done(_result):
             self.reload()  # clears pending and modified marks
 
         def failed(exc):
+            # Nothing was applied: the batch rolled back. The pending
+            # edits stay pending, so the grid is exactly what it was
+            # and the user can fix the row the message names and
+            # save again.
             self._show_error(str(exc))
-            self.reload()  # resync with whatever was applied
 
         run_async(work, done, failed)

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
+from sqlide.backend.db import extensions
 from sqlide.backend.db.base import Connector, ConnectorError
 
 #: Category node name -> the object kind its rows hold. Mirrors the
@@ -56,6 +57,7 @@ CATALOG_CATEGORIES = {
     "aggregates": ("Aggregate Functions", "aggregate"),
     "event_triggers": ("Event Triggers", "event_trigger"),
     "extensions": ("Extensions", "extension"),
+    "available_extensions": ("Available Extensions", "extension"),
     "storage": ("Storage", "tablespace"),
     "system_info": ("System Info", "setting"),
     "roles": ("Roles", "principal"),
@@ -197,12 +199,46 @@ def describe(
             category=category, path=path, detail=detail, schema=schema,
         )
     if builder is None:
-        return _generic(connector, kind, name, path=path, detail=detail)
-    info = builder(
-        connector, kind, name,
-        table=table, category=category, path=path, schema=schema,
-    )
-    return _replace_path(info, path)
+        info = _generic(connector, kind, name, path=path, detail=detail)
+    else:
+        info = _replace_path(
+            builder(
+                connector, kind, name,
+                table=table, category=category, path=path, schema=schema,
+            ),
+            path,
+        )
+    return _with_extension(connector, info, kind, name, schema)
+
+
+#: The kinds an extension can own. An extension ships tables, views,
+#: functions, types and sequences; a column, an index or a trigger is
+#: named through the object above it and is attributed with it.
+_EXTENSION_OWNED_KINDS = frozenset(
+    ("table", "view", "function", "procedure", "sequence",
+     "data_type", "aggregate")
+)
+
+
+def _with_extension(
+    connector: Connector, info: ObjectInfo, kind: str, name: str, schema: str
+) -> ObjectInfo:
+    """Attribute an extension-owned object to its extension (PG-05).
+
+    Without this, the tables PostGIS or TimescaleDB install read as
+    mysterious objects somebody left behind. The lookup is one catalog
+    question the adapter answers (`Connector.extension_owner`), empty
+    on every engine that has no extensions, so nothing here branches
+    on which engine it is describing.
+    """
+    if kind not in _EXTENSION_OWNED_KINDS:
+        return info
+    owner = _safe(lambda: connector.extension_owner(name, schema), "")
+    if not owner:
+        return info
+    label = extensions.trait(owner).title
+    note = owner if label == owner else f"{owner} ({label})"
+    return replace(info, summary=[*info.summary, ("Extension", note)])
 
 
 def _replace_path(info: ObjectInfo, path: str) -> ObjectInfo:
@@ -452,11 +488,33 @@ def _catalog_row(
         summary.append(("Detail", note))
     if found is not None and found.definition:
         summary.append(("Definition", found.definition))
+    if kind == "extension":
+        summary.extend(_extension_summary(name))
     return ObjectInfo(
         kind=kind, name=name, type_label=_label(kind), path=path,
         summary=summary,
         ddl=_ddl(connector, name) if kind not in ("setting",) else "",
     )
+
+
+def _extension_summary(name: str) -> list[tuple[str, str]]:
+    """What sqlide knows about this extension beyond the catalog row
+    (PG-05): its familiar name, what it is for, and what having it
+    installed turns on. An extension the registry has never heard of
+    adds nothing here and still opens — the generic listing is the
+    default, not a fallback (`extensions.trait`).
+    """
+    trait = extensions.trait(name)
+    if not trait.known:
+        return []
+    rows = [("Known as", trait.title)]
+    if trait.summary:
+        rows.append(("About", trait.summary))
+    for feature in trait.features:
+        label = extensions.FEATURE_LABELS.get(feature)
+        if label:
+            rows.append(("Enables", label))
+    return rows
 
 
 def _table(connector, kind, name, *, table, category, path, schema):

@@ -63,7 +63,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, fields, replace
 
-from sqlide.backend.db import objects
+from sqlide.backend.db import extensions as ext, objects
 from sqlide.backend.db.base import (
     Connector,
     ConnectorError,
@@ -442,6 +442,89 @@ class MetadataProvider:
     def capabilities(self) -> Capabilities:
         return self.CAPABILITIES
 
+    # Extensions (PG-05). One listing, read through the registry in
+    # db/extensions.py, so every question above this layer is asked
+    # about a *feature* and never about an extension's name.
+
+    def extensions(self) -> list[ext.ExtensionState]:
+        """Every extension this server has, installed or available.
+
+        The generic implementation asks the connector, and falls back
+        to the Extensions catalog folder for an adapter that only has
+        that — one listing either way, empty for an engine with no
+        extensions at all.
+        """
+        if not self.capabilities().extensions:
+            return []
+        states = _safe(lambda: self.connector.list_extensions(), [])
+        if states:
+            return list(states)
+        return [
+            ext.ExtensionState(
+                name=row.name,
+                version=(row.detail or "").split(" in ")[0].strip(),
+                schema=(
+                    (row.detail or "").split(" in ", 1)[1].split(" ·")[0]
+                    if " in " in (row.detail or "")
+                    else ""
+                ),
+                comment=getattr(row, "definition", "") or "",
+            )
+            for row in _safe(
+                lambda: self.connector.list_catalog("extensions"), []
+            )
+        ]
+
+    def installed_extensions(self) -> list[ext.ExtensionState]:
+        return [state for state in self.extensions() if state.installed]
+
+    def extension_features(self) -> set[str]:
+        """The features this connection's installed extensions unlock
+        — the one question the UI should ask, since "does this server
+        do X" outlives which extension provides X."""
+        return ext.features(self.extensions())
+
+    def has_extension_feature(self, feature: str) -> bool:
+        return feature in self.extension_features()
+
+    def can_manage_extensions(self) -> bool:
+        """May this account install, update or drop one? The actions
+        are gated on it, so a role that could not run them is not
+        offered them (PG-05)."""
+        if not self.capabilities().extensions:
+            return False
+        return bool(_safe(lambda: self.connector.can_manage_extensions(), False))
+
+    def extension_statements(
+        self,
+        action: str,
+        name: str,
+        *,
+        schema: str = "",
+        version: str = "",
+        cascade: bool = False,
+    ) -> list[str]:
+        """The SQL for one extension action, for the confirmation to
+        show and the caller to run. Nothing here executes."""
+        quote = self.connector.quote_ident
+        if action == "install":
+            return [ext.install_sql(name, schema=schema, quote=quote)]
+        if action == "update":
+            return [ext.update_sql(name, version=version, quote=quote)]
+        if action == "drop":
+            return [ext.drop_sql(name, cascade=cascade, quote=quote)]
+        return []
+
+    def object_extension(self, ref: NodeRef) -> str:
+        """The extension `ref` belongs to, "" for a user object — what
+        stops an extension's tables and functions reading as mysterious
+        objects somebody left behind (PG-05)."""
+        if not self.capabilities().extensions or not ref.name:
+            return ""
+        return _safe(
+            lambda: self.connector.extension_owner(ref.name, ref.schema), ""
+        )
+
     def spatial_extension(self) -> str:
         """The spatial extension this connection has, "" for none.
 
@@ -450,7 +533,15 @@ class MetadataProvider:
         this says the *server* does. A PostgreSQL database without
         PostGIS therefore never grows a Map view it could not fill,
         and no engine has to be named in the UI to arrange that.
+
+        Since PG-05 this is the registry's "spatial" feature rather
+        than a PostGIS lookup of its own: one mechanism, so a second
+        spatial extension would need a registry entry and nothing
+        else.
         """
+        for state in self.installed_extensions():
+            if state.trait.has("spatial"):
+                return f"{state.name} {state.version}".strip()
         return ""
 
     def root(self, name: str = "") -> NodeRef:

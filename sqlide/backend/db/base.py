@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from secrets import token_hex
 from typing import Any
 
+from sqlide.backend.db.extensions import ExtensionState
+
 
 @dataclass(frozen=True)
 class TableInfo:
@@ -509,6 +511,32 @@ class Connector(ABC):
         """Functions related to the table: the ones its triggers call,
         where the catalog can say."""
         return []
+
+    def list_extensions(self) -> list[ExtensionState]:
+        """Every extension the server has, installed or merely
+        available (db/extensions.py's `ExtensionState`).
+
+        One listing rather than two: an available extension and an
+        installed one differ by a version string, and the Extensions
+        folder wants to show both without asking twice.
+
+        Concrete default: an engine with no extensions answers empty,
+        which is also what the `extensions` capability says.
+        """
+        return []
+
+    def can_manage_extensions(self) -> bool:
+        """May the account this connection is on install, update or
+        drop an extension? False everywhere by default — the actions
+        are offered only where they would work (PG-05)."""
+        return False
+
+    def extension_owner(self, name: str, schema: str = "") -> str:
+        """The extension that owns this object, "" for one nobody
+        installed — so an extension's tables and functions can be
+        attributed to it instead of appearing as mysterious user
+        objects (PG-05)."""
+        return ""
 
     def list_catalog(self, slug: str, schema: str = "") -> list[ObjectSummary]:
         """The rows of one of the looser catalog folders the object

@@ -32,7 +32,10 @@ from sqlide.frontend.sidebar import (
 # The tree the ticket draws, level by level.
 _CONNECTION_FOLDERS = ("Administer", "System Info")
 _DATABASE_FOLDERS = (
-    "Event Triggers", "Extensions", "Storage", "System Info", "Roles",
+    # Available Extensions is the other half of Extensions: what the
+    # server could install and has not (PG-05).
+    "Event Triggers", "Extensions", "Available Extensions",
+    "Storage", "System Info", "Roles",
 )
 _SCHEMA_FOLDERS = (
     "Tables", "Foreign Tables", "Views", "Materialized Views", "Indexes",

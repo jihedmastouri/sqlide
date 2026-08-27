@@ -39,8 +39,11 @@ stays **SQLite**; browse to `demo.db`, click **Test connection**, then
 
 ## 4. Browse the schema and edit data
 
-Expand the connection in the sidebar and click a table, e.g. `customers`,
-to open it in a grid tab. Click into a cell, edit it, and press Enter —
+Click the connection in the sidebar to expand it, then double-click a
+table, e.g. `customers`, to open it in a grid tab. A single click only
+selects and expands; double-click (or Enter, or **Open** on the row's
+right-click menu) is what opens something, and **Open (Window)** on
+that menu puts it straight into a window of its own. Click into a cell, edit it, and press Enter —
 the change is written as a primary-key `UPDATE`.
 
 The `log` table has no primary key and shows as read-only, as does

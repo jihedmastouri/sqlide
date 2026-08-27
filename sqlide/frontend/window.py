@@ -315,6 +315,13 @@ class MainWindow(Adw.ApplicationWindow):
         # for all of them, already.
         self._closing_connection = ""
         self._restoring = False
+        # "Open (Window)": while set, a tab opened anywhere goes
+        # straight into a pop-out, exactly as a held Shift does
+        # (open_in_window, _place_new_page).
+        self._force_popout = False
+        # The page the last open landed on — made, or focused because
+        # it was already open. open_in_window moves it out.
+        self._last_opened_page: Adw.TabPage | None = None
         self._last_connection = ""
         self._connection_names = Gtk.StringList.new(
             [p.name for p in workspace.connections]
@@ -371,6 +378,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_open_table=self.open_table,
             on_open_object=self.open_object,
             on_open_section=self.open_table_section,
+            on_open_window=self.open_in_window,
             on_new_query=self.new_query,
             on_open_cli=self.open_cli,
             on_open_definition=self.open_definition,
@@ -1128,6 +1136,35 @@ class MainWindow(Adw.ApplicationWindow):
             self._on_popout_destroyed(window)
             window.destroy()
         return False
+
+    def open_in_window(self, open_tab: Callable[[], None]) -> None:
+        """Run an opener with "in a window of its own" forced on — the
+        sidebar's "Open (Window)" (CORE-52).
+
+        The same tear-out path a dragged tab and a Shift-click take:
+        the tab is made (or found) as a tab and moved after, so nothing
+        that opens one has to know about pop-outs. A tab that is
+        already open is moved rather than copied (CORE-01), and one
+        already in a pop-out just gets its window raised.
+        """
+        self._last_opened_page = None
+        self._force_popout = True
+        try:
+            open_tab()
+        finally:
+            self._force_popout = False
+        page = self._last_opened_page
+        if page is None:
+            return
+        # A freshly made tab was moved by _place_new_page already; what
+        # is left here is an existing tab, still docked.
+        for pane in self._panes:
+            for i in range(pane.view.get_n_pages()):
+                if pane.view.get_nth_page(i) is page:
+                    window = self._new_popout()
+                    window.present()
+                    pane.view.transfer_page(page, window.pane.view, 0)
+                    return
 
     def _move_tab_out(self, pane: _TabPane | None = None) -> None:
         """Move a tab into a window of its own."""
@@ -2204,6 +2241,7 @@ class MainWindow(Adw.ApplicationWindow):
                 if getattr(page.get_child(), "tab_key", None) != key:
                     continue
                 pane.view.set_selected_page(page)
+                self._last_opened_page = page
                 if pane in self._panes:
                     self._set_active_pane(pane)
                 else:
@@ -2237,6 +2275,7 @@ class MainWindow(Adw.ApplicationWindow):
         page.set_tooltip(tooltip)
         self._apply_page_identity(page, _page_connection(tab))
         view.set_selected_page(page)
+        self._last_opened_page = page
         if place:
             self._place_new_page(page)
         return page
@@ -2260,7 +2299,7 @@ class MainWindow(Adw.ApplicationWindow):
         menu, anywhere — means "in a window of its own". The tab is
         made as a tab either way and moved after, so nothing that
         opens one has to know about pop-outs."""
-        if self._restoring or not self._shift_held():
+        if self._restoring or not (self._force_popout or self._shift_held()):
             return page
         window = self._new_popout()
         window.present()

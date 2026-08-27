@@ -67,16 +67,26 @@ tables, views, indexes, triggers and, where the dialect has them,
 functions, procedures and events — so creating an object never
 depends on knowing that the row has a right-click menu.
 
-A single click selects a row; a double click (or Enter) opens it, and every kind opens something: a
-table/view opens a data tab, a function opens its definition in an
-editable tab, and everything else — categories, columns, indexes,
-triggers, events, and any kind added later — opens the read-only
-object info view (frontend/object_info.py, "Object Info" on every
-context menu). A container row expands as well as opening, so
-double-clicking a connection still reveals what is under it; clicking
-the caret expands without opening anything.
+A single click selects a row and toggles its expansion — a leaf row
+just selects, and nothing opens (CORE-52). A double click (or Enter)
+opens it, and every kind opens something: a table/view opens a data
+tab, a function opens its definition in an editable tab, and
+everything else — categories, columns, indexes, triggers, events, and
+any kind added later — opens the read-only object info view
+(frontend/object_info.py, "Object Info" on every context menu).
+Opening something already open focuses its tab (CORE-01). A container
+row expands as well as opening, so double-clicking a connection still
+reveals what is under it; the caret does the same toggle a click on
+the row does.
 
-Right-clicking a table or view opens View Data /
+Every menu of a row that opens something starts with Open and Open
+(Window); a row that opens nothing — a "Loading…" placeholder — has
+neither. Open (Window) hands the opening to the window with "in a
+window of its own" forced on, which is the tear-out path a dragged tab
+and a Shift-click already take (window.open_in_window), rather than a
+second way to make a pop-out.
+
+Right-clicking a table or view then offers View Data /
 Query Console / Table Definition; right-clicking a connection offers
 a new query console (new consoles otherwise come from the header-bar
 button), the connection's relation graph, an MCP Server tab
@@ -308,6 +318,11 @@ class Sidebar(Gtk.ScrolledWindow):
         # above: a harness that only walks the tree need not supply
         # one, and the menu item then does nothing.
         on_pragmas: Callable[[ConnectionProfile], None] | None = None,
+        # "Open (Window)": runs an opener with "in a window of its own"
+        # forced on, the same path Shift-clicking a row takes
+        # (window._place_new_page). Optional like the two above — a
+        # harness without a window then just opens the tab.
+        on_open_window: Callable[[Callable[[], None]], None] | None = None,
     ) -> None:
         super().__init__(vexpand=True)
         # Both scrollbars, on demand. Row name labels are not ellipsized
@@ -335,6 +350,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_manage_users = on_manage_users
         self._on_monitor = on_monitor
         self._on_pragmas = on_pragmas
+        self._on_open_window = on_open_window
         self._on_open_schema = on_open_schema
         self._on_edit_connection = on_edit_connection
         self._on_disconnect = on_disconnect
@@ -391,6 +407,8 @@ class Sidebar(Gtk.ScrolledWindow):
         self._menu_node: Node | None = None
         self._actions = actions = Gio.SimpleActionGroup()
         for name, callback in (
+            ("open", self._menu_open),
+            ("open-window", self._menu_open_window),
             ("object-info", self._menu_object_info),
             ("view-data", self._menu_view_data),
             ("view-section", self._menu_view_section),
@@ -1140,6 +1158,13 @@ class Sidebar(Gtk.ScrolledWindow):
         caret_click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         caret_click.connect("pressed", self._caret_pressed, list_item)
         caret.add_controller(caret_click)
+        # A single left click toggles the row's expansion (CORE-52).
+        # Bubble phase and never claimed: the caret's own gesture (and
+        # the + button) get the press first, and the ListView still
+        # selects the row and still sees the double click behind it.
+        row_click = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
+        row_click.connect("pressed", self._row_pressed, list_item)
+        expander.add_controller(row_click)
         menu_click = Gtk.GestureClick(button=Gdk.BUTTON_SECONDARY)
         menu_click.connect("pressed", self._row_menu_pressed, list_item)
         expander.add_controller(menu_click)
@@ -1243,7 +1268,25 @@ class Sidebar(Gtk.ScrolledWindow):
         supports_drop, known once its schema loaded)."""
         root = self._root_node(node.profile)
         can_drop = root is not None and root.supports_drop
+        menu = self._menu_body(node, root, can_drop)
+        if menu is None:
+            return None
+        if not self.is_openable(node):
+            # Nothing to open — a placeholder row, or one with no
+            # connection behind it — so the two items are left off
+            # rather than shown dead (CORE-52).
+            return menu
+        # Open and Open (Window) sit above everything else, in the
+        # same flat list as the rest — prepended in reverse so Open
+        # ends up first.
+        menu.prepend("Open (Window)", "schema.open-window")
+        menu.prepend("Open", "schema.open")
+        return menu
 
+    def _menu_body(
+        self, node: Node, root: Node | None, can_drop: bool
+    ) -> Gio.Menu | None:
+        """The kind-specific half of a row's menu, under Open."""
         if node.kind in ("table", "view"):
             menu = Gio.Menu()
             menu.append("View Data", "schema.view-data")
@@ -1438,6 +1481,14 @@ class Sidebar(Gtk.ScrolledWindow):
         self._popover.set_menu_model(menu)
         self._popover.set_pointing_to(rect)
         self._popover.popup()
+
+    def _menu_open(self, *_args) -> None:
+        if self._menu_node is not None:
+            self.open_node(self._menu_node)
+
+    def _menu_open_window(self, *_args) -> None:
+        if self._menu_node is not None:
+            self.open_node_in_window(self._menu_node)
 
     def _menu_object_info(self, *_args) -> None:
         if self._menu_node is not None:
@@ -1670,6 +1721,22 @@ class Sidebar(Gtk.ScrolledWindow):
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
             row.set_expanded(not row.get_expanded())
 
+    def _row_pressed(
+        self, _gesture, n_press: int, _x, _y, list_item: Gtk.ListItem
+    ) -> None:
+        """A single left click on a row: select it (the ListView's own
+        job, so the press is never claimed) and toggle its expansion
+        (CORE-52). A leaf row only selects. The second press of a
+        double click is left alone — that one is row activation, which
+        opens the object."""
+        if n_press != 1:
+            return
+        row = list_item.get_item()
+        if row is None:
+            return
+        if row.get_item().kind in _EXPANDABLE:
+            row.set_expanded(not row.get_expanded())
+
     def _on_activate(self, _view, position: int) -> None:
         """Double-click or Enter on a row. Every kind opens something:
         a table or view opens its data, a function opens its editable
@@ -1684,23 +1751,47 @@ class Sidebar(Gtk.ScrolledWindow):
             "connection", "database", "schema", "category"
         ) and not row.get_expanded():
             row.set_expanded(True)
-        if node.kind == "note":  # "Loading…", "(none)": not an object
-            return
-        if node.kind == "section" and node.profile is not None:
+        if node.kind == "section" and node.category in _SECTION_CHILD_KINDS:
             # A section row is the table's Properties view, opened on
             # that section (CORE-05) — and it still expands, so the
             # objects inside it stay one click away in the tree.
-            if node.category in _SECTION_CHILD_KINDS and (
-                not row.get_expanded()
-            ):
+            if not row.get_expanded():
                 row.set_expanded(True)
+        self.open_node(node)
+
+    def is_openable(self, node: Node) -> bool:
+        """Does this row open anything? "Loading…" and "(none)" rows
+        are placeholders, and a row with no profile behind it has
+        nothing to open — the menu leaves Open off those (CORE-52)."""
+        return node.kind != "note" and node.profile is not None
+
+    def open_node(self, node: Node) -> None:
+        """Open one row's object — the Open action, and what a double
+        click or Enter does. Opening something that is already open
+        focuses its tab rather than stacking a second copy (CORE-01),
+        which the window handles for every kind here."""
+        if not self.is_openable(node):
+            return
+        if node.kind == "section":
             self._on_open_section(node.profile, node.table, node.category)
         elif node.kind in ("table", "view"):
             self._on_open_table(node.profile, node.label)
-        elif node.kind == "function" and node.profile is not None:
+        elif node.kind == "function":
             self._on_open_function(node.profile, node.label)
         else:
             self.open_object_info(node)
+
+    def open_node_in_window(self, node: Node) -> None:
+        """Open one row's object in a window of its own — the same
+        tear-out path a dragged tab and a Shift-click take, so there is
+        one way a tab ends up popped out (CORE-52). Without a window to
+        ask (a harness that only walks the tree), it opens as a tab."""
+        if not self.is_openable(node):
+            return
+        if self._on_open_window is None:
+            self.open_node(node)
+            return
+        self._on_open_window(lambda: self.open_node(node))
 
     def open_object_info(self, node: Node) -> None:
         """The info view for one tree row, with the path it sits at."""

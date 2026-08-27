@@ -29,6 +29,17 @@
 | CORE-11 | Grantees section on object properties | CORE-04, CORE-10 |
 | CORE-12 | Users/roles list overview | CORE-02 |
 
+### Query builder (from RS-01)
+
+| ID | Title | Depends on |
+|---|---|---|
+| CORE-17 | Query model and SQL renderer in the backend | — |
+| CORE-18 | Builder reads the MetadataProvider (schemas, views, capabilities) | CORE-02, CORE-17 |
+| CORE-19 | Persist the builder's query model in the workspace | CORE-17 |
+| CORE-20 | Joins: aliases, self-joins, multi-condition ON, all join kinds | CORE-17, CORE-18 |
+| CORE-21 | Aggregates: GROUP BY, HAVING, computed and aliased columns | CORE-17 |
+| CORE-22 | Builder layout: grouped filters, column search, room to grow | CORE-17 |
+
 ### Monitoring
 
 | ID | Title | Depends on |
@@ -63,7 +74,7 @@
 
 | ID | Title |
 |---|---|
-| RS-01 | Improve the Query Builder |
+| RS-01 | Improve the Query Builder (done — see `docs/query-builder-research.md`, filed CORE-17…CORE-22) |
 | RS-02 | Improve the Table Creator |
 | RS-03 | BI / charting support |
 | RS-04 | DBeaver Comparission |

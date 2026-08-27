@@ -1,6 +1,6 @@
 ## CORE-39 — Grid edits saved as one transaction
 
-- **Status:** todo
+- **Status:** done
 - **From:** RS-04 (see `docs/dbeaver-comparison.md`)
 
 ### Problem
@@ -45,15 +45,15 @@ was before.
 
 ### Acceptance criteria
 
-- [ ] A batch where operation N fails leaves the table byte-identical
+- [x] A batch where operation N fails leaves the table byte-identical
       to its pre-save state, verified against SQLite and PostgreSQL.
-- [ ] The error names which row/column failed, not just the driver
+- [x] The error names which row/column failed, not just the driver
       message.
-- [ ] Saving into an already-open user transaction neither commits nor
+- [x] Saving into an already-open user transaction neither commits nor
       nests, and the transaction banner stays up.
-- [ ] Column validation happens once per batch, not once per
+- [x] Column validation happens once per batch, not once per
       operation.
-- [ ] The `_execute_updates` per-cell loop is gone; nothing in the
+- [x] The `_execute_updates` per-cell loop is gone; nothing in the
       frontend calls `update_cell` in a loop any more.
-- [ ] The preview dialog's caption states that the statements run as
+- [x] The preview dialog's caption states that the statements run as
       one transaction (or join the open one).

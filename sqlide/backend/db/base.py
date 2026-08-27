@@ -310,6 +310,41 @@ class ConnectorError(Exception):
     """Raised by adapters for any database failure, wrapping the driver error."""
 
 
+class BatchError(ConnectorError):
+    """A batch of row operations that failed, naming the one that did.
+
+    `index` is the position of the failing operation in the list handed
+    to apply_changes(), so the grid can point at the row the user has
+    to look at rather than only repeating the driver's message.
+    """
+
+    def __init__(self, message: str, index: int) -> None:
+        super().__init__(message)
+        self.index = index
+
+
+@dataclass(frozen=True)
+class RowOperation:
+    """One row change from the grid, as apply_changes() takes it.
+
+    Today the only kind is "update" — one cell of one row, addressed by
+    that row's primary key. Inserts and deletes (CORE-38) take the same
+    shape, which is why the kind is spelled out rather than implied.
+    """
+
+    pk_values: dict[str, Any]
+    column: str
+    value: Any
+    kind: str = "update"
+
+
+def describe_operation(op: RowOperation) -> str:
+    """The operation as a phrase for an error message: which row, which
+    column — not just the driver's complaint."""
+    where = ", ".join(f"{name}={value!r}" for name, value in op.pk_values.items())
+    return f"row ({where}) column {op.column}"
+
+
 def build_filter_clauses(
     filters: list[FilterCondition] | None,
     order_by: list[SortSpec] | None,
@@ -1065,6 +1100,125 @@ class Connector(ABC):
         value: Any,
     ) -> None:
         """UPDATE a single cell, addressing the row by its primary key."""
+
+    # The parameter marker this driver binds with. Only the batch
+    # helpers below build SQL from it; the hand-written statements in
+    # each adapter spell their own.
+    placeholder = "?"
+
+    def apply_changes(
+        self, table: str, operations: list[RowOperation]
+    ) -> None:
+        """Apply a Save's worth of row operations atomically.
+
+        Everything in `operations` lands or nothing does: the batch runs
+        inside one explicit transaction, and the first failure rolls the
+        whole thing back and raises BatchError naming the operation (and
+        carrying its index) that failed.
+
+        If the user already has a transaction open on this connection —
+        a BEGIN typed in the console — the batch joins it instead of
+        nesting: a SAVEPOINT bounds the batch so a failure undoes only
+        the batch, and nothing is committed here. Their Commit or
+        Rollback still decides.
+
+        Identifiers are validated against the catalog once for the whole
+        batch rather than once per operation.
+        """
+        if not operations:
+            return
+        self._assert_batch_columns(table, operations)
+        joined = self.in_transaction()
+        savepoint = "sqlide_apply"
+        self._run_statement(
+            f"SAVEPOINT {savepoint}" if joined else "BEGIN"
+        )
+        try:
+            for index, op in enumerate(operations):
+                self._apply_operation(table, op, index)
+        except Exception:
+            try:
+                self._run_statement(
+                    f"ROLLBACK TO SAVEPOINT {savepoint}"
+                    if joined
+                    else "ROLLBACK"
+                )
+            except ConnectorError:
+                # The driver may have unwound the transaction itself;
+                # the batch's own failure is the one worth reporting.
+                pass
+            raise
+        self._run_statement(
+            f"RELEASE SAVEPOINT {savepoint}" if joined else "COMMIT"
+        )
+
+    def _assert_batch_columns(
+        self, table: str, operations: list[RowOperation]
+    ) -> None:
+        """One catalog lookup for the batch: every column named by any
+        operation has to be one the table actually has."""
+        known = {c.name for c in self.list_columns(table)}
+        if not known:
+            raise ConnectorError(f"No such table: {table}")
+        used: set[str] = set()
+        for op in operations:
+            used |= set(op.pk_values)
+            if op.column:
+                used.add(op.column)
+        unknown = used - known
+        if unknown:
+            raise ConnectorError(
+                f"Unknown column(s) for {table}: {', '.join(sorted(unknown))}"
+            )
+
+    def _apply_operation(
+        self, table: str, op: RowOperation, index: int
+    ) -> None:
+        if op.kind != "update":
+            raise BatchError(f"Unsupported operation: {op.kind}", index)
+        if not op.pk_values:
+            raise BatchError(
+                "Refusing to update without a primary-key filter", index
+            )
+        marker = self.placeholder
+        where = " AND ".join(
+            f"{self.quote_ident(name)} = {marker}" for name in op.pk_values
+        )
+        sql = (
+            f"UPDATE {self.quote_ident(table)} "
+            f"SET {self.quote_ident(op.column)} = {marker} WHERE {where}"
+        )
+        try:
+            rowcount = self._run_operation(
+                sql, (op.value, *op.pk_values.values())
+            )
+        except ConnectorError as exc:
+            raise BatchError(
+                f"{describe_operation(op)}: {exc}", index
+            ) from exc
+        if rowcount != 1:
+            raise BatchError(
+                f"{describe_operation(op)}: expected to modify 1 row, "
+                f"matched {rowcount}",
+                index,
+            )
+
+    def _run_operation(self, sql: str, params: tuple) -> int:
+        """Run one statement of a batch and report its rowcount.
+
+        The rowcount is checked by the caller, inside the batch's
+        transaction — deliberately not through the adapters' own
+        expect_rowcount, which rolls back on its own and would take the
+        user's transaction with it.
+        """
+        run = getattr(self, "_run", None)
+        if run is None:
+            raise ConnectorError("This connection cannot apply batched edits")
+        return run(sql, params)[2]
+
+    def _run_statement(self, sql: str) -> None:
+        """A transaction-control statement (BEGIN, COMMIT, SAVEPOINT …)."""
+        self.execute(sql)
 
     @abstractmethod
     def quote_ident(self, name: str) -> str: ...

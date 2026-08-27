@@ -14,7 +14,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: sqlide 0.1.0\n"
 "Report-Msgid-Bugs-To: https://github.com/jihedmastouri/sqlide/issues\n"
-"POT-Creation-Date: 2026-08-27 23:23+0100\n"
+"POT-Creation-Date: 2026-08-27 23:31+0100\n"
 "PO-Revision-Date: 2026-08-27 23:21+0100\n"
 "Last-Translator: sqlide contributors\n"
 "Language-Team: French\n"
@@ -58,7 +58,7 @@ msgstr ""
 #: sqlide/frontend/backup_destinations.py:124
 #: sqlide/frontend/backup_restore.py:252 sqlide/frontend/backups_tab.py:612
 #: sqlide/frontend/confirm.py:116 sqlide/frontend/connection_dialog.py:612
-#: sqlide/frontend/data_grid.py:1581 sqlide/frontend/launcher.py:141
+#: sqlide/frontend/data_grid.py:1584 sqlide/frontend/launcher.py:141
 #: sqlide/frontend/launcher.py:172 sqlide/frontend/notes_panel.py:170
 #: sqlide/frontend/notes_panel.py:388 sqlide/frontend/permission_editor.py:530
 #: sqlide/frontend/query_console.py:179 sqlide/frontend/query_console.py:1322
@@ -578,98 +578,116 @@ msgstr ""
 msgid "New Connection"
 msgstr ""
 
-#: sqlide/frontend/data_grid.py:1386
+#: sqlide/frontend/data_grid.py:1389
 msgid "Remove condition"
 msgstr "Retirer la condition"
 
-#: sqlide/frontend/data_grid.py:1390
+#: sqlide/frontend/data_grid.py:1393
 msgid "Close filters"
 msgstr ""
 
-#: sqlide/frontend/data_grid.py:1485
+#: sqlide/frontend/data_grid.py:1488
 msgid "Sort by this column earlier"
 msgstr ""
 
-#: sqlide/frontend/data_grid.py:1489
+#: sqlide/frontend/data_grid.py:1492
 msgid "Sort by this column later"
 msgstr ""
 
-#: sqlide/frontend/data_grid.py:1493
+#: sqlide/frontend/data_grid.py:1496
 msgid "Remove sort column"
 msgstr "Retirer la colonne de tri"
 
-#: sqlide/frontend/data_grid.py:1497
+#: sqlide/frontend/data_grid.py:1500
 msgid "Close sort"
 msgstr ""
 
-#: sqlide/frontend/data_grid.py:1583
+#: sqlide/frontend/data_grid.py:1586
 msgid "Execute"
 msgstr "Exécuter"
 
-#: sqlide/frontend/data_grid.py:1731
+#: sqlide/frontend/data_grid.py:1734
 msgid "Previous page"
 msgstr "Page précédente"
 
-#: sqlide/frontend/data_grid.py:1734
+#: sqlide/frontend/data_grid.py:1737
 msgid "Next page"
 msgstr "Page suivante"
 
-#: sqlide/frontend/data_grid.py:1742
+#: sqlide/frontend/data_grid.py:1745
 msgid "Refresh (discards unsaved edits)"
 msgstr ""
 
-#: sqlide/frontend/data_grid.py:1745
+#: sqlide/frontend/data_grid.py:1748
 msgid "Filter rows"
 msgstr "Filtrer les lignes"
 
-#: sqlide/frontend/data_grid.py:1750
+#: sqlide/frontend/data_grid.py:1753
 msgid "Sort rows"
 msgstr "Trier les lignes"
 
-#: sqlide/frontend/data_grid.py:1753
+#: sqlide/frontend/data_grid.py:1756
 msgid "Unlock editing"
 msgstr "Déverrouiller l’édition"
 
-#: sqlide/frontend/data_grid.py:1797
+#: sqlide/frontend/data_grid.py:1800
 msgid "Data"
 msgstr "Données"
 
-#: sqlide/frontend/data_grid.py:1798
+#: sqlide/frontend/data_grid.py:1801
 msgid "The table's rows"
 msgstr "Les lignes de la table"
 
-#: sqlide/frontend/data_grid.py:1799 sqlide/frontend/preferences.py:280
+#: sqlide/frontend/data_grid.py:1802 sqlide/frontend/preferences.py:280
 msgid "Map"
 msgstr "Carte"
 
-#: sqlide/frontend/data_grid.py:1802
+#: sqlide/frontend/data_grid.py:1805
 msgid "The rows' geometries drawn on a map"
 msgstr ""
 
-#: sqlide/frontend/data_grid.py:2108 sqlide/frontend/query_builder.py:249
+#: sqlide/frontend/data_grid.py:2110 sqlide/frontend/query_builder.py:249
 msgid "Add condition"
 msgstr "Ajouter une condition"
 
-#: sqlide/frontend/data_grid.py:2113 sqlide/frontend/data_grid.py:2149
+#: sqlide/frontend/data_grid.py:2115 sqlide/frontend/data_grid.py:2151
 msgid "Clear"
 msgstr "Effacer"
 
-#: sqlide/frontend/data_grid.py:2116 sqlide/frontend/data_grid.py:2152
+#: sqlide/frontend/data_grid.py:2118 sqlide/frontend/data_grid.py:2154
 msgid "Apply"
 msgstr "Appliquer"
 
-#: sqlide/frontend/data_grid.py:2145 sqlide/frontend/query_builder.py:260
+#: sqlide/frontend/data_grid.py:2147 sqlide/frontend/query_builder.py:260
 msgid "Add sort column"
 msgstr "Ajouter une colonne de tri"
 
-#: sqlide/frontend/data_grid.py:2394
+#: sqlide/frontend/data_grid.py:2396
 #, python-format
 msgid "Edit “%s” on production?"
 msgstr ""
 
-#: sqlide/frontend/data_grid.py:2396
+#: sqlide/frontend/data_grid.py:2398
 #, python-format
 msgid "Cells you change here are written to %s when you save."
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:2468
+#, python-format
+msgid ""
+"They join the transaction you already have open on %s: nothing is committed "
+"until you commit it."
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:2473
+#, python-format
+msgid ""
+"They run as one transaction against %s: either all of them are applied or "
+"none of them are."
+msgstr ""
+
+#: sqlide/frontend/data_grid.py:2479
+msgid "Values are bound as parameters when executed. "
 msgstr ""
 
 #: sqlide/frontend/definition_tab.py:111
@@ -1248,7 +1266,9 @@ msgstr "Langue de l’interface"
 msgid ""
 "Follow the system, or pick one of the shipped translations. Takes effect at "
 "the next start."
-msgstr "Suivre le système, ou choisir une des traductions livrées. Prend effet au prochain démarrage."
+msgstr ""
+"Suivre le système, ou choisir une des traductions livrées. Prend effet au "
+"prochain démarrage."
 
 #: sqlide/frontend/preferences.py:102
 msgid "System"
@@ -1904,8 +1924,12 @@ msgid ""
 msgid_plural ""
 "%d queries are still running on this connection. Disconnecting cancels the "
 "runs and closes the session."
-msgstr[0] "%d requête est encore en cours sur cette connexion. La déconnexion annule l’exécution et ferme la session."
-msgstr[1] "%d requêtes sont encore en cours sur cette connexion. La déconnexion annule les exécutions et ferme la session."
+msgstr[0] ""
+"%d requête est encore en cours sur cette connexion. La déconnexion annule "
+"l’exécution et ferme la session."
+msgstr[1] ""
+"%d requêtes sont encore en cours sur cette connexion. La déconnexion annule "
+"les exécutions et ferme la session."
 
 #: sqlide/frontend/window.py:2174
 msgid "Keep Connected"

@@ -117,6 +117,9 @@ class MysqlConnector(Connector):
     # declares the indexes and must not also replay them.
     ddl_declares_indexes = True
 
+    # pymysql binds with %s.
+    placeholder = "%s"
+
     def __init__(
         self,
         host: str,

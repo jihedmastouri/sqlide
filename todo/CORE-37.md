@@ -1,6 +1,6 @@
 ## CORE-37 — Import a CSV file into a table
 
-- **Status:** todo
+- **Status:** Done
 - **From:** RS-04 (see `docs/dbeaver-comparison.md`)
 - **Depends on:** CORE-36
 
@@ -42,16 +42,16 @@ transaction, with a readable report of what failed.
 
 ### Acceptance criteria
 
-- [ ] Sniffing, mapping and coercion are pure and covered in
+- [x] Sniffing, mapping and coercion are pure and covered in
       `tests/test_import.py` with no database server.
-- [ ] Files with a BOM, CRLF line endings, quoted embedded newlines,
+- [x] Files with a BOM, CRLF line endings, quoted embedded newlines,
       non-ASCII text and a missing trailing column are each handled or
       rejected with a named reason.
-- [ ] Import runs in one transaction: a failure at row N leaves the
+- [x] Import runs in one transaction: a failure at row N leaves the
       table exactly as it was, verified against SQLite in the suite.
-- [ ] Every value reaches the server as a bound parameter; no row
+- [x] Every value reaches the server as a bound parameter; no row
       content is ever interpolated into SQL text.
-- [ ] Truncate-then-append goes through `backend/sql_risk.py`'s
+- [x] Truncate-then-append goes through `backend/sql_risk.py`'s
       confirmation ladder and respects the connection's environment.
-- [ ] The dialog reports rows inserted, rows skipped and the first
+- [x] The dialog reports rows inserted, rows skipped and the first
       error with its row number.

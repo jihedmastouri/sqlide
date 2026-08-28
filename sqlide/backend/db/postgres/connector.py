@@ -369,6 +369,22 @@ class PostgresConnector(Connector):
         except psycopg.Error as exc:
             raise ConnectorError(_message(exc)) from exc
 
+    def _run_many(self, sql: str, rows: list) -> int:
+        """One statement over many rows in a single executemany — what
+        a CSV import (CORE-37) sends per batch. It runs no transaction
+        control of its own: the caller opened one around the whole
+        load, so a failure here unwinds every batch, not just this one.
+        """
+        if self._conn is None:
+            raise ConnectorError("Not connected")
+        try:
+            with self._lock:
+                with self._conn.cursor() as cur:
+                    cur.executemany(sql, [tuple(r) for r in rows])
+                    return cur.rowcount
+        except psycopg.Error as exc:
+            raise ConnectorError(_message(exc)) from exc
+
     def _in_tx(self) -> bool:
         # INTRANS: an explicit BEGIN block is open. INERROR: a block is
         # open but a statement in it failed (still needs ROLLBACK).

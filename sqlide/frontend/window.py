@@ -465,6 +465,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_pragmas=self.open_pragmas,
             on_query_builder=self.open_query_builder,
             on_drop_object=self._drop_object,
+            on_import_data=self._import_data,
             on_extension_action=self._extension_action,
             on_new_object=self._new_object,
             on_mcp_server=self.open_mcp_server,
@@ -2722,6 +2723,30 @@ class MainWindow(Adw.ApplicationWindow):
             self, profile, kind, name, table,
             self.ensure_connector, self.show_error, executed,
         )
+
+    def _import_data(self, profile: ConnectionProfile, table: str) -> None:
+        """Import Data… from a table's context menu (CORE-37). Any tab
+        already showing the table reloads when the file lands, so the
+        window never shows a table it knows has more rows."""
+        from sqlide.frontend.import_dialog import present_import_dialog
+
+        present_import_dialog(
+            self,
+            profile,
+            table,
+            lambda: self.ensure_connector(profile),
+            lambda: self._reload_table_tabs(profile.name, table),
+        )
+
+    def _reload_table_tabs(self, connection: str, table: str) -> None:
+        for _pane, page in self._connection_pages(connection):
+            child = page.get_child()
+            state = getattr(child, "tab_state", None)
+            if state is None or not hasattr(child, "reload"):
+                continue
+            current = state()
+            if current.kind == "table" and current.table == table:
+                child.reload()
 
     def _extension_action(
         self, profile: ConnectionProfile, action: str, name: str

@@ -1897,6 +1897,9 @@ class TableTab(Gtk.Box):
         exporter = Gtk.Button(icon_name="document-save-symbolic")
         describe(exporter, _("Export rows to a file"))
         exporter.connect("clicked", lambda *_: self.open_export())
+        importer_button = Gtk.Button(icon_name="document-open-symbolic")
+        describe(importer_button, _("Import a CSV file into this table"))
+        importer_button.connect("clicked", lambda *_: self.open_import())
 
         refresh = Gtk.Button(icon_name="view-refresh-symbolic")
         describe(refresh, _("Refresh (discards unsaved edits)"))
@@ -1924,6 +1927,7 @@ class TableTab(Gtk.Box):
         self._save.set_visible(False)
         self._save.connect("clicked", self._on_save_clicked)
         bar.pack_end(exporter)
+        bar.pack_end(importer_button)
         bar.pack_end(refresh)
         bar.pack_end(self._filter_toggle)
         bar.pack_end(self._sort_toggle)
@@ -1971,6 +1975,20 @@ class TableTab(Gtk.Box):
             ),
         )
         ExportDialog.for_grid(self._grid, whole).present(self)
+
+    def open_import(self) -> None:
+        """Import… — a CSV file into the table this tab is showing
+        (CORE-37). The tab reloads when it lands, so the rows that were
+        just inserted are on screen rather than one refresh away."""
+        from sqlide.frontend.import_dialog import present_import_dialog
+
+        present_import_dialog(
+            self,
+            self.profile,
+            self.table,
+            lambda: self._ensure(self.profile),
+            self.reload,
+        )
 
     def tab_state(self) -> TabState:
         return TabState(

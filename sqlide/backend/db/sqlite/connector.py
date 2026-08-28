@@ -261,6 +261,26 @@ class SqliteConnector(Connector):
         except sqlite3.Error as exc:
             raise ConnectorError(str(exc)) from exc
 
+    def _run_many(self, sql: str, rows: list) -> int:
+        """One statement over many rows in a single executemany —
+        what a CSV import (CORE-37) sends per batch. No transaction
+        control of its own: the caller opened one around the whole
+        load, so a failure here unwinds every batch, not just this one.
+        """
+        if self._conn is None:
+            raise ConnectorError("Not connected")
+        try:
+            with self._lock:
+                cur = self._conn.executemany(sql, [tuple(r) for r in rows])
+                return cur.rowcount
+        except sqlite3.Error as exc:
+            raise ConnectorError(str(exc)) from exc
+
+    def truncate_sql(self, table: str) -> str:
+        # SQLite has no TRUNCATE; an unqualified DELETE is what empties
+        # a table (and what its own optimiser turns into one).
+        return f"DELETE FROM {self.quote_ident(table)}"
+
     def list_tables(self) -> list[TableInfo]:
         # SQLite's own tables — sqlite_sequence, sqlite_stat1, the
         # autoindex bookkeeping — live in the one namespace there is,

@@ -61,6 +61,7 @@ from typing import Any, Callable
 import csv
 import io
 import json
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
@@ -149,6 +150,11 @@ class ResultGrid(Gtk.ScrolledWindow):
         # on_row_selected(row index or None) — the map's half of the
         # two-way selection.
         self.on_row_selected: Callable[[int | None], None] | None = None
+        # Row insert/delete (CORE-38). Set by an owner that can write
+        # them — a table tab with a primary key; left None everywhere
+        # else, and the row menu then offers neither.
+        self.on_insert_row: Callable[[], None] | None = None
+        self.on_delete_row: Callable[[RowItem], None] | None = None
         self._geo_columns: set[int] = set()
         self._sort_order: list[tuple[str, bool]] = []
         # Used by "Copy As > INSERT Statement"; falls back to a placeholder.
@@ -183,6 +189,15 @@ class ResultGrid(Gtk.ScrolledWindow):
         self._editable_grid = False  # cells are EditableLabels
         self._unlocked = False  # edits allowed right now
         self._modified: set[tuple[int, int]] = set()  # (row, data col)
+        # Rows marked for deletion, and rows added locally, both
+        # pending until Save. Positions in the store, kept in step with
+        # it by the two methods that change it.
+        self._deleted_rows: set[int] = set()
+        self._inserted_rows: set[int] = set()
+        # Data columns the table refuses a NULL in. Only used to mark
+        # the still-empty cells of a row being added, where a missing
+        # value is a failure waiting for Save.
+        self._required_cols: set[int] = set()
         self._anchor: tuple[int, int] | None = None
         # Currently bound cell widgets, for restyling on selection change.
         self._bound_cells: dict[Gtk.Widget, tuple[Gtk.ListItem, int]] = {}
@@ -209,6 +224,8 @@ class ResultGrid(Gtk.ScrolledWindow):
             ("move-right", lambda *_: self._move_menu_column(1)),
             ("set-null", self._on_set_null),
             ("show-map", self._on_show_map),
+            ("insert-row", self._on_insert_row_action),
+            ("delete-row", self._on_delete_row_action),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", callback)
@@ -219,6 +236,11 @@ class ResultGrid(Gtk.ScrolledWindow):
             if name == "show-map":
                 action.set_enabled(False)  # only on a geometry cell
                 self._show_map_action = action
+            if name in ("insert-row", "delete-row"):
+                # Only while editing is unlocked, and only where the
+                # owner can actually write rows (see set_unlocked).
+                action.set_enabled(False)
+                setattr(self, f"_{name.replace('-', '_')}_action", action)
         copy_as = Gio.SimpleAction.new("copy-as", GLib.VariantType.new("s"))
         copy_as.connect(
             "activate", lambda _a, param: self.copy_selection(param.get_string())
@@ -256,6 +278,18 @@ class ResultGrid(Gtk.ScrolledWindow):
         self._popover = Gtk.PopoverMenu.new_from_model(menu)
         self._popover.set_parent(self._view)
         self._popover.set_has_arrow(False)
+
+        # Popped up by the secondary button on a row number: adding and
+        # removing whole rows, which is a row question and so does not
+        # belong in the cell menu.
+        row_menu = Gio.Menu()
+        row_menu.append("Insert Row", "grid.insert-row")
+        row_menu.append("Delete Row", "grid.delete-row")
+        self._row_popover = Gtk.PopoverMenu.new_from_model(row_menu)
+        self._row_popover.set_parent(self._view)
+        self._row_popover.set_has_arrow(False)
+        # The row the menu was opened on.
+        self._menu_row: RowItem | None = None
 
         # Popped up by either button on a column header; the model is
         # rebuilt per column (see _column_menu).
@@ -409,6 +443,8 @@ class ResultGrid(Gtk.ScrolledWindow):
         self._sel_kind = None
         self._anchor = None
         self._modified = set()
+        self._deleted_rows = set()
+        self._inserted_rows = set()
         self._sort_order = []
 
         editable = editable and self._on_edit is not None
@@ -574,6 +610,10 @@ class ResultGrid(Gtk.ScrolledWindow):
         click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         click.connect("pressed", self._on_rownum_pressed)
         label.add_controller(click)
+        menu = Gtk.GestureClick(button=Gdk.BUTTON_SECONDARY)
+        menu.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        menu.connect("pressed", self._on_rownum_secondary)
+        label.add_controller(menu)
         list_item.set_child(label)
 
     def _bind_rownum(self, factory, list_item) -> None:
@@ -683,6 +723,11 @@ class ResultGrid(Gtk.ScrolledWindow):
                 widget.set_editable(unlocked)
         if self._set_null_action is not None:
             self._set_null_action.set_enabled(unlocked)
+        enabled = self.can_edit_rows()
+        self._insert_row_action.set_enabled(enabled)
+        self._delete_row_action.set_enabled(
+            enabled and self.on_delete_row is not None
+        )
 
     def mark_modified(self, row: RowItem, col: int) -> None:
         """Highlight a cell as locally edited but not yet saved."""
@@ -690,6 +735,101 @@ class ResultGrid(Gtk.ScrolledWindow):
         if found:
             self._modified.add((position, col))
             self._restyle_cells()
+
+    def can_edit_rows(self) -> bool:
+        """Whether adding and removing whole rows is on the table right
+        now: an editable grid, unlocked, whose owner takes the calls."""
+        return (
+            self._editable_grid
+            and self._unlocked
+            and self.on_insert_row is not None
+        )
+
+    def append_blank_row(self) -> RowItem:
+        """Add an empty row at the bottom and show it as pending until
+        Save writes it. Its cells start NULL, so a column with a
+        database default gets that default by being left alone."""
+        row = RowItem(tuple([None] * len(self._column_names)))
+        self._store.append(row)
+        self._inserted_rows.add(self._store.get_n_items() - 1)
+        # The empty-state page replaces the view entirely, so a first
+        # row added to an empty result has to bring the view back.
+        if self.get_child() is not self._view:
+            self.set_child(self._view)
+        self._restyle_cells()
+        return row
+
+    def mark_deleted(self, row: RowItem, deleted: bool = True) -> None:
+        """Strike a row through (or stop): it is going away on Save."""
+        found, position = self._store.find(row)
+        if not found:
+            return
+        if deleted:
+            self._deleted_rows.add(position)
+        else:
+            self._deleted_rows.discard(position)
+        self._restyle_cells()
+
+    def set_required_columns(self, names: list[str]) -> None:
+        """Which columns cannot hold NULL, by name; unknown names are
+        ignored so a result whose columns are not the table's is safe."""
+        self._required_cols = {
+            index
+            for index, name in enumerate(self._column_names)
+            if name in set(names)
+        }
+
+    def _value_at(self, position: int, col: int) -> Any:
+        item = self.row_at(position)
+        return None if item is None else item.values[col]
+
+    def row_at(self, position: int) -> RowItem | None:
+        """The row item at a store position, or None past the end."""
+        if 0 <= position < self._store.get_n_items():
+            return self._store.get_item(position)
+        return None
+
+    def _on_rownum_secondary(self, gesture, _n_press, x, y) -> None:
+        """Secondary button on a row number: select the row and open
+        the row menu on it."""
+        widget = gesture.get_widget()
+        list_item = self._rownum_cells.get(widget)
+        if list_item is None:
+            return
+        position = list_item.get_position()
+        if position == Gtk.INVALID_LIST_POSITION:
+            return
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        self._menu_row = list_item.get_item()
+        order = self._display_order()
+        self._anchor = (position, order[0]) if order else None
+        self._drag_anchor = None
+        self._select({position}, set(range(len(self._column_names))), "row")
+        enabled = self.can_edit_rows()
+        self._insert_row_action.set_enabled(enabled)
+        self._delete_row_action.set_enabled(
+            enabled and self.on_delete_row is not None
+        )
+        # Where the row number sits inside the view, so the menu opens
+        # on the row rather than in the grid's corner.
+        rect = Gdk.Rectangle()
+        rect.x = rect.y = 8
+        bounds = widget.compute_bounds(self._view)
+        if bounds and bounds[0]:
+            rect.x = int(bounds[1].origin.x + x)
+            rect.y = int(bounds[1].origin.y + y)
+        rect.width = rect.height = 1
+        self._row_popover.set_pointing_to(rect)
+        self._row_popover.popup()
+
+    def _on_insert_row_action(self, *_args) -> None:
+        if self.on_insert_row is not None and self.can_edit_rows():
+            self.on_insert_row()
+
+    def _on_delete_row_action(self, *_args) -> None:
+        row = self._menu_row
+        if row is not None and self.on_delete_row is not None and self.can_edit_rows():
+            self.on_delete_row(row)
 
     def _on_editing_changed(self, widget, _pspec, list_item, index) -> None:
         if widget.get_property("editing"):
@@ -759,6 +899,25 @@ class ResultGrid(Gtk.ScrolledWindow):
             widget.add_css_class("cell-modified")
         else:
             widget.remove_css_class("cell-modified")
+        # A row on its way out is struck through rather than removed:
+        # nothing has been written yet, and Save is still one dialog
+        # away from being cancelled.
+        # A NOT NULL column left empty on an added row: marked while
+        # it is still fixable, rather than as a driver error on Save.
+        missing = (
+            row in self._inserted_rows
+            and col in self._required_cols
+            and self._value_at(row, col) is None
+        )
+        for name, on in (
+            ("cell-deleted", row in self._deleted_rows),
+            ("cell-inserted", row in self._inserted_rows),
+            ("cell-required", missing),
+        ):
+            if on:
+                widget.add_css_class(name)
+            else:
+                widget.remove_css_class(name)
 
     def _restyle_cells(self) -> None:
         order = self._display_order()
@@ -1626,6 +1785,29 @@ class UpdatePreviewDialog(Adw.Dialog):
         self._on_execute()
 
 
+@dataclass
+class _PendingRow:
+    """One row's unsaved change, whatever kind it is.
+
+    Three kinds share the shape so a Save keeps the order the user
+    worked in: "update" carries the edited cells in `changes` and the
+    key snapshotted at the first edit, "delete" carries only the key,
+    and "insert" carries the new row's cells in `changes` and no key at
+    all — an added row is written as one INSERT no matter how many of
+    its cells were then filled in.
+    """
+
+    kind: str  # "update" | "insert" | "delete"
+    pk_values: dict[str, Any] = field(default_factory=dict)
+    changes: dict[str, str | None] = field(default_factory=dict)
+
+    @property
+    def statements(self) -> int:
+        """How many statements this row will run — what the Save button
+        counts."""
+        return len(self.changes) if self.kind == "update" else 1
+
+
 class TableTab(Gtk.Box):
     """Content of one open table: its data.
 
@@ -1673,12 +1855,10 @@ class TableTab(Gtk.Box):
         self._order_by: list[SortSpec] = []
         self._filter_rows: list[_FilterRow] = []
         self._sort_rows: list[_SortRow] = []
-        # Pending (unsaved) edits per row: pk values snapshotted at the
-        # first edit of the row, then {column name: new text or None
-        # for NULL}.
-        self._pending: dict[
-            RowItem, tuple[dict[str, Any], dict[str, str | None]]
-        ] = {}
+        # Pending (unsaved) row changes, keyed by the grid row they
+        # belong to and kept in the order they were made — an inserted
+        # row that is then edited stays one INSERT (CORE-38).
+        self._pending: dict[RowItem, _PendingRow] = {}
         # Guards the re-entrant unlock on production connections: the
         # confirmation flips the toggle back on itself.
         self._unlock_confirmed = False
@@ -1766,6 +1946,12 @@ class TableTab(Gtk.Box):
         describe(self._edit_toggle, _("Unlock editing"))
         self._edit_toggle.set_sensitive(False)
         self._edit_toggle.connect("toggled", self._on_edit_toggled)
+        # Shown only while editing is unlocked on a writable relation:
+        # a view, or a table with no primary key, never grows one.
+        self._add_row = Gtk.Button(icon_name="list-add-symbolic")
+        describe(self._add_row, _("Add a row (written when you save)"))
+        self._add_row.set_visible(False)
+        self._add_row.connect("clicked", lambda *_: self._on_insert_row())
         self._save = Gtk.Button()
         self._save.add_css_class("suggested-action")
         self._save.set_visible(False)
@@ -1774,11 +1960,14 @@ class TableTab(Gtk.Box):
         bar.pack_end(self._filter_toggle)
         bar.pack_end(self._sort_toggle)
         bar.pack_end(self._edit_toggle)
+        bar.pack_end(self._add_row)
         bar.pack_end(self._save)
         data.append(bar)
 
         self._grid.on_show_map = self._on_show_map_requested
         self._grid.on_row_selected = self._on_grid_row_selected
+        self._grid.on_insert_row = self._on_insert_row
+        self._grid.on_delete_row = self._on_delete_row
         # The map is built the first time a result turns out to hold
         # geometries, so a table tab on a server without PostGIS never
         # pays for one (PG-04).
@@ -1927,7 +2116,7 @@ class TableTab(Gtk.Box):
         """The edits sitting in this grid that were never written, as a
         phrase for the confirmation that lists them — "" when there are
         none."""
-        pending = sum(len(changes) for _pk, changes in self._pending.values())
+        pending = self._pending_count()
         if not pending:
             return ""
         return f"{pending} unsaved edit(s)"
@@ -1960,7 +2149,7 @@ class TableTab(Gtk.Box):
                 "sorted by "
                 + ", ".join(spec.column for spec in self._order_by)
             )
-        pending = sum(len(changes) for _pk, changes in self._pending.values())
+        pending = self._pending_count()
         if pending:
             parts.append(f"{pending} unsaved edit(s)")
         return " · ".join(parts)
@@ -2074,12 +2263,19 @@ class TableTab(Gtk.Box):
             self._grid.set_sort_state(
                 [(s.column, s.descending) for s in order_by]
             )
+            # NOT NULL columns are marked on rows being added, so a
+            # missing value shows before Save rather than after.
+            self._grid.set_required_columns(
+                [c.name for c in self._columns if not c.nullable and not c.is_pk]
+            )
             self._edit_toggle.set_sensitive(editable)
             if self.profile.environment == "production":
                 # Production re-arms the lock on every load, so editing
                 # is never left open behind the user's back.
                 self._edit_toggle.set_active(False)
-            self._grid.set_unlocked(editable and self._edit_toggle.get_active())
+            unlocked = editable and self._edit_toggle.get_active()
+            self._grid.set_unlocked(unlocked)
+            self._add_row.set_visible(unlocked)
             count = len(result)
             self._loaded_rows = count
             self._cursor = result.cursor
@@ -2442,6 +2638,7 @@ class TableTab(Gtk.Box):
             )
             return
         self._grid.set_unlocked(toggle.get_active())
+        self._add_row.set_visible(toggle.get_active() and not self.read_only)
 
     def _unlock_after_confirm(self) -> None:
         self._unlock_confirmed = True
@@ -2453,6 +2650,8 @@ class TableTab(Gtk.Box):
     ) -> None:
         column_name = self._result_names[index]
         pending = self._pending.get(row)
+        if pending is not None and pending.kind == "delete":
+            return  # the row is on its way out; editing it means nothing
         if pending is None:
             # Snapshot the pk before applying the edit, so a row stays
             # addressable in the database even if its pk cell is edited.
@@ -2467,40 +2666,115 @@ class TableTab(Gtk.Box):
                     "Cannot edit: primary key column missing from result"
                 )
                 return
-            pending = self._pending[row] = (pk_values, {})
-        pending[1][column_name] = new_text
+            pending = self._pending[row] = _PendingRow("update", pk_values)
+        pending.changes[column_name] = new_text
         row.values[index] = new_text
         self._grid.mark_modified(row, index)
         self._update_save_button()
 
+    def _on_insert_row(self) -> None:
+        """The "+" (and the row menu's Insert Row): a blank row at the
+        bottom, pending until Save. Its cells are NULL to start with, so
+        a column left alone takes whatever default the table gives it."""
+        if self.read_only:
+            return
+        row = self._grid.append_blank_row()
+        self._pending[row] = _PendingRow("insert")
+        self._update_save_button()
+
+    def _on_delete_row(self, row: RowItem) -> None:
+        """The row menu's Delete Row: struck through here, DELETEd on
+        Save. A second call on an added row simply drops it from the
+        pending list — it was never written."""
+        pending = self._pending.get(row)
+        if pending is not None and pending.kind == "insert":
+            # Nothing to delete in the database; forget the insert and
+            # leave the blank row shown until the next reload.
+            del self._pending[row]
+            self._grid.mark_deleted(row)
+            self._update_save_button()
+            return
+        if pending is not None and pending.kind == "delete":
+            return
+        try:
+            pk_values = {
+                c.name: row.values[self._result_names.index(c.name)]
+                for c in self._columns
+                if c.is_pk
+            }
+        except ValueError:
+            self._show_error(
+                "Cannot delete: primary key column missing from result"
+            )
+            return
+        if not pk_values:
+            self._show_error("Cannot delete: this relation has no primary key")
+            return
+        # An edited-then-deleted row is one DELETE: the UPDATEs would
+        # be writes to a row that is about to go.
+        self._pending[row] = _PendingRow("delete", pk_values)
+        self._grid.mark_deleted(row)
+        self._update_save_button()
+
+    def _pending_count(self) -> int:
+        return sum(p.statements for p in self._pending.values())
+
     def _update_save_button(self) -> None:
-        count = sum(len(changes) for _pk, changes in self._pending.values())
+        count = self._pending_count()
         self._save.set_visible(count > 0)
         self._save.set_label(f"Save ({count})")
 
     def _pending_updates(self) -> list[RowOperation]:
-        """The pending edits as the operation list apply_changes() takes,
-        one operation per edited cell, in the order they were made."""
-        return [
-            RowOperation(pk_values=pk_values, column=column, value=value)
-            for pk_values, changes in self._pending.values()
-            for column, value in changes.items()
-        ]
+        """The pending changes as the operation list apply_changes()
+        takes, in the order they were made: one operation per edited
+        cell, one per added row, one per deleted row."""
+        operations: list[RowOperation] = []
+        for pending in self._pending.values():
+            if pending.kind == "insert":
+                operations.append(
+                    RowOperation(kind="insert", values=dict(pending.changes))
+                )
+            elif pending.kind == "delete":
+                operations.append(
+                    RowOperation(kind="delete", pk_values=pending.pk_values)
+                )
+            else:
+                operations.extend(
+                    RowOperation(
+                        pk_values=pending.pk_values, column=column, value=value
+                    )
+                    for column, value in pending.changes.items()
+                )
+        return operations
+
+    def _preview_statement(self, op: RowOperation) -> str:
+        """One operation as the SQL the preview shows. Values are bound
+        as parameters when it actually runs; here they are rendered as
+        literals so the statement reads as a statement."""
+        if op.kind == "insert":
+            values = op.values or {}
+            if not values:
+                return f"INSERT INTO {self.table} DEFAULT VALUES;"
+            columns = ", ".join(values)
+            literals = ", ".join(_sql_literal(v) for v in values.values())
+            return (
+                f"INSERT INTO {self.table} ({columns}) VALUES ({literals});"
+            )
+        where = " AND ".join(
+            f"{name} = {_sql_literal(pk)}" for name, pk in op.pk_values.items()
+        )
+        if op.kind == "delete":
+            return f"DELETE FROM {self.table} WHERE {where};"
+        return (
+            f"UPDATE {self.table} SET {op.column} = {_sql_literal(op.value)}"
+            f" WHERE {where};"
+        )
 
     def _on_save_clicked(self, *_args) -> None:
         updates = self._pending_updates()
         if not updates:
             return
-        statements = [
-            f"UPDATE {self.table} SET {op.column} = {_sql_literal(op.value)}"
-            " WHERE "
-            + " AND ".join(
-                f"{name} = {_sql_literal(pk)}"
-                for name, pk in op.pk_values.items()
-            )
-            + ";"
-            for op in updates
-        ]
+        statements = [self._preview_statement(op) for op in updates]
         target = confirm.describe_connection(self.profile)
         if self._in_open_transaction():
             atomicity = _(
@@ -2514,11 +2788,30 @@ class TableTab(Gtk.Box):
             ) % target
         dialog = UpdatePreviewDialog(
             statements,
-            lambda: self._execute_updates(updates),
+            lambda: self._confirm_then_execute(updates, statements),
             caption=_("Values are bound as parameters when executed. ")
             + atomicity,
         )
         dialog.present(self)
+
+    def _confirm_then_execute(
+        self, updates: list[RowOperation], statements: list[str]
+    ) -> None:
+        """Deleting rows is destructive, so it climbs the same ladder
+        every other destructive statement does (backend/sql_risk.py):
+        on production it asks, and asks harder. A batch with no delete
+        in it has already been reviewed and runs."""
+        deletes = [
+            statement
+            for op, statement in zip(updates, statements)
+            if op.kind == "delete"
+        ]
+        if not deletes:
+            self._execute_updates(updates)
+            return
+        confirm.confirm_statements(
+            self, deletes, self.profile, lambda: self._execute_updates(updates)
+        )
 
     def _in_open_transaction(self) -> bool:
         """Whether the user already has a transaction open on this

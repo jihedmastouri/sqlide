@@ -1,6 +1,6 @@
 ## CORE-38 — Insert and delete rows in the data grid
 
-- **Status:** todo
+- **Status:** done
 - **From:** RS-04 (see `docs/dbeaver-comparison.md`)
 
 ### Problem
@@ -42,18 +42,18 @@ through the same review-then-run path.
 
 ### Acceptance criteria
 
-- [ ] `insert_row` and `delete_row` exist on all four adapters
+- [x] `insert_row` and `delete_row` exist on all four adapters
       (sqlite, mysql, postgres, jdbc) with catalog-validated
       identifiers and bound values.
-- [ ] `delete_row` refuses an empty `pk_values` and asserts exactly
+- [x] `delete_row` refuses an empty `pk_values` and asserts exactly
       one affected row.
-- [ ] The preview dialog lists inserts, updates and deletes in
+- [x] The preview dialog lists inserts, updates and deletes in
       execution order, with the same "values are bound as parameters"
       caption.
-- [ ] Insert and delete are hidden for views and for tables with no
+- [x] Insert and delete are hidden for views and for tables with no
       primary key (delete), matching the existing read-only rule.
-- [ ] A row added and then edited before saving produces one INSERT,
+- [x] A row added and then edited before saving produces one INSERT,
       not an INSERT plus UPDATEs.
-- [ ] Deleting is subject to the environment-aware confirmation
+- [x] Deleting is subject to the environment-aware confirmation
       ladder.
-- [ ] Covered against SQLite in the suite; no new server dependency.
+- [x] Covered against SQLite in the suite; no new server dependency.

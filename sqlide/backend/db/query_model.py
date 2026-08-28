@@ -49,6 +49,7 @@ from sqlide.backend.db.base import (
 from sqlide.backend.sql_format import format_sql, options_from_settings
 
 __all__ = [
+    "AGGREGATES",
     "Column",
     "Condition",
     "Dialect",
@@ -67,6 +68,7 @@ __all__ = [
     "Rendered",
     "SQLITE",
     "TableRef",
+    "aggregate_label",
     "MODEL_VERSION",
     "dialect_for",
     "dump_state",
@@ -90,6 +92,14 @@ JOIN_KINDS = (
 MARKER = "?"
 # CROSS JOIN carries no ON clause; the rest require one.
 JOINS_WITHOUT_ON = ("CROSS JOIN",)
+#: The aggregate functions the model can express. An engine that
+#: lacks one says so through Dialect.aggregates, the same way it does
+#: for join kinds — never through an `if engine == ...` in the UI.
+AGGREGATES = ("COUNT", "SUM", "AVG", "MIN", "MAX")
+#: The aggregates that take no column: COUNT(*) counts rows, and is
+#: the only function that means anything without one.
+AGGREGATES_WITHOUT_COLUMN = ("COUNT",)
+
 #: What an ON condition may compare with. A join is not a filter — no
 #: value is ever bound in an ON, both sides are columns — so the set is
 #: the comparisons and nothing that takes a literal.
@@ -131,13 +141,31 @@ class Column:
 class Projection:
     """One item of the select list.
 
-    Either a `column` or a raw `expression` (an aggregate, a
-    computation) — never both. An empty projection list means `*`.
+    Three shapes, in order of preference:
+
+    - a plain `column`;
+    - an aggregate — a `function` from AGGREGATES over that column,
+      `COUNT` alone over no column meaning `COUNT(*)`, with `distinct`
+      for `COUNT(DISTINCT x)`;
+    - a raw `expression`, the escape hatch for a computed column,
+      passed through unchanged and never validated (CORE-21).
+
+    `expression` wins where it is set, since a caller that wrote SQL
+    by hand meant it. An empty projection list means `*`.
     """
 
     column: Column | None = None
     expression: str = ""
     alias: str = ""
+    #: One of AGGREGATES, or "" for a plain column.
+    function: str = ""
+    #: COUNT(DISTINCT x) — the aggregate's own DISTINCT, which is not
+    #: the statement-level SELECT DISTINCT.
+    distinct: bool = False
+
+    @property
+    def aggregated(self) -> bool:
+        return bool(self.function)
 
 
 @dataclass(frozen=True)
@@ -159,16 +187,22 @@ class Join:
 
 @dataclass(frozen=True)
 class Condition:
-    """A leaf of the filter tree: `column op value`.
+    """A leaf of the filter tree: `term op value`.
 
     `op` is one of FILTER_OPERATORS; the value is ignored for the
     operators that take none (IS NULL / IS NOT NULL) and is otherwise
     bound as a parameter, never written into the text.
     """
 
-    column: Column
+    column: Column | None = None
     op: str = "="
     value: Any = None
+    #: A HAVING condition is over an aggregate, not a bare column, so
+    #: a condition carries the same three shapes a projection does:
+    #: column, aggregate (function/distinct), or raw expression.
+    expression: str = ""
+    function: str = ""
+    distinct: bool = False
 
 
 @dataclass(frozen=True)
@@ -186,9 +220,21 @@ class FilterGroup:
 
 @dataclass(frozen=True)
 class Order:
+    """One ORDER BY item.
+
+    Beside the plain column and the raw expression it can name a
+    projection's `alias`: an aggregate result has no column to sort
+    by, only the select-list entry that produced it. Where the dialect
+    cannot order by an alias the renderer writes the projection's own
+    expression instead, so the ordering survives either way (CORE-21).
+    """
+
     column: Column | None = None
     expression: str = ""
     descending: bool = False
+    alias: str = ""
+    function: str = ""
+    distinct: bool = False
 
 
 @dataclass(frozen=True)
@@ -242,6 +288,13 @@ class Dialect:
     #: Join kinds the engine actually has. MySQL 5.7 has no FULL JOIN;
     #: SQLite gained RIGHT and FULL only in 3.39, past our 3.25 floor.
     join_kinds: tuple[str, ...] = JOIN_KINDS
+    #: The aggregate functions the engine has. Every engine we speak
+    #: to has all five, but an adapter that knows better says so the
+    #: same way it does for join kinds.
+    aggregates: tuple[str, ...] = AGGREGATES
+    #: Whether ORDER BY may name a select-list alias. Where it cannot,
+    #: the renderer repeats the expression instead.
+    order_by_alias: bool = True
     #: Whether OFFSET can be written without a LIMIT. MySQL cannot, so
     #: the renderer supplies a very large LIMIT there instead.
     offset_without_limit: bool = True
@@ -313,13 +366,34 @@ def dialect_for(connector: Any) -> Dialect:
     # on the engine's name, and only the adapter can see that (CORE-20).
     declared = getattr(connector, "join_kinds", None)
     kinds = tuple(k for k in JOIN_KINDS if k in set(declared or ()))
+    declared_aggregates = getattr(connector, "aggregates", None)
+    functions = tuple(
+        f for f in AGGREGATES if f in set(declared_aggregates or ())
+    )
     return replace(
         base,
         name=name or base.name,
         quote=quote if callable(quote) else base.quote,
         placeholder=placeholder,
         join_kinds=kinds or base.join_kinds,
+        aggregates=functions or base.aggregates,
     )
+
+
+def aggregate_label(
+    function: str, column: str = "", *, distinct: bool = False
+) -> str:
+    """How an aggregate reads to a person: `COUNT(*)`,
+    `COUNT(DISTINCT orders.id)`, `SUM(orders.total)`.
+
+    The UI needs one string to put in a dropdown and one to use as a
+    default alias; both are this, so the label the user picks in a
+    HAVING or a sort row is the same text the select list shows.
+    """
+    function = function.upper()
+    if not column:
+        return f"{function}(*)"
+    return f"{function}({'DISTINCT ' if distinct else ''}{column})"
 
 
 # Rendering
@@ -359,17 +433,45 @@ class _Renderer:
             return f"{self.ident(col.source)}.{self.ident(col.name)}"
         return self.ident(col.name)
 
+    def term(
+        self,
+        column: Column | None,
+        expression: str = "",
+        function: str = "",
+        distinct: bool = False,
+    ) -> str:
+        """One select-list / filter / ordering item as SQL.
+
+        The three shapes a projection, a condition and an ordering all
+        share, rendered in one place so `COUNT(DISTINCT x)` spells the
+        same in a SELECT, a HAVING and an ORDER BY.
+        """
+        if expression:
+            return expression
+        name = function.upper()
+        if name:
+            if name not in AGGREGATES:
+                raise ConnectorError(f"Unsupported aggregate: {function}")
+            if name not in self.d.aggregates:
+                raise ConnectorError(f"{self.d.name} has no {name}")
+            if column is None or not column.name:
+                if name not in AGGREGATES_WITHOUT_COLUMN:
+                    raise ConnectorError(f"{name} needs a column")
+                return f"{name}(*)"
+            inner = self.column(column)
+            return f"{name}({'DISTINCT ' if distinct else ''}{inner})"
+        if column is not None and column.name:
+            return self.column(column)
+        raise ConnectorError("Nothing to render: no column and no expression")
+
     def select_list(self) -> str:
         if not self.model.projections:
             return "*"
         parts = []
         for proj in self.model.projections:
-            if proj.expression:
-                text = proj.expression
-            elif proj.column is not None:
-                text = self.column(proj.column)
-            else:
-                raise ConnectorError("Projection has neither column nor expression")
+            text = self.term(
+                proj.column, proj.expression, proj.function, proj.distinct
+            )
             if proj.alias:
                 text += f" AS {self.ident(proj.alias)}"
             parts.append(text)
@@ -414,7 +516,10 @@ class _Renderer:
         op = cond.op.upper()
         if op not in FILTER_OPERATORS:
             raise ConnectorError(f"Unsupported filter operator: {cond.op}")
-        text = f"{self.column(cond.column)} {op}"
+        text = (
+            f"{self.term(cond.column, cond.expression, cond.function, cond.distinct)}"
+            f" {op}"
+        )
         if op not in NO_VALUE_OPERATORS:
             # Always "?" here, whatever the driver binds with: the
             # formatter reads "%s" as two tokens and would space it out
@@ -452,13 +557,36 @@ class _Renderer:
             return text
         return f"({text})"
 
+    def alias_target(self, alias: str) -> str:
+        """What ordering by `alias` has to say on this dialect.
+
+        The alias itself where the engine allows it; otherwise the
+        expression of the projection that carries the alias, so an
+        aggregate stays sortable either way. An alias naming no
+        projection is written as-is — it is the user's own name for a
+        column and the engine is the judge of it.
+        """
+        if self.d.order_by_alias:
+            return self.ident(alias)
+        for proj in self.model.projections:
+            if proj.alias == alias:
+                return self.term(
+                    proj.column, proj.expression, proj.function, proj.distinct
+                )
+        return self.ident(alias)
+
     def order(self) -> str:
         parts = []
         for item in self.model.order_by:
-            if item.expression:
-                text = item.expression
-            elif item.column is not None:
-                text = self.column(item.column)
+            if item.alias:
+                text = self.alias_target(item.alias)
+            elif item.expression or item.function or item.column is not None:
+                text = self.term(
+                    item.column,
+                    item.expression,
+                    item.function,
+                    item.distinct,
+                )
             else:
                 continue
             parts.append(f"{text} {'DESC' if item.descending else 'ASC'}")
@@ -602,6 +730,9 @@ def _filter_dict(node: "Condition | FilterGroup") -> dict:
         "column": _column_dict(node.column),
         "op": node.op,
         "value": node.value,
+        "expression": node.expression,
+        "function": node.function,
+        "distinct": node.distinct,
     }
 
 
@@ -615,11 +746,15 @@ def _filter_from(data: Any) -> "Condition | FilterGroup | None":
             conjunction=data.get("conjunction", "AND"),
             negated=bool(data.get("negated", False)),
         )
-    column = _column_from(data.get("column"))
+    # The aggregate keys are absent from a workspace saved before
+    # CORE-21; their defaults are exactly the old behaviour.
     return Condition(
-        column=column or Column(""),
+        column=_column_from(data.get("column")),
         op=data.get("op", "="),
         value=data.get("value"),
+        expression=data.get("expression", ""),
+        function=data.get("function", ""),
+        distinct=bool(data.get("distinct", False)),
     )
 
 
@@ -663,6 +798,8 @@ def to_dict(model: QueryModel) -> dict:
                 "column": _column_dict(p.column),
                 "expression": p.expression,
                 "alias": p.alias,
+                "function": p.function,
+                "distinct": p.distinct,
             }
             for p in model.projections
         ],
@@ -677,6 +814,9 @@ def to_dict(model: QueryModel) -> dict:
                 "column": _column_dict(o.column),
                 "expression": o.expression,
                 "descending": o.descending,
+                "alias": o.alias,
+                "function": o.function,
+                "distinct": o.distinct,
             }
             for o in model.order_by
         ],
@@ -713,6 +853,8 @@ def from_dict(data: dict) -> QueryModel:
                 column=_column_from(p.get("column")),
                 expression=p.get("expression", ""),
                 alias=p.get("alias", ""),
+                function=p.get("function", ""),
+                distinct=bool(p.get("distinct", False)),
             )
             for p in data.get("projections", [])
         ),
@@ -728,6 +870,9 @@ def from_dict(data: dict) -> QueryModel:
                 column=_column_from(o.get("column")),
                 expression=o.get("expression", ""),
                 descending=bool(o.get("descending", False)),
+                alias=o.get("alias", ""),
+                function=o.get("function", ""),
+                distinct=bool(o.get("distinct", False)),
             )
             for o in data.get("order_by", [])
         ),

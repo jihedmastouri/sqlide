@@ -20,6 +20,12 @@ holding a single record stays a key/value block rather than becoming a
 table one row tall. Read-only throughout — editing an object
 stays with the definition tab and the table designer.
 
+The tab and the right side panel are the same widget (`ObjectSurface`)
+under two `Host` descriptions (CORE-59): they differ on density, on the
+sections a host shows, on where the descriptor is read from and on
+whether a listing may take over the page — never on how a section is
+built.
+
 An object whose whole content *is* a listing — a folder, or one
 properties section of a table (Indexes, Columns, Constraints) — opens
 as that grid alone, filling the tab the way the data tab does, rather
@@ -29,7 +35,7 @@ comes from `objects.grid_listing`.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Callable
 
 from gi.repository import Adw, Gio, GLib, GObject, Graphene, Gtk, Pango
@@ -37,11 +43,11 @@ from gi.repository import Adw, Gio, GLib, GObject, Graphene, Gtk, Pango
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import objects, registry
 from sqlide.backend.db.base import Connector
-from sqlide.backend.db.metadata import NodeRef
+from sqlide.backend.db.metadata import MetadataProvider, NodeRef
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend.sql_editor import SqlEditor
 from sqlide.frontend.util import describe, run_async
-from sqlide.i18n import _
+from sqlide.i18n import N_, _
 
 # Header icon per kind; mirrors the sidebar's own icons so an object
 # looks the same in both places.
@@ -90,6 +96,7 @@ class InfoBody(Gtk.ScrolledWindow):
         on_open_link: Callable[[objects.ObjectRef], None],
         *,
         summary_title: str = "Summary",
+        compact: bool = False,
     ) -> None:
         super().__init__(vexpand=True)
         self._on_open_link = on_open_link
@@ -104,15 +111,21 @@ class InfoBody(Gtk.ScrolledWindow):
         self._wanted = ""
         self._selected: Gtk.Widget | None = None
         self.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        # Density is the only thing the narrow side panel changes about
+        # the body (CORE-59): the same sections, drawn closer together
+        # because there is less room, not a different renderer.
+        margin = 12 if compact else 18
         self._box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
-            spacing=18,
+            spacing=12 if compact else 18,
             margin_top=6,
-            margin_bottom=18,
-            margin_start=18,
-            margin_end=18,
+            margin_bottom=margin,
+            margin_start=margin,
+            margin_end=margin,
         )
-        self.set_child(Adw.Clamp(maximum_size=900, child=self._box))
+        self.set_child(
+            Adw.Clamp(maximum_size=600 if compact else 900, child=self._box)
+        )
 
     def render(
         self, info: objects.ObjectInfo, header: Gtk.Widget | None = None
@@ -285,170 +298,6 @@ class InfoBody(Gtk.ScrolledWindow):
             display.get_clipboard().set(text)
 
 
-class ObjectInfoTab(Gtk.Box):
-    def __init__(
-        self,
-        profile: ConnectionProfile,
-        ref: objects.ObjectRef,
-        ensure_connector: Callable[[ConnectionProfile], Connector],
-        show_error: Callable[[str], None],
-        on_open_object: Callable[[ConnectionProfile, objects.ObjectRef], None],
-        *,
-        path: str = "",
-    ) -> None:
-        super().__init__(orientation=Gtk.Orientation.VERTICAL)
-        self.profile = profile
-        self.ref = ref
-        self.path = path
-        self._ensure = ensure_connector
-        self._show_error = show_error
-        self._on_open_object = on_open_object
-
-        bar = Gtk.Box(
-            spacing=6,
-            margin_top=6,
-            margin_bottom=6,
-            margin_start=6,
-            margin_end=6,
-        )
-        self._title = Gtk.Label(label=ref.name, xalign=0, hexpand=True)
-        self._title.add_css_class("heading")
-        refresh = Gtk.Button(icon_name="view-refresh-symbolic")
-        refresh.add_css_class("flat")
-        describe(refresh, _("Reload this object's information"))
-        refresh.connect("clicked", lambda *_: self.reload())
-        bar.append(self._title)
-        bar.append(refresh)
-        self.append(bar)
-
-        self._body = InfoBody(self._open_link)
-        # A listing opens as a grid and an object as the info view
-        # (CORE-56); which of the two a descriptor is stays unknown
-        # until it has been read, so the tab holds both and shows the
-        # one that fits.
-        self._grid_holder = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL, vexpand=True
-        )
-        self._grid: _GridSection | None = None
-        self._stack = Gtk.Stack(vexpand=True)
-        self._stack.add_named(self._body, "info")
-        self._stack.add_named(self._grid_holder, "grid")
-        self.append(self._stack)
-
-        self.reload()
-
-    def tab_state(self) -> TabState:
-        return TabState(
-            kind="object",
-            connection=self.profile.name,
-            table=self.ref.name,
-            object_kind=self.ref.kind,
-            object_owner=self.ref.table,
-            object_category=self.ref.category,
-        )
-
-    def reload(self) -> None:
-        ref = self.ref
-
-        def work() -> objects.ObjectInfo:
-            # Through the provider rather than db/objects directly, so
-            # an object that carries grants gets its Permissions
-            # section here as well as in a table's Properties view
-            # (CORE-11). The provider is the one that knows whether
-            # this engine has a grant model at all.
-            connector = self._ensure(self.profile)
-            provider = registry.create_provider(self.profile.kind, connector)
-            info = provider.describe(
-                NodeRef(
-                    kind=ref.kind,
-                    name=ref.name,
-                    table=ref.table,
-                    category=ref.category,
-                    # The connection is already pinned to the schema
-                    # (window.open_object), so this only decides how
-                    # the object is *named* back — qualified where the
-                    # engine has schemas (PG-01).
-                    schema=ref.schema or self.profile.schema,
-                )
-            )
-            if self.path and not info.path:
-                return replace(info, path=self.path)
-            return info
-
-        run_async(work, self._render, self._failed)
-
-    def _failed(self, exc: Exception) -> None:
-        # A catalog that cannot be read is still not a blank screen:
-        # the header stays and the error becomes the body.
-        self._render(
-            objects.ObjectInfo(
-                kind=self.ref.kind,
-                name=self.ref.name,
-                type_label=objects.TYPE_LABELS.get(
-                    self.ref.kind, "Object"
-                ),
-                path=self.path,
-                note=str(exc),
-            )
-        )
-        self._show_error(str(exc))
-
-    # Rendering
-
-    def _render(self, info: objects.ObjectInfo) -> None:
-        self._title.set_label(self._heading(info))
-        table = objects.grid_listing(self.ref.kind, info)
-        if table is None:
-            self._show_grid(None)
-            self._body.render(info, header=self._header(info))
-            return
-        self._show_grid(_GridSection(table, self._open_link, expand=True))
-
-    def _heading(self, info: objects.ObjectInfo) -> str:
-        """The line above the body: the object and what it is — and,
-        for a listing, the object it is a listing of (CORE-56)."""
-        if self.ref.kind == "section" and self.ref.table:
-            return f"{self.ref.table} · {info.name.lower()}"
-        return f"{info.name} · {info.type_label.lower()}"
-
-    def _show_grid(self, section: "_GridSection | None") -> None:
-        while child := self._grid_holder.get_first_child():
-            self._grid_holder.remove(child)
-        self._grid = section
-        if section is None:
-            self._stack.set_visible_child_name("info")
-            return
-        self._grid_holder.append(section.grid)
-        self._stack.set_visible_child_name("grid")
-
-    def _header(self, info: objects.ObjectInfo) -> Gtk.Widget:
-        box = Gtk.Box(spacing=12, margin_top=6)
-        icon = Gtk.Image.new_from_icon_name(
-            _KIND_ICONS.get(info.kind, "application-x-addon-symbolic")
-        )
-        icon.set_pixel_size(32)
-        box.append(icon)
-        names = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        title = Gtk.Label(label=info.name, xalign=0)
-        title.add_css_class("title-2")
-        names.append(title)
-        subtitle = Gtk.Label(
-            label=info.path or f"{info.type_label} on {self.profile.name}",
-            xalign=0,
-            wrap=True,
-        )
-        subtitle.add_css_class("dim-label")
-        names.append(subtitle)
-        box.append(names)
-        kind = Gtk.Label(label=info.type_label, valign=Gtk.Align.CENTER)
-        kind.add_css_class("dim-label")
-        box.append(kind)
-        return box
-
-    def _open_link(self, ref: objects.ObjectRef) -> None:
-        self._on_open_object(self.profile, ref)
-
-
 class _GridSection:
     """One tabular detail section, drawn in the result grid (CORE-49).
 
@@ -583,25 +432,92 @@ def properties_key(
     return ("properties", profile.name, ref.kind, ref.name, ref.table)
 
 
-class PropertiesView(Gtk.Box):
-    """Everything about one object, in one scroll (CORE-47).
+@dataclass(frozen=True)
+class Host:
+    """What a surface's host differs on (CORE-59).
 
-    The right side panel's Properties page and a detached properties
-    window are both this widget: general information, then the sections
-    this engine actually has — columns, constraints, keys, indexes,
-    triggers, partitions, policies, the DDL — with every row opening
-    that child object's own info view. Read-only: editing an object
-    stays with the definition tab and the table designer.
-
-    A table or a view is described by the provider's `table_properties`
-    (the section set CORE-04 defined); anything else — an index, a
-    function, a folder — by its own descriptor, so any node of the tree
-    has properties to show.
-
-    The panel retargets one of these as tabs change (`set_target`); the
-    catalog is read when the widget is actually on screen, so a panel
-    nobody has opened costs nothing.
+    The content of "what this object is" is one renderer; a host only
+    says how much room it has, which sections it may show, and where
+    its descriptor comes from. Everything else — the summary, the
+    sections, the DDL, the links out of a row — is the same widget in
+    both places, so the panel and a tab cannot drift apart again.
     """
+
+    #: Heading of the key/value block: a tab calls it the summary, the
+    #: panel calls it general information.
+    summary_title: str
+    #: Narrow (the side panel) or wide (a tab of its own).
+    compact: bool
+    #: Show the big icon/name/path header above the body. A tab has the
+    #: room for it; the panel's own title bar already says the object.
+    show_header: bool
+    #: Route a listing to a full-tab grid instead of the info view
+    #: (CORE-56). Only a tab is a destination, so only a tab routes.
+    grid_listing: bool
+    #: Read a table or a view through `table_properties` (the CORE-04
+    #: section set) rather than the generic descriptor.
+    table_properties: bool
+    #: Wait for the surface to be shown before reading the catalog: a
+    #: panel page nobody opened costs nothing.
+    lazy: bool
+    #: Drop the Permissions section for a user or a role (CORE-53):
+    #: what an account may do is the permission editor's screen, not a
+    #: listing inlined beside its attributes. A host rule, applied to
+    #: the one descriptor both surfaces render — objects that carry
+    #: grants keep their Permissions section here (CORE-11).
+    drop_principal_grants: bool = False
+    #: Tooltip of the Refresh button, marked for extraction and
+    #: translated where it is shown: a module-level literal must not
+    #: translate at import time (CORE-46).
+    refresh_tip: str = ""
+
+
+#: A tab: wide, headed, and the one host a listing may open in as a
+#: grid of its own.
+TAB_HOST = Host(
+    summary_title="Summary",
+    compact=False,
+    show_header=True,
+    grid_listing=True,
+    table_properties=False,
+    lazy=False,
+    refresh_tip=N_("Reload this object's information"),
+)
+
+#: The side panel (and a properties window torn off it): narrow, no
+#: header of its own, and never a grid page — it is a summary beside
+#: something else. Grants for a principal are dropped here (CORE-53):
+#: what an account may do is the permission editor's screen, so the
+#: panel states the rule once, for whatever descriptor it is handed.
+PANEL_HOST = Host(
+    summary_title="General",
+    compact=True,
+    show_header=False,
+    grid_listing=False,
+    table_properties=True,
+    lazy=True,
+    drop_principal_grants=True,
+    refresh_tip=N_("Re-read this object's properties"),
+)
+
+
+class ObjectSurface(Gtk.Box):
+    """One object, rendered once, hosted twice (CORE-59).
+
+    A title bar, the descriptor read off the provider, and `InfoBody`
+    drawing it — the summary, the detail sections CORE-49 draws as
+    grids, and the DDL, every row a link into that child's own view.
+    Read-only throughout (CORE-47): editing an object stays with the
+    definition tab and the table designer.
+
+    `ObjectInfoTab` and `PropertiesView` are this widget with a
+    different `Host`; there is no second section-building path between
+    them. What differs is density, which sections a host shows, where
+    the descriptor comes from, and whether a listing may take over the
+    page as a grid (CORE-56).
+    """
+
+    HOST = TAB_HOST
 
     def __init__(
         self,
@@ -612,10 +528,13 @@ class PropertiesView(Gtk.Box):
         ] | None = None,
         profile: ConnectionProfile | None = None,
         ref: objects.ObjectRef | None = None,
+        *,
+        path: str = "",
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.profile = profile
         self.ref = ref
+        self.path = path
         self._ensure = ensure_connector
         self._show_error = show_error
         self._on_open_object = on_open_object
@@ -632,32 +551,50 @@ class PropertiesView(Gtk.Box):
         self._title.add_css_class("heading")
         self._refresh = Gtk.Button(icon_name="view-refresh-symbolic")
         self._refresh.add_css_class("flat")
-        describe(self._refresh, _("Re-read this object's properties"))
+        describe(self._refresh, _(self.HOST.refresh_tip))
         self._refresh.connect("clicked", lambda *_: self.reload())
         bar.append(self._title)
         bar.append(self._refresh)
         self.append(bar)
 
-        self._body = InfoBody(self._open_link, summary_title="General")
-        self.append(self._body)
-        # Read on the frame it first becomes visible, wherever it lives:
-        # a hidden panel page and a hidden window make no queries.
-        self.connect("map", lambda *_: self.ensure_loaded())
-        self._show_target()
+        self._body = InfoBody(
+            self._open_link,
+            summary_title=self.HOST.summary_title,
+            compact=self.HOST.compact,
+        )
+        # A listing opens as a grid and an object as the info view
+        # (CORE-56); which of the two a descriptor is stays unknown
+        # until it has been read, so the surface holds both and shows
+        # the one that fits. A host that is not a destination never
+        # leaves "info".
+        self._grid_holder = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, vexpand=True
+        )
+        self._grid: _GridSection | None = None
+        self._stack = Gtk.Stack(vexpand=True)
+        self._stack.add_named(self._body, "info")
+        self._stack.add_named(self._grid_holder, "grid")
+        self.append(self._stack)
 
-    # A detached properties window is session-only: it is a view of
-    # something the workspace already remembers, not a tab to restore.
-    def tab_state(self) -> None:
-        return None
+        self._show_target()
+        if self.HOST.lazy:
+            # Read on the frame it first becomes visible, wherever it
+            # lives: a hidden panel page and a hidden window make no
+            # queries.
+            self.connect("map", lambda *_: self.ensure_loaded())
+        else:
+            self.reload()
+
+    # What is being shown
 
     def set_target(
         self,
         profile: ConnectionProfile | None,
         ref: objects.ObjectRef | None,
     ) -> None:
-        """Point this view at another object — what the side panel does
-        on every tab switch. The same object again is left alone, so
-        switching away and back does not re-read the catalog."""
+        """Point this surface at another object — what the side panel
+        does on every tab switch. The same object again is left alone,
+        so switching away and back does not re-read the catalog."""
         if profile is None or ref is None:
             self.profile, self.ref = None, None
             self._loaded = False
@@ -686,15 +623,24 @@ class PropertiesView(Gtk.Box):
                 "properties"
             )
             return
-        self._title.set_label(f"{self.ref.name} · properties")
+        self._title.set_label(self._waiting_title())
         self._body.show_message("Loading…")
 
+    def _waiting_title(self) -> str:
+        """The title bar before the descriptor has been read."""
+        return f"{self.ref.name} · properties"
+
+    def _heading(self, info: objects.ObjectInfo) -> str:
+        """The title bar once the descriptor is in."""
+        return self._waiting_title()
+
+    # Reading
+
     def ensure_loaded(self) -> None:
-        """Read the catalog the first time this view is shown; later
+        """Read the catalog the first time this surface is shown; later
         looks show what is already there until Refresh is pressed."""
         if self._loaded or self.profile is None or self.ref is None:
             return
-        self._loaded = True
         self.reload()
 
     def reload(self) -> None:
@@ -704,27 +650,105 @@ class PropertiesView(Gtk.Box):
         self._loaded = True
 
         def work() -> objects.ObjectInfo:
+            # Through the provider rather than db/objects directly, so
+            # an object that carries grants gets its Permissions
+            # section here as well as in a table's Properties view
+            # (CORE-11). The provider is the one that knows whether
+            # this engine has a grant model at all.
             connector = self._ensure(profile)
             provider = registry.create_provider(profile.kind, connector)
-            if ref.kind in ("table", "view"):
-                return provider.table_properties(
-                    NodeRef("table", ref.name)
-                )
-            return provider.describe(
+            if self.HOST.table_properties and ref.kind in ("table", "view"):
+                return provider.table_properties(NodeRef("table", ref.name))
+            info = provider.describe(
                 NodeRef(
                     kind=ref.kind,
                     name=ref.name,
                     table=ref.table,
                     category=ref.category,
+                    # The connection is already pinned to the schema
+                    # (window.open_object), so this only decides how
+                    # the object is *named* back — qualified where the
+                    # engine has schemas (PG-01).
                     schema=ref.schema or profile.schema,
                 )
             )
+            if self.path and not info.path:
+                return replace(info, path=self.path)
+            return info
 
-        run_async(work, self._body.render, self._failed)
+        run_async(work, self._render, self._failed)
 
     def _failed(self, exc: Exception) -> None:
         self._body.show_message(str(exc))
         self._show_error(str(exc))
+
+    # Rendering
+
+    def _render(self, info: objects.ObjectInfo) -> None:
+        info = self._for_host(info)
+        self._title.set_label(self._heading(info))
+        table = (
+            objects.grid_listing(self.ref.kind, info)
+            if self.HOST.grid_listing and self.ref is not None
+            else None
+        )
+        if table is None:
+            self._show_grid(None)
+            self._body.render(info, header=self._header(info))
+            return
+        self._show_grid(_GridSection(table, self._open_link, expand=True))
+
+    def _for_host(self, info: objects.ObjectInfo) -> objects.ObjectInfo:
+        """The descriptor as this host is allowed to show it: the
+        sections this host does not show dropped, and nothing else
+        touched."""
+        if not self.HOST.drop_principal_grants or self.ref is None:
+            return info
+        if self.ref.kind not in MetadataProvider.PRINCIPAL_KINDS:
+            return info
+        tables = [t for t in info.tables if t.slug != "permissions"]
+        if len(tables) == len(info.tables):
+            return info
+        return replace(info, tables=tables)
+
+    def _show_grid(self, section: "_GridSection | None") -> None:
+        while child := self._grid_holder.get_first_child():
+            self._grid_holder.remove(child)
+        self._grid = section
+        if section is None:
+            self._stack.set_visible_child_name("info")
+            return
+        self._grid_holder.append(section.grid)
+        self._stack.set_visible_child_name("grid")
+
+    def _header(self, info: objects.ObjectInfo) -> Gtk.Widget | None:
+        if not self.HOST.show_header:
+            return None
+        box = Gtk.Box(spacing=12, margin_top=6)
+        icon = Gtk.Image.new_from_icon_name(
+            _KIND_ICONS.get(info.kind, "application-x-addon-symbolic")
+        )
+        icon.set_pixel_size(32)
+        box.append(icon)
+        names = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        title = Gtk.Label(label=info.name, xalign=0)
+        title.add_css_class("title-2")
+        names.append(title)
+        where = self.profile.name if self.profile is not None else ""
+        subtitle = Gtk.Label(
+            label=info.path or f"{info.type_label} on {where}",
+            xalign=0,
+            wrap=True,
+        )
+        subtitle.add_css_class("dim-label")
+        names.append(subtitle)
+        box.append(names)
+        kind = Gtk.Label(label=info.type_label, valign=Gtk.Align.CENTER)
+        kind.add_css_class("dim-label")
+        box.append(kind)
+        return box
+
+    # Links and deep links
 
     def select_section(self, slug: str) -> None:
         """Show one named section (CORE-05): the sidebar's Indexes row
@@ -735,6 +759,99 @@ class PropertiesView(Gtk.Box):
     def _open_link(self, ref: objects.ObjectRef) -> None:
         if self._on_open_object is not None and self.profile is not None:
             self._on_open_object(self.profile, ref)
+
+
+class ObjectInfoTab(ObjectSurface):
+    """One object as a tab of its own: the wide host.
+
+    Everything a sidebar row opens (CORE-56 routing included) is this —
+    the shared renderer with a header, the tab's own title line, and a
+    listing allowed to fill the page as a grid.
+    """
+
+    HOST = TAB_HOST
+
+    def __init__(
+        self,
+        profile: ConnectionProfile,
+        ref: objects.ObjectRef,
+        ensure_connector: Callable[[ConnectionProfile], Connector],
+        show_error: Callable[[str], None],
+        on_open_object: Callable[[ConnectionProfile, objects.ObjectRef], None],
+        *,
+        path: str = "",
+    ) -> None:
+        super().__init__(
+            ensure_connector,
+            show_error,
+            on_open_object,
+            profile=profile,
+            ref=ref,
+            path=path,
+        )
+
+    def tab_state(self) -> TabState:
+        return TabState(
+            kind="object",
+            connection=self.profile.name,
+            table=self.ref.name,
+            object_kind=self.ref.kind,
+            object_owner=self.ref.table,
+            object_category=self.ref.category,
+        )
+
+    def _waiting_title(self) -> str:
+        return self.ref.name
+
+    def _heading(self, info: objects.ObjectInfo) -> str:
+        """The line above the body: the object and what it is — and,
+        for a listing, the object it is a listing of (CORE-56)."""
+        if self.ref.kind == "section" and self.ref.table:
+            return f"{self.ref.table} · {info.name.lower()}"
+        return f"{info.name} · {info.type_label.lower()}"
+
+    def _failed(self, exc: Exception) -> None:
+        # A catalog that cannot be read is still not a blank screen:
+        # the header stays and the error becomes the body.
+        self._render(
+            objects.ObjectInfo(
+                kind=self.ref.kind,
+                name=self.ref.name,
+                type_label=objects.TYPE_LABELS.get(self.ref.kind, "Object"),
+                path=self.path,
+                note=str(exc),
+            )
+        )
+        self._show_error(str(exc))
+
+
+class PropertiesView(ObjectSurface):
+    """Everything about one object, in one scroll (CORE-47).
+
+    The right side panel's Properties page and a detached properties
+    window are both this widget: the same renderer a tab uses, in the
+    narrow host — general information, then the sections this engine
+    actually has, with every row opening that child object's own info
+    view. Read-only: editing an object stays with the definition tab
+    and the table designer.
+
+    A table or a view is described by the provider's `table_properties`
+    (the section set CORE-04 defined); anything else — an index, a
+    function, a folder — by its own descriptor, so any node of the tree
+    has properties to show. Grants are not part of what the panel shows
+    for a user or a role (CORE-53).
+
+    The panel retargets one of these as tabs change (`set_target`); the
+    catalog is read when the widget is actually on screen, so a panel
+    nobody has opened costs nothing.
+    """
+
+    HOST = PANEL_HOST
+
+    # A detached properties window is session-only: it is a view of
+    # something the workspace already remembers, not a tab to restore.
+    def tab_state(self) -> None:
+        return None
 
 
 class PropertiesSurfaces(Gtk.Box):

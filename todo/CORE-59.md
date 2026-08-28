@@ -1,6 +1,6 @@
 ## CORE-59 — Unify the object info view and the properties view
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-47, CORE-49, CORE-56
 
 ### Problem
@@ -35,14 +35,14 @@ not that either grows features.
 
 ### Acceptance criteria
 
-- [ ] One renderer builds both surfaces; no duplicated section-building logic
+- [x] One renderer builds both surfaces; no duplicated section-building logic
       remains between them.
-- [ ] The panel and a tab showing the same object agree on content, differing
+- [x] The panel and a tab showing the same object agree on content, differing
       only by density and the documented section rules.
-- [ ] CORE-53's rule (no grants for principals in the panel) still holds and is
+- [x] CORE-53's rule (no grants for principals in the panel) still holds and is
       expressed as a host rule, not a second code path.
-- [ ] Deep-links (CORE-05) still land on the right section.
-- [ ] CORE-56's routing is unchanged: collections open as grid tabs, single
+- [x] Deep-links (CORE-05) still land on the right section.
+- [x] CORE-56's routing is unchanged: collections open as grid tabs, single
       objects as info.
-- [ ] Existing tests for both surfaces pass, consolidated where they duplicated
+- [x] Existing tests for both surfaces pass, consolidated where they duplicated
       each other.

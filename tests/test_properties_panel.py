@@ -463,3 +463,61 @@ def test_a_placeholder_row_has_no_properties(window) -> None:
 
     win, _profile, _store = window
     assert win._sidebar.properties_target(Node("note", "(none)")) is None
+
+
+# One renderer, two hosts (CORE-59)
+
+
+def test_a_tab_and_the_panel_agree_on_the_same_object(window) -> None:
+    """The two surfaces are the same renderer under two hosts: for an
+    object both read the same way, they draw the same sections."""
+    from sqlide.backend.db import objects
+
+    win, profile, _store = window
+    ref = objects.ObjectRef(kind="index", name="orders_sku", table="orders")
+    win.open_object(profile, ref)
+    tab = win._tab_for(
+        ("object", profile.name, "index", "orders_sku", "orders")
+    )
+    panel = win.open_properties_tab(profile, ref)
+    panel.ensure_loaded()
+    assert set(tab._body._sections) == set(panel._body._sections)
+    # …differing only by host: the tab is wide and headed, the panel is
+    # the narrow one and never routes a listing to a grid (CORE-56).
+    assert tab.HOST.show_header and not panel.HOST.show_header
+    assert panel.HOST.compact and not tab.HOST.compact
+    assert tab.HOST.grid_listing and not panel.HOST.grid_listing
+
+
+def test_the_panel_host_drops_grants_for_a_principal(window) -> None:
+    """CORE-53 as a host rule: the same descriptor keeps its
+    Permissions section in a tab and loses it in the panel — and an
+    object that carries grants keeps it in both."""
+    from sqlide.backend.db import objects
+    from sqlide.frontend.object_info import ObjectInfoTab, PropertiesView
+
+    win, profile, _store = window
+    info = objects.ObjectInfo(
+        kind="user",
+        name="alice",
+        type_label="User",
+        tables=[objects.DetailTable(
+            title="Permissions", columns=["Object"], rows=[("orders",)],
+            slug="permissions",
+        )],
+    )
+    panel = PropertiesView(
+        win.ensure_connector, win.show_error, win.open_object,
+        profile=profile, ref=objects.ObjectRef(kind="user", name="alice"),
+    )
+    assert [t.slug for t in panel._for_host(info).tables] == []
+    # The rule is about accounts, not about the section: a table's
+    # grants still show in the panel (CORE-11).
+    panel.set_target(profile, objects.ObjectRef(kind="table", name="orders"))
+    assert [t.slug for t in panel._for_host(info).tables] == ["permissions"]
+
+    tab = ObjectInfoTab(
+        profile, objects.ObjectRef(kind="user", name="alice"),
+        win.ensure_connector, win.show_error, win.open_object,
+    )
+    assert [t.slug for t in tab._for_host(info).tables] == ["permissions"]

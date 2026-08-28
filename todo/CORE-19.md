@@ -1,6 +1,6 @@
 ## CORE-19 — Persist the builder's query model in the workspace
 
-- **Status:** todo
+- **Status:** Done
 - **Depends on:** CORE-17
 - **From:** RS-01 (see `docs/query-builder-research.md`)
 
@@ -33,12 +33,12 @@ back exactly as it was built.
 
 ### Acceptance criteria
 
-- [ ] A builder with joins, checked columns, filters and sorts restores
+- [x] A builder with joins, checked columns, filters and sorts restores
       identically after a restart.
-- [ ] A workspace file written by an older build still opens; the
+- [x] A workspace file written by an older build still opens; the
       builder falls back to base-table-only restore.
-- [ ] A restored query referring to a dropped table/column opens with
+- [x] A restored query referring to a dropped table/column opens with
       the missing parts removed and an explanation shown, not an error
       dialog.
-- [ ] Covered by a test in `tests/` that round-trips a `TabState`
+- [x] Covered by a test in `tests/` that round-trips a `TabState`
       through the workspace layer.

@@ -374,6 +374,10 @@ class Sidebar(Gtk.ScrolledWindow):
         # above: a harness that only walks the tree need not supply
         # one, and the menu item then does nothing.
         on_pragmas: Callable[[ConnectionProfile], None] | None = None,
+        # "Import Data…": a CSV file into the table this row names
+        # (CORE-37). Optional like the rest of this tail — a harness
+        # that only walks the tree leaves the menu item inert.
+        on_import_data: Callable[[ConnectionProfile, str], None] | None = None,
         # "Open (Window)": runs an opener with "in a window of its own"
         # forced on, the same path Shift-clicking a row takes
         # (window._place_new_page). Optional like the two above — a
@@ -410,6 +414,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_view_indexes = on_view_indexes
         self._on_query_builder = on_query_builder
         self._on_drop_object = on_drop_object
+        self._on_import_data = on_import_data
         self._on_new_object = on_new_object
         self._on_extension_action = on_extension_action
         self._on_mcp_server = on_mcp_server
@@ -511,6 +516,7 @@ class Sidebar(Gtk.ScrolledWindow):
             ("relation-graph", self._menu_relation_graph),
             ("view-indexes", self._menu_view_indexes),
             ("query-builder", self._menu_query_builder),
+            ("import-data", self._menu_import_data),
             ("drop-object", self._menu_drop),
             ("install-extension", self._menu_install_extension),
             ("update-extension", self._menu_update_extension),
@@ -1422,6 +1428,10 @@ class Sidebar(Gtk.ScrolledWindow):
             menu.append("Query Console", "schema.query-console")
             menu.append("Table Definition", "schema.definition")
             menu.append("Query Builder", "schema.query-builder")
+            # A view is not something rows can be inserted into here,
+            # so the file half of the menu belongs to tables only.
+            if node.kind == "table":
+                menu.append("Import Data…", "schema.import-data")
             menu.append("Refresh", "schema.refresh")
             if can_drop:
                 menu.append("Drop…", "schema.drop-object")
@@ -1693,6 +1703,13 @@ class Sidebar(Gtk.ScrolledWindow):
             return
         table = node.label if node.kind in ("table", "view") else ""
         self._on_query_builder(node.profile, table)
+
+    def _menu_import_data(self, *_args) -> None:
+        node = self._menu_node
+        if node is None or node.profile is None:
+            return
+        if self._on_import_data is not None:
+            self._on_import_data(node.profile, node.label)
 
     def _menu_drop(self, *_args) -> None:
         node = self._menu_node

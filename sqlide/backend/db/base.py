@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from secrets import token_hex
 from typing import Any
@@ -435,6 +436,12 @@ class ConnectorError(Exception):
     """Raised by adapters for any database failure, wrapping the driver error."""
 
 
+class BulkCancelled(ConnectorError):
+    """A bulk load the user stopped (CORE-37). Raised between batches,
+    inside the load's transaction, so the rollback that follows leaves
+    the table exactly as it was."""
+
+
 class BatchError(ConnectorError):
     """A batch of row operations that failed, naming the one that did.
 
@@ -446,6 +453,34 @@ class BatchError(ConnectorError):
     def __init__(self, message: str, index: int) -> None:
         super().__init__(message)
         self.index = index
+
+
+def _batched(
+    rows: Iterable[Sequence[Any]],
+    size: int,
+    cancelled: Callable[[], bool] | None = None,
+) -> Iterator[tuple[int, list[Sequence[Any]]]]:
+    """`rows` in chunks of `size`, each with the index of its first row.
+
+    One chunk is held at a time — the reason a bulk load does not care
+    how big the file is — and `cancelled` is polled between chunks so a
+    long load can be stopped between round trips rather than mid-batch.
+    """
+    size = max(1, int(size))
+    batch: list[Sequence[Any]] = []
+    start = 0
+    for index, row in enumerate(rows):
+        batch.append(row)
+        if len(batch) >= size:
+            if cancelled is not None and cancelled():
+                raise BulkCancelled("The import was cancelled; nothing was written")
+            yield start, batch
+            batch = []
+            start = index + 1
+    if batch:
+        if cancelled is not None and cancelled():
+            raise BulkCancelled("The import was cancelled; nothing was written")
+        yield start, batch
 
 
 @dataclass(frozen=True)
@@ -1790,6 +1825,202 @@ class Connector(ABC):
         if run is None:
             raise ConnectorError("This connection cannot apply batched edits")
         return run(sql, params)[2]
+
+    # Bulk load (CORE-37). One file, one transaction, executemany per
+    # batch — the import dialog's engine, and usable by anything else
+    # that has many rows and one table to put them in.
+
+    def insert_many(
+        self,
+        table: str,
+        columns: Sequence[str],
+        rows: Iterable[Sequence[Any]],
+        *,
+        batch_size: int = 500,
+        before: str = "",
+        on_progress: Callable[[int], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> int:
+        """Insert `rows` into `table`, all of them or none of them.
+
+        `rows` is an iterable of value sequences in `columns` order and
+        is consumed lazily, so a file bigger than memory loads in
+        batches of `batch_size` through the driver's executemany. Every
+        value is bound; no row content ever reaches the SQL text.
+
+        The whole load is one explicit transaction — including
+        `before`, the statement that empties the table for a
+        replace-then-load, which is why it runs inside rather than
+        ahead of it. Any failure rolls the lot back and raises
+        BatchError whose `index` is the row that could not be inserted,
+        found by replaying the failed batch a row at a time in a
+        transaction that is thrown away.
+
+        A batch already open on this connection (a BEGIN the user
+        typed) is joined through a SAVEPOINT rather than nested, the
+        same bargain apply_changes() makes: a failure undoes the load
+        and nothing else, and the user's Commit still decides.
+        """
+        columns = list(columns)
+        if not columns:
+            raise ConnectorError("Refusing to insert with no columns")
+        self._assert_batch_columns(table, [RowOperation(
+            kind="insert", values={name: None for name in columns}
+        )])
+        sql = self._insert_many_statement(table, columns)
+        joined = self.in_transaction()
+        savepoint = "sqlide_import"
+        self._run_statement(
+            f"SAVEPOINT {savepoint}" if joined else "BEGIN"
+        )
+        written = 0
+        failure: tuple[list[Sequence[Any]], int, ConnectorError] | None = None
+        try:
+            if before:
+                self._run_statement(before)
+            for start, batch in _batched(rows, batch_size, cancelled):
+                try:
+                    self._run_many(sql, batch)
+                except ConnectorError as exc:
+                    failure = (batch, start, exc)
+                    raise
+                written += len(batch)
+                if on_progress is not None:
+                    on_progress(written)
+        except Exception:
+            try:
+                self._run_statement(
+                    f"ROLLBACK TO SAVEPOINT {savepoint}"
+                    if joined
+                    else "ROLLBACK"
+                )
+            except ConnectorError:
+                pass
+            if failure is not None:
+                # Only now that the load's transaction is gone can the
+                # failed batch be replayed to find which row it was.
+                batch, start, exc = failure
+                raise self._locate_row(sql, batch, start, exc) from exc
+            raise
+        self._run_statement(
+            f"RELEASE SAVEPOINT {savepoint}" if joined else "COMMIT"
+        )
+        return written
+
+    def _insert_many_statement(
+        self, table: str, columns: Sequence[str]
+    ) -> str:
+        marker = self.placeholder
+        names = ", ".join(self.quote_ident(name) for name in columns)
+        marks = ", ".join([marker] * len(columns))
+        return (
+            f"INSERT INTO {self.quote_ident(table)} ({names}) "
+            f"VALUES ({marks})"
+        )
+
+    def _run_many(self, sql: str, rows: list[Sequence[Any]]) -> int:
+        """One statement, once per row, in the fewest round trips the
+        driver offers. The generic version has no executemany to reach,
+        so it sends them one at a time; the adapters override."""
+        count = 0
+        for row in rows:
+            count += self._run_operation(sql, tuple(row))
+        return count
+
+    def _locate_row(
+        self,
+        sql: str,
+        batch: list[Sequence[Any]],
+        start: int,
+        error: ConnectorError,
+    ) -> BatchError:
+        """Which row of a failed batch is the bad one.
+
+        executemany reports one error for many rows, and "somewhere in
+        rows 500-999" is not an answer anybody can use. So the batch is
+        replayed one row at a time inside a transaction that is rolled
+        back whatever happens — nothing here can commit, and the outer
+        transaction has already been unwound by the caller. A replay
+        that finds nothing wrong (a constraint the batch as a whole
+        violated) still names the batch's first row.
+        """
+        probe = "sqlide_probe"
+        joined = self.in_transaction()
+        try:
+            self._run_statement(
+                f"SAVEPOINT {probe}" if joined else "BEGIN"
+            )
+        except ConnectorError:
+            return BatchError(str(error), start)
+        try:
+            for offset, row in enumerate(batch):
+                try:
+                    self._run_operation(sql, tuple(row))
+                except ConnectorError as exc:
+                    return BatchError(
+                        f"row {start + offset + 1}: {exc}", start + offset
+                    )
+        finally:
+            try:
+                self._run_statement(
+                    f"ROLLBACK TO SAVEPOINT {probe}" if joined else "ROLLBACK"
+                )
+                if joined:
+                    self._run_statement(f"RELEASE SAVEPOINT {probe}")
+            except ConnectorError:
+                pass
+        return BatchError(str(error), start)
+
+    def truncate_sql(self, table: str) -> str:
+        """The statement that empties `table` — a dialect question, so
+        the adapter answers it. TRUNCATE where there is one; SQLite has
+        none and deletes instead. Shown to the user through
+        backend/sql_risk.py before it ever runs."""
+        return f"TRUNCATE TABLE {self.quote_ident(table)}"
+
+    #: Column type names, lowercased, whose family decides how imported
+    #: text is coerced (CORE-37). Matched as substrings against the
+    #: declared type, longest first, so "double precision" and
+    #: "smallint" land where they should. Adapters override value_kind()
+    #: where their type names do not read like SQL-92's.
+    VALUE_KINDS = (
+        ("bool", "boolean"),
+        ("bit", "boolean"),
+        ("serial", "integer"),
+        ("int", "integer"),
+        ("decimal", "number"),
+        ("numeric", "number"),
+        ("real", "number"),
+        ("double", "number"),
+        ("float", "number"),
+        ("blob", "binary"),
+        ("bytea", "binary"),
+        ("binary", "binary"),
+    )
+
+    def value_kind(self, type_name: str) -> str:
+        """Which kind of value a column of this declared type takes:
+        "integer", "number", "boolean", "binary" or "text".
+
+        The one place an import learns what a column will accept, so
+        the coercion in backend/importer.py stays free of every
+        engine's type names. Anything unrecognised is "text" — the
+        driver and the server then decide, which is how dates, JSON and
+        a dialect's own types work without being listed.
+        """
+        name = (type_name or "").strip().lower()
+        for needle, kind in self.VALUE_KINDS:
+            if needle in name:
+                return kind
+        return "text"
+
+    def column_kinds(self, table: str) -> dict[str, str]:
+        """Every column of `table` mapped to its value kind — what the
+        import dialog asks before coercing a single field."""
+        return {
+            column.name: self.value_kind(column.type)
+            for column in self.catalog_columns(table)
+        }
 
     def _run_statement(self, sql: str) -> None:
         """A transaction-control statement (BEGIN, COMMIT, SAVEPOINT …)."""

@@ -506,6 +506,28 @@ class MetadataProvider:
     def capabilities(self) -> Capabilities:
         return self.CAPABILITIES
 
+    # Column types, for the one caller that has to turn text into
+    # values: the CSV import (CORE-37).
+
+    def column_kinds(self, table: str) -> dict[str, str]:
+        """Every column of `table` mapped to the kind of value it
+        takes — "integer", "number", "boolean", "binary" or "text".
+
+        The declared type comes from the catalog and the reading of it
+        from the adapter (Connector.value_kind), which is why an
+        importer can coerce a field without knowing which engine it is
+        talking to. A type this provider's adapter has never heard of
+        is "text": the driver and the server then decide, rather than
+        this layer guessing from the field's own text.
+        """
+        return self.connector.column_kinds(table)
+
+    def column_type_names(self) -> list[str]:
+        """The types this dialect offers, rendered — the designer's
+        menu (see Connector.column_type_specs), and the vocabulary
+        column_kinds() classifies against."""
+        return self.connector.column_types()
+
     # Extensions (PG-05). One listing, read through the registry in
     # db/extensions.py, so every question above this layer is asked
     # about a *feature* and never about an extension's name.

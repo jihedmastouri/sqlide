@@ -87,7 +87,7 @@
 | ID | Title | Depends on |
 |---|---|---|
 | CORE-36 | Export a result set or table to a file (done) | — |
-| CORE-37 | Import a CSV file into a table | CORE-36 |
+| CORE-37 | Import a CSV file into a table (done) | CORE-36 |
 | CORE-38 | Insert and delete rows in the data grid (done) | — |
 | CORE-39 | Grid edits saved as one transaction | — |
 | CORE-40 | Stable, efficient data-grid pagination | — |

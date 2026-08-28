@@ -148,6 +148,23 @@ class SqliteConnector(Connector):
         self._conn: sqlite3.Connection | None = None
         self._lock = threading.Lock()
 
+    @property
+    def join_kinds(self) -> tuple[str, ...]:
+        """The join kinds this build of SQLite has (CORE-20).
+
+        RIGHT and FULL arrived in SQLite 3.39, well past the 3.25 floor,
+        so whether they work is a property of the library linked into
+        this interpreter and nothing else can see it. Declared as a flag
+        here rather than tested for by name in the query builder.
+        """
+        outer = sqlite3.sqlite_version_info >= (3, 39)
+        return (
+            "INNER JOIN",
+            "LEFT JOIN",
+            *(("RIGHT JOIN", "FULL JOIN") if outer else ()),
+            "CROSS JOIN",
+        )
+
     def connect(self) -> None:
         self.invalidate_catalog()
         # sqlite3.connect() silently creates missing files; a typo'd path

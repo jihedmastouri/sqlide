@@ -90,7 +90,7 @@ def test_join_prefills_from_a_foreign_key(sqlite_tab) -> None:
     row = tab._join_rows[0]
     row._table.set_selected(row._keys.index("users"))
     tab._sync_state()
-    assert (row.left(), row.right()) == ("orders.user_id", "users.id")
+    assert row.conditions() == [("orders.user_id", "=", "users.id")]
     sql = render(tab.query_model(), dialect=tab._dialect()).sql
     assert 'INNER JOIN "users"' in sql
     assert 'ON "orders"."user_id" = "users"."id"' in sql
@@ -117,9 +117,9 @@ def test_postgres_sources_and_sql_are_schema_qualified(postgres) -> None:
         row = tab._join_rows[0]
         row._table.set_selected(row._keys.index("public.users"))
         tab._sync_state()
-        assert (row.left(), row.right()) == (
-            "core18.orders.user_id", "public.users.id",
-        )
+        # Columns are qualified by alias, which defaults to the bare
+        # table name even where the source key carries a schema.
+        assert row.conditions() == [("orders.user_id", "=", "users.id")]
         sql = render(tab.query_model(), dialect=tab._dialect()).sql
         assert 'FROM "core18"."orders"' in sql
         assert 'INNER JOIN "public"."users"' in sql
@@ -171,8 +171,8 @@ def test_tab_state_round_trips_the_whole_query(sqlite_tab) -> None:
     assert back._distinct.get_active() is True
     assert int(back._limit.get_value()) == 42
     assert back._checked == {"orders.id", "users.name"}
-    assert [(r.kind(), r.table(), r.left(), r.right()) for r in back._join_rows] == [
-        ("INNER JOIN", "users", "orders.user_id", "users.id")
+    assert [(r.kind(), r.table(), r.conditions()) for r in back._join_rows] == [
+        ("INNER JOIN", "users", [("orders.user_id", "=", "users.id")])
     ]
     assert back._filter_rows[0].condition().column == "users.name"
     assert back._filter_rows[0].condition().value == "ada"

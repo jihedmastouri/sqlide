@@ -111,6 +111,22 @@ def _grouped(
     return [bucket for buckets in groups.values() for bucket in buckets]
 
 
+def constraints(
+    relations: Sequence[RelationInfo],
+) -> list[list[RelationInfo]]:
+    """The whole catalog's foreign keys, one list per constraint.
+
+    The same grouping the navigation menus use, over every key rather
+    than one table's: what the query builder needs to prefill *all* the
+    columns of a composite key as separate ON conditions (CORE-20).
+    """
+    return _grouped(
+        relations,
+        key=lambda r: (r.schema, r.table, r.ref_schema, r.ref_table),
+        seen_of=lambda r: r.ref_column,
+    )
+
+
 def outgoing_targets(
     relations: Sequence[RelationInfo],
     table: str,

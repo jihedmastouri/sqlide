@@ -736,6 +736,19 @@ class Connector(ABC):
             self.catalog_cache.drop(key)
         return list(self.catalog_cache.get(key, self.list_relations))
 
+    def catalog_relations_in(
+        self, schema: str, *, reload: bool = False
+    ) -> list[RelationInfo]:
+        """list_relations_in(schema), cached for this connection."""
+        key = self._catalog_key("relations_in", schema)
+        if reload:
+            self.catalog_cache.drop(key)
+        return list(
+            self.catalog_cache.get(
+                key, lambda: self.list_relations_in(schema)
+            )
+        )
+
     def catalog_schemas(
         self, *, include_system: bool = False, reload: bool = False
     ) -> list[str]:
@@ -907,6 +920,16 @@ class Connector(ABC):
         foreign-key catalog need no override.
         """
         return []
+
+    def list_relations_in(self, schema: str) -> list[RelationInfo]:
+        """The foreign keys of one named schema.
+
+        Concrete default (not abstract): where a schema is not a level
+        of its own there is only one set of keys to give and the
+        argument is redundant. Adapters with schemas override it
+        (CORE-18).
+        """
+        return self.list_relations()
 
     # Table properties (CORE-04). Everything here is optional: the
     # base implementations answer "nothing to report", and a provider

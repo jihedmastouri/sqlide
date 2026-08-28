@@ -707,17 +707,23 @@ class QueryBuilderTab(Gtk.Box):
             for key in keys
         ]
         refs: dict[str, TableRef] = {}
+        taken: set[str] = set()
         for key in keys:
             source = self._source(key)
             name = source.name if source else key
             schema = (
                 source.schema if source and self._caps.schemas else ""
             )
-            refs[key] = TableRef(
-                name=name,
-                schema=schema,
-                alias=key if names.count(name) > 1 else "",
-            )
+            alias = ""
+            if names.count(name) > 1:
+                # Two schemas, one table name: the statement needs an
+                # alias to tell the columns of the two apart, and
+                # "crm_users" reads better in it than the dotted key.
+                alias = f"{schema}_{name}" if schema else name
+                while alias in taken:
+                    alias += "_"
+                taken.add(alias)
+            refs[key] = TableRef(name=name, schema=schema, alias=alias)
         return refs
 
     def _column_ref(

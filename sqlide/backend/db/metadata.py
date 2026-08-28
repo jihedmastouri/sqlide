@@ -744,9 +744,31 @@ class MetadataProvider:
 
     def relations(self) -> list[RelationInfo]:
         """The database's foreign keys, for anything that infers a
-        join from the schema. Schema-qualified on the engines that
-        fill `RelationInfo.schema` / `ref_schema`."""
-        return _safe(self.connector.catalog_relations, [])
+        join from the schema (CORE-18).
+
+        Where the engine has schemas the keys are collected schema by
+        schema, so a key in a schema the search path never reaches is
+        still there, and both ends carry the schema they live in.
+        """
+        if not self.capabilities().schemas:
+            return _safe(self.connector.catalog_relations, [])
+        found: list[RelationInfo] = []
+        seen: set[tuple] = set()
+        for schema in _safe(self.connector.catalog_schemas, []):
+            if self.is_system_schema(schema):
+                continue
+            for rel in _safe(
+                lambda s=schema: self.connector.catalog_relations_in(s), []
+            ):
+                key = (
+                    rel.schema, rel.table, rel.column,
+                    rel.ref_schema, rel.ref_table, rel.ref_column,
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                found.append(rel)
+        return found
 
     def describe(self, ref: NodeRef) -> objects.ObjectInfo:
         """The read-only descriptor the info view renders (CORE-01),

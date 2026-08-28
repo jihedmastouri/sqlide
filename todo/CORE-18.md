@@ -1,6 +1,6 @@
 ## CORE-18 — Builder reads the MetadataProvider (schemas, views, capabilities)
 
-- **Status:** todo
+- **Status:** Done
 - **Depends on:** CORE-02, CORE-17
 - **From:** RS-01 (see `docs/query-builder-research.md`)
 
@@ -42,12 +42,12 @@ list is schema-qualified wherever the engine has schemas.
 
 ### Acceptance criteria
 
-- [ ] No direct `connector.list_tables()`/`list_columns()` call remains
+- [x] No direct `connector.list_tables()`/`list_columns()` call remains
       in `frontend/query_builder.py`.
-- [ ] On PostgreSQL the source picker shows `schema.table`, and the
+- [x] On PostgreSQL the source picker shows `schema.table`, and the
       generated SQL qualifies names.
-- [ ] Views (and materialized views where supported) can be selected as
+- [x] Views (and materialized views where supported) can be selected as
       sources and joined.
-- [ ] Foreign-key prefill honours `RelationInfo.schema`/`ref_schema`
+- [x] Foreign-key prefill honours `RelationInfo.schema`/`ref_schema`
       and works across schemas.
-- [ ] On SQLite and MySQL the picker reads exactly as it does today.
+- [x] On SQLite and MySQL the picker reads exactly as it does today.

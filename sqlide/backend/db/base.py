@@ -705,12 +705,49 @@ class Connector(ABC):
             self.catalog_cache.get(key, lambda: self.list_columns(table))
         )
 
+    def catalog_tables_in(
+        self, schema: str, *, reload: bool = False
+    ) -> list[TableInfo]:
+        """list_tables_in(schema), cached for this connection."""
+        key = self._catalog_key("tables_in", schema)
+        if reload:
+            self.catalog_cache.drop(key)
+        return list(
+            self.catalog_cache.get(key, lambda: self.list_tables_in(schema))
+        )
+
+    def catalog_columns_in(
+        self, schema: str, table: str, *, reload: bool = False
+    ) -> list[ColumnInfo]:
+        """list_columns_in(schema, table), cached for this connection."""
+        key = self._catalog_key("columns_in", f"{schema}.{table}")
+        if reload:
+            self.catalog_cache.drop(key)
+        return list(
+            self.catalog_cache.get(
+                key, lambda: self.list_columns_in(schema, table)
+            )
+        )
+
     def catalog_relations(self, *, reload: bool = False) -> list[RelationInfo]:
         """list_relations(), cached for this connection."""
         key = self._catalog_key("relations")
         if reload:
             self.catalog_cache.drop(key)
         return list(self.catalog_cache.get(key, self.list_relations))
+
+    def catalog_relations_in(
+        self, schema: str, *, reload: bool = False
+    ) -> list[RelationInfo]:
+        """list_relations_in(schema), cached for this connection."""
+        key = self._catalog_key("relations_in", schema)
+        if reload:
+            self.catalog_cache.drop(key)
+        return list(
+            self.catalog_cache.get(
+                key, lambda: self.list_relations_in(schema)
+            )
+        )
 
     def catalog_schemas(
         self, *, include_system: bool = False, reload: bool = False
@@ -777,6 +814,17 @@ class Connector(ABC):
         it to fill a schema node.
         """
         return self.list_tables()
+
+    def list_columns_in(self, schema: str, table: str) -> list[ColumnInfo]:
+        """Columns of one table in one named schema, in schema order.
+
+        Concrete default (not abstract): where a schema is not a level
+        of its own — SQLite, MySQL, JDBC — the schema is redundant and
+        there is only one table of that name to read. Adapters with
+        schemas override it so a table off the search path can still
+        be read (CORE-18).
+        """
+        return self.list_columns(table)
 
     def list_schemas(self, *, include_system: bool = False) -> list[str]:
         """Schemas inside the connected database, sorted by name, for
@@ -872,6 +920,16 @@ class Connector(ABC):
         foreign-key catalog need no override.
         """
         return []
+
+    def list_relations_in(self, schema: str) -> list[RelationInfo]:
+        """The foreign keys of one named schema.
+
+        Concrete default (not abstract): where a schema is not a level
+        of its own there is only one set of keys to give and the
+        argument is redundant. Adapters with schemas override it
+        (CORE-18).
+        """
+        return self.list_relations()
 
     # Table properties (CORE-04). Everything here is optional: the
     # base implementations answer "nothing to report", and a provider

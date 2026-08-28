@@ -797,6 +797,19 @@ class PostgresConnector(Connector):
         ]
 
     def list_columns(self, table: str) -> list[ColumnInfo]:
+        return self._columns_of(self._relation_ref(table))
+
+    def list_columns_in(self, schema: str, table: str) -> list[ColumnInfo]:
+        """One named schema's table, whatever the search path says —
+        the twin of list_tables_in, so a builder or a tree node can
+        read a table the path would never resolve to (CORE-18)."""
+        return self._columns_of(
+            f"{self.quote_ident(schema)}.{self.quote_ident(table)}"
+        )
+
+    def _columns_of(self, relation: str) -> list[ColumnInfo]:
+        """Columns of the relation `relation` names, as text
+        to_regclass() resolves (already quoted by the caller)."""
         # attrelid = to_regclass(…), not relname = …: matching on the
         # bare name would pull in a same-named table from every other
         # schema on the search_path and hand back their columns merged
@@ -813,7 +826,7 @@ class PostgresConnector(Connector):
             "GROUP BY a.attname, a.atttypid, a.atttypmod, a.attnotnull, "
             "a.attnum "
             "ORDER BY a.attnum",
-            (self._relation_ref(table),),
+            (relation,),
         )
         return [
             ColumnInfo(
@@ -854,6 +867,15 @@ class PostgresConnector(Connector):
         schemas. The schemas travel with the relation and the view
         qualifies the ones that cross (RelationInfo.target).
         """
+        return self._relations(f"tc.table_schema IN ({_USER_SCHEMAS})", ())
+
+    def list_relations_in(self, schema: str) -> list[RelationInfo]:
+        """The foreign keys of one named schema, search path or not, so
+        anything that browses schemas by name can infer a join there
+        too (CORE-18)."""
+        return self._relations("tc.table_schema = %s", (schema,))
+
+    def _relations(self, where: str, params: tuple) -> list[RelationInfo]:
         _, rows, _ = self._run(
             "SELECT tc.table_schema, tc.table_name, kcu.column_name, "
             "ccu.table_schema AS ref_schema, "
@@ -866,8 +888,9 @@ class PostgresConnector(Connector):
             "ON ccu.constraint_name = tc.constraint_name "
             "AND ccu.constraint_schema = tc.constraint_schema "
             "WHERE tc.constraint_type = 'FOREIGN KEY' "
-            f"AND tc.table_schema IN ({_USER_SCHEMAS}) "
-            "ORDER BY tc.table_schema, tc.table_name, kcu.column_name"
+            f"AND {where} "
+            "ORDER BY tc.table_schema, tc.table_name, kcu.column_name",
+            params,
         )
         return [
             RelationInfo(

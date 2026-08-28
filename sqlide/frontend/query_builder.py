@@ -15,21 +15,29 @@ runs.
 
 Run executes the statement and shows the rows in a ResultGrid below;
 Open in Console hands the SQL to a fresh query console for manual
-tweaking. The whole catalog (tables, columns, relations) is loaded
+tweaking. The whole catalog (sources, columns, relations) is loaded
 once up front — like the relation graph tab — so join and column
 choices never need another round trip.
 
-Column identities are handled qualified ("table.column") internally;
-the rendered SQL drops the table prefix while no join is present.
+The catalog comes from the MetadataProvider, never from the connector
+directly (CORE-18): that is what knows the engine has schemas, which
+relations can be selected from — views and materialized views
+included — and what it can do at all. A source is therefore identified
+by its key, "schema.table" where the engine has schemas and the bare
+name where it does not, and the same key qualifies its columns
+("key.column") inside the tab; the rendered SQL drops the prefix while
+no join is present, and writes the schema only where there is one.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable, Sequence
 
 from gi.repository import Gtk
 
 from sqlide.backend.connections import ConnectionProfile
+from sqlide.backend.db import registry
 from sqlide.backend.db.base import (
     NO_VALUE_OPERATORS,
     ColumnInfo,
@@ -38,6 +46,7 @@ from sqlide.backend.db.base import (
     RelationInfo,
     ResultSet,
 )
+from sqlide.backend.db.metadata import Capabilities, NodeRef
 from sqlide.backend.db.query_model import (
     Column,
     Condition,
@@ -75,6 +84,53 @@ JOIN_KINDS = ("INNER JOIN", "LEFT JOIN", "RIGHT JOIN")
 DEFAULT_LIMIT = 500
 
 
+@dataclass(frozen=True)
+class _Source:
+    """One relation the builder can select from, as the provider
+    handed it over: the node itself plus the two strings the UI needs.
+
+    `key` is the identity everything else uses — the qualified name on
+    an engine with schemas, the bare name elsewhere — so two tables of
+    the same name in different schemas never collapse into one entry.
+    """
+
+    ref: NodeRef
+    key: str
+    label: str
+
+    @property
+    def name(self) -> str:
+        return self.ref.name
+
+    @property
+    def schema(self) -> str:
+        return self.ref.schema
+
+
+def _source_of(ref: NodeRef, *, schemas: bool) -> _Source:
+    """A provider node as a picker entry. The note says what is being
+    selected when it is not a plain table — a view is a perfectly good
+    source, but you should be able to see that it is one."""
+    key = f"{ref.schema}.{ref.name}" if schemas and ref.schema else ref.name
+    if ref.kind == "view":
+        note = (
+            _("materialized view")
+            if ref.detail == "materialized"
+            else _("view")
+        )
+    else:
+        note = _(ref.detail) if ref.detail else ""
+    return _Source(ref=ref, key=key, label=f"{key}  ·  {note}" if note else key)
+
+
+def _selected_key(dropdown: Gtk.DropDown, keys: Sequence[str]) -> str:
+    """The key behind the selected row — the dropdown shows labels."""
+    index = dropdown.get_selected()
+    if 0 <= index < len(keys):
+        return keys[index]
+    return ""
+
+
 class _JoinRow(Gtk.Box):
     """One join line: [join kind] [table] ON [left column] = [right
     column]. The builder feeds the column choices (set_choices) as the
@@ -82,13 +138,16 @@ class _JoinRow(Gtk.Box):
 
     def __init__(
         self,
-        tables: list[str],
+        sources: Sequence[_Source],
         on_remove: Callable[["_JoinRow"], None],
         on_change: Callable[[], None],
         kinds: Sequence[str] = JOIN_KINDS,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self._on_change = on_change
+        # The dropdown shows labels ("crm.orders · view"); everything
+        # else works in keys, so the two never get mixed up.
+        self._keys = [source.key for source in sources]
         self._updating = False
         # A refilled DropDown auto-selects its first item, so "left()
         # is empty" can't signal "not chosen yet" — track explicit ON
@@ -96,7 +155,9 @@ class _JoinRow(Gtk.Box):
         # the builder prefill from a foreign key until then.
         self._on_touched = False
         self._kind = Gtk.DropDown(model=Gtk.StringList.new(list(kinds)))
-        self._table = Gtk.DropDown(model=Gtk.StringList.new(tables))
+        self._table = Gtk.DropDown(
+            model=Gtk.StringList.new([source.label for source in sources])
+        )
         self._left = Gtk.DropDown(
             model=Gtk.StringList.new([]), hexpand=True
         )
@@ -133,7 +194,8 @@ class _JoinRow(Gtk.Box):
         return _selected_string(self._kind)
 
     def table(self) -> str:
-        return _selected_string(self._table)
+        """The joined source's key, not its label."""
+        return _selected_key(self._table, self._keys)
 
     def left(self) -> str:
         return _selected_string(self._left)
@@ -191,9 +253,10 @@ class QueryBuilderTab(Gtk.Box):
         # Rebound by the window once the tab page exists (like TableTab).
         self.on_ran: Callable[[str, bool], None] | None = None
 
-        self._tables: list[str] = []
-        self._columns: dict[str, list[ColumnInfo]] = {}
+        self._sources: list[_Source] = []
+        self._columns: dict[str, list[ColumnInfo]] = {}  # by source key
         self._relations: list[RelationInfo] = []
+        self._caps = Capabilities()
         self._sql_dialect: Dialect = GENERIC
         self._join_rows: list[_JoinRow] = []
         self._filter_rows: list[_FilterRow] = []
@@ -357,31 +420,49 @@ class QueryBuilderTab(Gtk.Box):
 
         def work():
             connector = self._ensure(self.profile)
-            tables = [
-                t.name for t in connector.list_tables() if t.kind == "table"
+            # Everything the builder knows about the database comes
+            # through the provider (CORE-18): it is what knows about
+            # schemas, which relations are selectable, and what this
+            # engine can do. The connector is only asked for its
+            # quoting, via dialect_for.
+            provider = registry.create_provider(self.profile.kind, connector)
+            caps = provider.capabilities()
+            sources = [
+                _source_of(ref, schemas=caps.schemas)
+                for ref in provider.list_sources()
             ]
-            columns = {name: connector.list_columns(name) for name in tables}
-            relations = connector.list_relations()
+            columns = {
+                source.key: provider.columns_of(source.ref)
+                for source in sources
+            }
             # A Dialect is pure data (quote_ident is a pure string
             # function); safe to keep for main-thread SQL generation.
-            return tables, columns, relations, dialect_for(connector)
+            return (
+                sources,
+                columns,
+                provider.relations(),
+                caps,
+                dialect_for(connector),
+            )
 
         def done(result) -> None:
             (
-                self._tables,
+                self._sources,
                 self._columns,
                 self._relations,
+                self._caps,
                 self._sql_dialect,
             ) = result
             self._loading = True
             try:
                 self._table_dropdown.set_model(
-                    Gtk.StringList.new(self._tables)
-                )
-                if self._initial_table in self._tables:
-                    self._table_dropdown.set_selected(
-                        self._tables.index(self._initial_table)
+                    Gtk.StringList.new(
+                        [source.label for source in self._sources]
                     )
+                )
+                index = self._initial_index()
+                if index is not None:
+                    self._table_dropdown.set_selected(index)
             finally:
                 self._loading = False
             self._status.set_text("")
@@ -393,13 +474,43 @@ class QueryBuilderTab(Gtk.Box):
 
         run_async(work, done, failed)
 
+    def _initial_index(self) -> int | None:
+        """Where the table this tab was opened on sits in the picker.
+
+        The name may arrive qualified (from a schema node, or from a
+        restored tab) or bare (from a menu on an engine without
+        schemas), so both are matched — the qualified one first, since
+        it is the one that says which table it means.
+        """
+        wanted = self._initial_table
+        if not wanted:
+            return None
+        keys = [source.key for source in self._sources]
+        if wanted in keys:
+            return keys.index(wanted)
+        for index, source in enumerate(self._sources):
+            if source.name == wanted:
+                return index
+        return None
+
     # State
 
     def _base_table(self) -> str:
-        return _selected_string(self._table_dropdown)
+        """The base source's key ("schema.table" where the engine has
+        schemas), which is what the rest of the tab identifies a
+        source by."""
+        return _selected_key(
+            self._table_dropdown, [source.key for source in self._sources]
+        )
+
+    def _source(self, key: str) -> _Source | None:
+        for source in self._sources:
+            if source.key == key:
+                return source
+        return None
 
     def _query_tables(self) -> list[str]:
-        """Base table plus joined tables, in join order."""
+        """Base source plus joined sources, by key, in join order."""
         tables = [self._base_table()]
         for row in self._join_rows:
             if row.table():
@@ -446,21 +557,35 @@ class QueryBuilderTab(Gtk.Box):
             row.set_columns(names)
         self._refresh_sql()
 
+    def _relation_key(self, schema: str, table: str) -> str:
+        """A foreign key's end as a source key. The engines with
+        schemas fill `RelationInfo.schema` / `ref_schema` (PG-01), so a
+        key that crosses a schema resolves to the right table; where
+        the engine leaves them empty the name is the key, as long as
+        it names exactly one source."""
+        if self._caps.schemas and schema:
+            return f"{schema}.{table}"
+        matches = [s.key for s in self._sources if s.name == table]
+        return matches[0] if len(matches) == 1 else table
+
     def _relation_for(
         self, left_tables: list[str], right_table: str
     ) -> tuple[str, str] | None:
-        """Foreign key connecting the joined table to any table already
-        in the query, as ("t.col", "t.col") for the ON dropdowns."""
+        """Foreign key connecting the joined source to any source
+        already in the query, as ("key.col", "key.col") for the ON
+        dropdowns."""
         for rel in self._relations:
-            if rel.table == right_table and rel.ref_table in left_tables:
+            here = self._relation_key(rel.schema, rel.table)
+            there = self._relation_key(rel.ref_schema, rel.ref_table)
+            if here == right_table and there in left_tables:
                 return (
-                    f"{rel.ref_table}.{rel.ref_column or ''}",
-                    f"{rel.table}.{rel.column}",
+                    f"{there}.{rel.ref_column or ''}",
+                    f"{here}.{rel.column}",
                 )
-            if rel.ref_table == right_table and rel.table in left_tables:
+            if there == right_table and here in left_tables:
                 return (
-                    f"{rel.table}.{rel.column}",
-                    f"{rel.ref_table}.{rel.ref_column or ''}",
+                    f"{here}.{rel.column}",
+                    f"{there}.{rel.ref_column or ''}",
                 )
         return None
 
@@ -480,7 +605,9 @@ class QueryBuilderTab(Gtk.Box):
         valid = set(self._qualified_columns(tables))
         self._checked &= valid
         for qualified in self._qualified_columns(tables):
-            label = qualified if len(tables) > 1 else qualified.split(".", 1)[1]
+            label = (
+                qualified if len(tables) > 1 else qualified.rpartition(".")[2]
+            )
             check = Gtk.CheckButton(label=label)
             check.qualified = qualified
             check.set_active(qualified in self._checked)
@@ -498,10 +625,10 @@ class QueryBuilderTab(Gtk.Box):
     # Join / filter / sort rows
 
     def _add_join_row(self) -> None:
-        if not self._tables:
+        if not self._sources:
             return
         row = _JoinRow(
-            self._tables,
+            self._sources,
             self._remove_join_row,
             self._sync_state,
             kinds=self._join_kinds(),
@@ -565,12 +692,51 @@ class QueryBuilderTab(Gtk.Box):
 
     # SQL generation
 
-    def _column_ref(self, name: str) -> Column:
-        """A display column name ("t.c" once a join is present, "c"
-        otherwise) as a model reference."""
+    def _table_refs(self) -> dict[str, TableRef]:
+        """Every source in the query as a model TableRef, by key.
+
+        The schema rides along only where the engine has schemas, so
+        the rendered SQL says `crm.orders` on PostgreSQL and plain
+        `orders` on SQLite and MySQL. A bare name shared by two
+        schemas gets the qualified key as its alias, which is what
+        keeps the columns of the two apart in the statement.
+        """
+        keys = self._query_tables()
+        names = [
+            (source.name if (source := self._source(key)) else key)
+            for key in keys
+        ]
+        refs: dict[str, TableRef] = {}
+        taken: set[str] = set()
+        for key in keys:
+            source = self._source(key)
+            name = source.name if source else key
+            schema = (
+                source.schema if source and self._caps.schemas else ""
+            )
+            alias = ""
+            if names.count(name) > 1:
+                # Two schemas, one table name: the statement needs an
+                # alias to tell the columns of the two apart, and
+                # "crm_users" reads better in it than the dotted key.
+                alias = f"{schema}_{name}" if schema else name
+                while alias in taken:
+                    alias += "_"
+                taken.add(alias)
+            refs[key] = TableRef(name=name, schema=schema, alias=alias)
+        return refs
+
+    def _column_ref(
+        self, name: str, refs: dict[str, TableRef] | None = None
+    ) -> Column:
+        """A display column name ("key.c" once a join is present, "c"
+        otherwise) as a model reference. The source key is the picker's
+        — possibly "schema.table" — so it is split from the right and
+        translated into how the model qualifies that source."""
         if "." in name:
-            table, _sep, column = name.partition(".")
-            return Column(name=column, source=table)
+            key, _sep, column = name.rpartition(".")
+            ref = (refs or {}).get(key)
+            return Column(name=column, source=ref.key if ref else key)
         return Column(name=name)
 
     def query_model(self) -> QueryModel:
@@ -583,14 +749,15 @@ class QueryBuilderTab(Gtk.Box):
         base = self._base_table()
         if not base:
             return QueryModel()
+        refs = self._table_refs()
         joins = tuple(
             Join(
                 kind=row.kind(),
-                source=TableRef(name=row.table()),
+                source=refs.get(row.table(), TableRef(name=row.table())),
                 on=(
                     On(
-                        left=self._column_ref(row.left()),
-                        right=self._column_ref(row.right()),
+                        left=self._column_ref(row.left(), refs),
+                        right=self._column_ref(row.right(), refs),
                     ),
                 ),
             )
@@ -599,7 +766,7 @@ class QueryBuilderTab(Gtk.Box):
         )
         # Keep the schema's column order rather than click order.
         projections = tuple(
-            Projection(column=self._column_ref(qualified))
+            Projection(column=self._column_ref(qualified, refs))
             for qualified in self._qualified_columns(self._query_tables())
             if qualified in self._checked
         )
@@ -612,7 +779,7 @@ class QueryBuilderTab(Gtk.Box):
                 (
                     cond.conjunction,
                     Condition(
-                        column=self._column_ref(cond.column),
+                        column=self._column_ref(cond.column, refs),
                         op=cond.op,
                         value=(
                             None
@@ -623,14 +790,14 @@ class QueryBuilderTab(Gtk.Box):
                 )
             )
         return QueryModel(
-            source=TableRef(name=base),
+            source=refs.get(base, TableRef(name=base)),
             joins=joins,
             projections=projections,
             distinct=self._distinct.get_active(),
             where=folded_group(lines),
             order_by=tuple(
                 Order(
-                    column=self._column_ref(row.spec().column),
+                    column=self._column_ref(row.spec().column, refs),
                     descending=row.spec().descending,
                 )
                 for row in self._sort_rows

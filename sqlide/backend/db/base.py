@@ -1379,6 +1379,26 @@ class Connector(ABC):
             if obj.table == table and obj.ddl.strip()
         ]
 
+    def run_bound(
+        self, sql: str, params: Sequence[Any] = ()
+    ) -> ResultSet:
+        """One read-only statement the app itself composed, with its
+        values bound rather than written into the text.
+
+        `fetch_rows` covers the one shape the grid needs; this is for
+        the shapes it does not — the cross-table value search builds
+        one statement per table (db/search.py) and has to bind the term
+        into every one of them. The SQL comes from this codebase and
+        its identifiers from the catalog; only the values are the
+        user's, and they arrive as parameters.
+
+        Concrete default (not abstract): an adapter with no
+        parameterised path says so rather than silently interpolating.
+        """
+        raise ConnectorError(
+            "This connection cannot run a parameterised statement"
+        )
+
     @abstractmethod
     def fetch_rows(
         self,

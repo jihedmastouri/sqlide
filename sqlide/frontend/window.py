@@ -89,6 +89,7 @@ from sqlide.backend import identity, schemas
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import metrics, objects, registry
 from sqlide.backend.db.base import Connector, ConnectorError, FilterCondition
+from sqlide.backend.db.relations import RelationTarget
 from sqlide.backend.db.metadata import NodeRef
 from sqlide.backend import settings as settings_backend
 from sqlide.backend.workspaces import HistoryEntry, Workspace
@@ -2529,6 +2530,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.show_error,
             on_aggregate=self.show_aggregate,
             on_value=self.show_cell_value,
+            on_navigate=self.open_related_rows,
         )
         page = self._append_tab(
             tab,
@@ -2543,6 +2545,29 @@ class MainWindow(Adw.ApplicationWindow):
             page.get_title(), sql, profile.name, ok
         )
         return tab
+
+    def open_related_rows(
+        self, profile: ConnectionProfile, target: RelationTarget
+    ) -> None:
+        """Follow a foreign key from the grid (CORE-43): open the
+        related table filtered to the row the cell points at, or to the
+        rows pointing back at it.
+
+        A key that leaves its schema opens on a profile pinned to that
+        schema (the same derived profile the sidebar's schema rows
+        use), so the bare name resolves to the right table rather than
+        to whichever one the search path finds first. The filter is an
+        ordinary filter — visible in the panel, editable, saveable —
+        so nothing new has to be persisted.
+        """
+        opened = (
+            schema_profile(profile, target.schema)
+            if target.schema
+            else profile
+        )
+        tab = self.open_table(opened, target.table)
+        if tab is not None:
+            tab.apply_saved_filters(target.filters)
 
     def open_table_section(
         self, profile: ConnectionProfile, table: str, section: str

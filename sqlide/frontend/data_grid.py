@@ -88,10 +88,18 @@ from sqlide.backend.db.base import (
     NO_VALUE_OPERATORS,
     ColumnInfo,
     Connector,
+    ConnectorError,
+    RelationInfo,
     FilterCondition,
     PageCursor,
     RowOperation,
     SortSpec,
+)
+from sqlide.backend.db.relations import (
+    RelationTarget,
+    foreign_key_columns,
+    incoming_targets,
+    outgoing_targets,
 )
 from sqlide.backend.workspaces import TabState
 from sqlide.backend.settings import max_map_features as settings_max_map_features
@@ -186,6 +194,17 @@ class ResultGrid(Gtk.ScrolledWindow):
         # from the default opener installed by export_dialog.attach.
         self.on_export: Callable[[], None] | None = None
         self._geo_columns: set[int] = set()
+        # Foreign-key navigation (CORE-43). The relations are read once
+        # per table load (and cached per connection by CORE-41), never
+        # per right-click; the menu entries are composed from them and
+        # the row under the pointer when the menu opens.
+        self.on_navigate: Callable[[RelationTarget], None] | None = None
+        self._relations: list[RelationInfo] = []
+        self._references: list[RelationInfo] = []
+        self._relation_table = ""
+        self._relation_schema = ""
+        self._fk_columns: set[str] = set()
+        self._nav_targets: list[RelationTarget] = []
         self._sort_order: list[tuple[str, bool]] = []
         # Used by "Copy As > INSERT Statement"; falls back to a placeholder.
         self.table_name = table_name
@@ -273,6 +292,9 @@ class ResultGrid(Gtk.ScrolledWindow):
                 # owner can actually write rows (see set_unlocked).
                 action.set_enabled(False)
                 setattr(self, f"_{name.replace('-', '_')}_action", action)
+        relate = Gio.SimpleAction.new("relate", GLib.VariantType.new("s"))
+        relate.connect("activate", self._on_relate)
+        actions.add_action(relate)
         copy_as = Gio.SimpleAction.new("copy-as", GLib.VariantType.new("s"))
         copy_as.connect(
             "activate", lambda _a, param: self.copy_selection(param.get_string())
@@ -285,31 +307,7 @@ class ResultGrid(Gtk.ScrolledWindow):
         actions.add_action(header_sort)
         self._view.insert_action_group("grid", actions)
 
-        menu = Gio.Menu()
-        menu.append("Select Row", "grid.select-row")
-        menu.append("Select Column", "grid.select-column")
-        copy_section = Gio.Menu()
-        copy_section.append("Copy", "grid.copy")
-        copy_as_menu = Gio.Menu()
-        for label, fmt in COPY_FORMATS:
-            copy_as_menu.append(label, f"grid.copy-as::{fmt}")
-        copy_section.append_submenu("Copy As", copy_as_menu)
-        copy_section.append("Export…", "grid.export")
-        copy_section.append("View Value", "grid.value")
-        copy_section.append("Aggregate", "grid.aggregate")
-        copy_section.append("Show on Map", "grid.show-map")
-        menu.append_section(None, copy_section)
-        if on_edit is not None:
-            edit_section = Gio.Menu()
-            edit_section.append("Set Cell to NULL", "grid.set-null")
-            menu.append_section(None, edit_section)
-        # Columns can also be reordered by dragging their headers; the
-        # menu items cover the cell-menu path.
-        move_section = Gio.Menu()
-        move_section.append("Move Column Left", "grid.move-left")
-        move_section.append("Move Column Right", "grid.move-right")
-        menu.append_section(None, move_section)
-        self._popover = Gtk.PopoverMenu.new_from_model(menu)
+        self._popover = Gtk.PopoverMenu.new_from_model(self._cell_menu())
         self._popover.set_parent(self._view)
         self._popover.set_has_arrow(False)
 
@@ -410,6 +408,7 @@ class ResultGrid(Gtk.ScrolledWindow):
         if self._sel_rows and self._sel_cols:
             self._menu_cell = (min(self._sel_rows), min(self._sel_cols))
         self._refresh_map_action()
+        self._popover.set_menu_model(self._cell_menu())
         rect = Gdk.Rectangle()
         rect.x = rect.y = 8
         rect.width = rect.height = 1
@@ -516,7 +515,9 @@ class ResultGrid(Gtk.ScrolledWindow):
                 factory.connect("setup", self._setup_label)
                 factory.connect("bind", self._bind_label, index)
             factory.connect("unbind", self._unbind_cell)
-            column = Gtk.ColumnViewColumn(title=name, factory=factory)
+            column = Gtk.ColumnViewColumn(
+                title=self._column_title(name), factory=factory
+            )
             column.set_resizable(True)
             column.set_expand(True)
             # No set_header_menu(): GTK's own header menu would be a
@@ -563,7 +564,134 @@ class ResultGrid(Gtk.ScrolledWindow):
         arrows = {name: "↓" if desc else "↑" for name, desc in self._sort_order}
         for name, column in zip(self._column_names, self._column_objs):
             arrow = arrows.get(name)
-            column.set_title(f"{name} {arrow}" if arrow else name)
+            title = self._column_title(name)
+            column.set_title(f"{title} {arrow}" if arrow else title)
+
+    def _column_title(self, name: str) -> str:
+        """A column header, marked where the column is a foreign key
+        (CORE-43) — the navigation is worth seeing before the menu is
+        opened, and an arrow says "this leads somewhere" without
+        costing a row of chrome."""
+        return f"{name} ⇢" if name in self._fk_columns else name
+
+    # Cell menu
+
+    def _cell_menu(self) -> Gio.Menu:
+        """Everything one cell offers. Rebuilt for each popup because
+        the foreign-key section depends on the row and column the menu
+        was opened on (CORE-43); the rest is constant."""
+        menu = Gio.Menu()
+        menu.append(_("Select Row"), "grid.select-row")
+        menu.append(_("Select Column"), "grid.select-column")
+        relation_section = self._relation_menu()
+        if relation_section is not None:
+            menu.append_section(None, relation_section)
+        copy_section = Gio.Menu()
+        copy_section.append("Copy", "grid.copy")
+        copy_as_menu = Gio.Menu()
+        for label, fmt in COPY_FORMATS:
+            copy_as_menu.append(label, f"grid.copy-as::{fmt}")
+        copy_section.append_submenu("Copy As", copy_as_menu)
+        copy_section.append("Export…", "grid.export")
+        copy_section.append("View Value", "grid.value")
+        copy_section.append("Aggregate", "grid.aggregate")
+        copy_section.append("Show on Map", "grid.show-map")
+        menu.append_section(None, copy_section)
+        if self._on_edit is not None:
+            edit_section = Gio.Menu()
+            edit_section.append("Set Cell to NULL", "grid.set-null")
+            menu.append_section(None, edit_section)
+        # Columns can also be reordered by dragging their headers; the
+        # menu items cover the cell-menu path.
+        move_section = Gio.Menu()
+        move_section.append("Move Column Left", "grid.move-left")
+        move_section.append("Move Column Right", "grid.move-right")
+        menu.append_section(None, move_section)
+        return menu
+
+    # Foreign-key navigation (CORE-43)
+
+    def set_relations(
+        self,
+        table: str,
+        relations: list[RelationInfo],
+        references: list[RelationInfo],
+        schema: str = "",
+    ) -> None:
+        """The relations of the table this grid is showing, read once
+        per load. A grid over a query result, or over an engine with no
+        foreign-key catalog, is simply never told any and then offers
+        no navigation at all — no error, no empty submenu."""
+        self._relation_table = table
+        self._relation_schema = schema
+        self._relations = list(relations)
+        self._references = list(references)
+        self._fk_columns = foreign_key_columns(relations, table, schema)
+        self._update_header_titles()
+
+    def _menu_row_values(self) -> dict[str, Any] | None:
+        """The row the menu was opened on, by column name."""
+        row, _col = self._menu_cell
+        item = self._store.get_item(row)
+        if item is None:
+            return None
+        return {
+            name: item.values[i]
+            for i, name in enumerate(self._column_names)
+            if i < len(item.values)
+        }
+
+    def _relation_menu(self) -> Gio.Menu | None:
+        """The navigation entries for the cell the menu is opening on,
+        or None when this cell leads nowhere: the outgoing keys the
+        column takes part in as plain items, the tables pointing back
+        at this row behind a References submenu."""
+        self._nav_targets = []
+        if self.on_navigate is None or not self._relation_table:
+            return None
+        values = self._menu_row_values()
+        if values is None:
+            return None
+        _row, col = self._menu_cell
+        if col >= len(self._column_names):
+            return None
+        out = outgoing_targets(
+            self._relations,
+            self._relation_table,
+            self._column_names[col],
+            values,
+            self._relation_schema,
+        )
+        back = incoming_targets(
+            self._references,
+            self._relation_table,
+            values,
+            self._relation_schema,
+        )
+        if not out and not back:
+            return None
+        section = Gio.Menu()
+        for target in out:
+            index = len(self._nav_targets)
+            self._nav_targets.append(target)
+            section.append(
+                _("Go to {table}").format(table=target.label),
+                f"grid.relate::{index}",
+            )
+        if back:
+            submenu = Gio.Menu()
+            for target in back:
+                index = len(self._nav_targets)
+                self._nav_targets.append(target)
+                submenu.append(target.label, f"grid.relate::{index}")
+            section.append_submenu(_("References"), submenu)
+        return section
+
+    def _on_relate(self, _action, param) -> None:
+        index = int(param.get_string())
+        if self.on_navigate is None or not 0 <= index < len(self._nav_targets):
+            return
+        self.on_navigate(self._nav_targets[index])
 
     def _column_menu(self, index: int) -> Gio.Menu:
         """Everything one column header offers, on either button:
@@ -1414,6 +1542,7 @@ class ResultGrid(Gtk.ScrolledWindow):
 
     def _popup_menu(self, widget, x, y) -> None:
         self._refresh_map_action()
+        self._popover.set_menu_model(self._cell_menu())
         ok, bounds = widget.compute_bounds(self._view)
         rect = Gdk.Rectangle()
         rect.x = int(bounds.origin.x + x) if ok else 0
@@ -1954,12 +2083,17 @@ class TableTab(Gtk.Box):
         show_error: Callable[[str], None],
         on_aggregate: AggregateCallback | None = None,
         on_value: ValueCallback | None = None,
+        on_navigate: Callable[[ConnectionProfile, RelationTarget], None]
+        | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.profile = profile
         self.table = table
         self._ensure = ensure_connector
         self._show_error = show_error
+        # Following a foreign key opens another table's tab, which only
+        # the window can do (CORE-43).
+        self._on_navigate = on_navigate
         # Public: the window rebinds it after the tab page exists so
         # every grid load (select, filter, sort, paging) lands in the
         # query history under this tab's panel name.
@@ -2019,6 +2153,10 @@ class TableTab(Gtk.Box):
         # The record side (CORE-42): the focused row read down the page
         # instead of across it. Built with the tab because it is one
         # list over the grid's own rows, not a second copy of them.
+        if on_navigate is not None:
+            self._grid.on_navigate = lambda target: on_navigate(
+                self.profile, target
+            )
         self._record = RecordView(self._grid)
         self._stack.add_named(self._record, "record")
         # Scrolling to the bottom of the current page fetches the next
@@ -2343,6 +2481,22 @@ class TableTab(Gtk.Box):
         ("-" for single-database connections like sqlite)."""
         return f"{self.profile.name}.{self.profile.database or '-'}.{self.table}"
 
+    def _read_relations(
+        self, connector: Connector
+    ) -> tuple[list[RelationInfo], list[RelationInfo]]:
+        """This table's outgoing and incoming foreign keys, read on the
+        load thread and cached per connection (CORE-41) — a right-click
+        never asks the server anything. An engine with no foreign-key
+        catalog (SQLite tables that declare none) answers with two
+        empty lists, and the grid then offers no navigation."""
+        try:
+            return (
+                connector.catalog_relations(),
+                connector.list_references(self.table),
+            )
+        except ConnectorError:
+            return [], []
+
     def current_filters(self) -> list[FilterCondition]:
         return list(self._filters)
 
@@ -2405,10 +2559,15 @@ class TableTab(Gtk.Box):
             result = connector.fetch_rows(
                 self.table, offset, PAGE_SIZE, filters=filters, order_by=order_by
             )
-            return columns, result
+            return columns, result, self._read_relations(connector)
 
         def done(loaded):
-            self._columns, result = loaded
+            self._columns, result, relations = loaded
+            # Before set_result: the headers mark the foreign-key
+            # columns as they are built.
+            self._grid.set_relations(
+                self.table, relations[0], relations[1], self.profile.schema
+            )
             self._result_names = result.columns
             # Empty because the table is empty, empty because the page
             # ran past the end, and empty because a filter matched

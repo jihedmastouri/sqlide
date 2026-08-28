@@ -24,9 +24,21 @@ directly (CORE-18): that is what knows the engine has schemas, which
 relations can be selected from — views and materialized views
 included — and what it can do at all. A source is therefore identified
 by its key, "schema.table" where the engine has schemas and the bare
-name where it does not, and the same key qualifies its columns
-("key.column") inside the tab; the rendered SQL drops the prefix while
-no join is present, and writes the schema only where there is one.
+name where it does not.
+
+Columns, though, are keyed by *alias*, not by that key (CORE-20). Every
+source in the query gets one — the table's own name by default,
+suffixed when that is taken, and editable — so the same table can be
+joined to itself and the two sides never merge: the checklist, the
+filter and sort pickers and the ON dropdowns all spell a column
+"alias.column". A join carries as many ON conditions as it needs, which
+is what a composite foreign key prefills, and the kinds on offer are
+the five the model knows intersected with the ones the dialect declares
+— SQLite gained RIGHT and FULL only in 3.39, and that is a capability
+flag the adapter reports rather than an engine name tested for here.
+The rendered SQL drops the qualification while no join is present,
+writes the schema only where there is one, and writes an alias only
+where it says something the table name does not.
 
 Because the model is data, the tab persists it: `tab_state` writes the
 whole query into the workspace and a restored tab rehydrates it once
@@ -310,9 +322,6 @@ class _JoinRow(Gtk.Box):
         # else works in keys, so the two never get mixed up.
         self._keys = [source.key for source in sources]
         self._updating = False
-        #: Whether the alias entry holds the user's own text. Until it
-        #: does the builder keeps it filled with the default.
-        self._alias_touched = False
         self._on_rows: list[_OnRow] = []
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -320,9 +329,7 @@ class _JoinRow(Gtk.Box):
         self._table = Gtk.DropDown(
             model=Gtk.StringList.new([source.label for source in sources])
         )
-        self._alias = Gtk.Entry(
-            placeholder_text=_("alias"), width_chars=10, max_width_chars=14
-        )
+        self._alias = Gtk.Entry(width_chars=10, max_width_chars=14)
         describe(self._alias, _("Alias for the joined table"))
         self._alias.connect("changed", self._alias_changed)
         header.append(self._kind)
@@ -402,15 +409,12 @@ class _JoinRow(Gtk.Box):
         if dropdown is self._table:
             for row in self._on_rows:
                 row.touched = False
-            if not self._alias_touched:
-                self._alias.set_text("")
         self._sync_on_visibility()
         self._on_change()
 
     def _alias_changed(self, *_args) -> None:
         if self._updating:
             return
-        self._alias_touched = bool(self._alias.get_text().strip())
         self._on_change()
 
     # Reading the line
@@ -441,15 +445,14 @@ class _JoinRow(Gtk.Box):
     # Writing to the line
 
     def set_default_alias(self, alias: str) -> None:
-        """Show the alias the builder derived, while the entry is not
-        the user's own text."""
-        if self._alias_touched or self._alias.get_text() == alias:
-            return
-        self._updating = True
-        try:
-            self._alias.set_text(alias)
-        finally:
-            self._updating = False
+        """Show the alias the builder derived.
+
+        As the placeholder, never as the text: writing into an entry
+        the user is typing in re-enters this callback halfway through
+        GTK's own delete-then-insert, and an empty entry is exactly
+        what "I have not named this one" means.
+        """
+        self._alias.set_placeholder_text(alias)
 
     def set_choices(
         self,
@@ -477,7 +480,6 @@ class _JoinRow(Gtk.Box):
                 self._table.set_selected(self._keys.index(key))
             if alias:
                 self._alias.set_text(alias)
-                self._alias_touched = True
         finally:
             self._updating = False
         self._sync_on_visibility()
@@ -607,11 +609,8 @@ class QueryBuilderTab(Gtk.Box):
         )
         top.append(self._table_dropdown)
         top.append(Gtk.Label(label=_("as")))
-        self._base_alias = Gtk.Entry(
-            placeholder_text=_("alias"), width_chars=10, max_width_chars=14
-        )
+        self._base_alias = Gtk.Entry(width_chars=10, max_width_chars=14)
         describe(self._base_alias, _("Alias for the base table"))
-        self._base_alias_touched = False
         self._base_alias.connect("changed", self._base_alias_changed)
         top.append(self._base_alias)
         self._distinct = Gtk.CheckButton(label=_("Distinct"))
@@ -884,7 +883,6 @@ class QueryBuilderTab(Gtk.Box):
         try:
             self._table_dropdown.set_selected(keys.index(base))
             self._base_alias.set_text(base_alias)
-            self._base_alias_touched = True
             self._distinct.set_active(model.distinct)
             if model.limit:
                 self._limit.set_value(model.limit)
@@ -1088,20 +1086,11 @@ class QueryBuilderTab(Gtk.Box):
     def _base_changed(self) -> None:
         if self._loading:
             return
-        if not self._base_alias_touched:
-            self._updating_alias = True
-            try:
-                self._base_alias.set_text("")
-            finally:
-                self._updating_alias = False
         self._sync_state()
 
-    _updating_alias = False
-
     def _base_alias_changed(self, *_args) -> None:
-        if self._loading or self._updating_alias:
+        if self._loading:
             return
-        self._base_alias_touched = bool(self._base_alias.get_text().strip())
         self._sync_state()
 
     def _sync_state(self) -> None:
@@ -1111,13 +1100,8 @@ class QueryBuilderTab(Gtk.Box):
         instances = self._instances()
         renames = self._renames(instances)
         by_row = {instance.row: instance for instance in instances}
-        if instances and not self._base_alias_touched:
-            self._updating_alias = True
-            try:
-                if self._base_alias.get_text() != instances[0].alias:
-                    self._base_alias.set_text(instances[0].alias)
-            finally:
-                self._updating_alias = False
+        if instances:
+            self._base_alias.set_placeholder_text(instances[0].alias)
 
         seen: list[_Instance] = instances[:1]
         for row in self._join_rows:

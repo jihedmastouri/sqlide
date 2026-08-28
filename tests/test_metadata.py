@@ -192,6 +192,57 @@ def test_postgres_lists_schema_objects_without_the_search_path(postgres) -> None
     assert "users" in [t.name for t in tables]
 
 
+def test_sqlite_sources_include_views_and_are_unqualified(sqlite_db) -> None:
+    provider = registry.create_provider("sqlite", sqlite_db)
+    sources = provider.list_sources()
+    kinds = {ref.name: ref.kind for ref in sources}
+    assert kinds["notes"] == "table"
+    # A view is a SELECT source, so the builder gets offered it.
+    assert kinds["recent"] == "view"
+    # No schema level here: nothing is qualified, and the columns read
+    # off the bare name exactly as they always did.
+    assert all(not ref.schema for ref in sources)
+    columns = provider.columns_of(NodeRef("table", "notes"))
+    assert [c.name for c in columns] == ["id", "body", "tag"]
+
+
+def test_postgres_sources_are_schema_qualified(postgres) -> None:
+    _version, connector = postgres
+    provider = registry.create_provider("postgres", connector)
+    sources = provider.list_sources()
+    assert sources
+    # Every source names the schema it lives in, and none of them is a
+    # schema the server owns.
+    assert all(ref.schema for ref in sources)
+    assert not any(
+        provider.is_system_schema(ref.schema) for ref in sources
+    )
+    users = next(
+        ref for ref in sources if ref.name == "users" and ref.schema == "public"
+    )
+    assert [c.name for c in provider.columns_of(users)]
+
+
+def test_postgres_columns_read_the_named_schema(postgres) -> None:
+    """Two same-named tables in different schemas answer with their own
+    columns, whatever the search path resolves the bare name to."""
+    _version, connector = postgres
+    provider = registry.create_provider("postgres", connector)
+    connector.execute("CREATE SCHEMA IF NOT EXISTS core18")
+    connector.execute(
+        "CREATE TABLE IF NOT EXISTS core18.users (only_here int)"
+    )
+    try:
+        theirs = provider.columns_of(
+            NodeRef("table", "users", schema="core18")
+        )
+        assert [c.name for c in theirs] == ["only_here"]
+        ours = provider.columns_of(NodeRef("table", "users", schema="public"))
+        assert [c.name for c in ours] != ["only_here"]
+    finally:
+        connector.execute("DROP SCHEMA core18 CASCADE")
+
+
 def test_postgres_reads_principals_and_object_grants(postgres) -> None:
     _version, connector = postgres
     provider = registry.create_provider("postgres", connector)

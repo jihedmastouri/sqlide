@@ -68,9 +68,11 @@ from dataclasses import dataclass, fields, replace
 
 from sqlide.backend.db import extensions as ext, objects
 from sqlide.backend.db.base import (
+    ColumnInfo,
     Connector,
     ConnectorError,
     PrivilegeInfo,
+    RelationInfo,
     ResultSet,
     UserInfo,
 )
@@ -675,6 +677,76 @@ class MetadataProvider:
         if ref.kind in ("table", "view"):
             return self._columns(ref)
         return []
+
+    def list_sources(self) -> list[NodeRef]:
+        """Every relation a SELECT can read from, schema-qualified
+        where the engine has schemas (CORE-18).
+
+        This is what the query builder picks its tables from, so it is
+        deliberately wider than the tree's Tables folder: views are
+        sources too, and materialized views are where the engine has
+        them. What is left out is what cannot be selected sensibly —
+        the server's own schemas and objects, and a partition, which
+        is read through the table it belongs to.
+
+        Engine-agnostic by construction: the schema level comes from
+        the capability flag, never from a name check.
+        """
+        caps = self.capabilities()
+        refs: list[NodeRef] = []
+        if caps.schemas:
+            schemas = [
+                name
+                for name in _safe(self.connector.catalog_schemas, [])
+                if not self.is_system_schema(name)
+            ]
+            listings = [
+                (
+                    schema,
+                    _safe(
+                        lambda s=schema: self.connector.catalog_tables_in(s),
+                        [],
+                    ),
+                )
+                for schema in schemas
+            ]
+        else:
+            listings = [("", _safe(self.connector.catalog_tables, []))]
+        for schema, infos in listings:
+            for info in infos:
+                detail = self.object_detail(info)
+                if detail == "partition":
+                    continue
+                if detail == "materialized" and not caps.materialized_views:
+                    continue
+                if self.is_system_object(info.name):
+                    continue
+                refs.append(
+                    NodeRef(
+                        kind=info.kind,
+                        name=info.name,
+                        schema=schema,
+                        detail=detail,
+                    )
+                )
+        return refs
+
+    def columns_of(self, ref: NodeRef) -> list[ColumnInfo]:
+        """The columns of one relation, read through its schema where
+        it has one — so a table off the search path answers with its
+        own columns rather than a same-named table's (CORE-18)."""
+        schema = self.schema_of(ref)
+        if schema:
+            return _safe(
+                lambda: self.connector.catalog_columns_in(schema, ref.name), []
+            )
+        return _safe(lambda: self.connector.catalog_columns(ref.name), [])
+
+    def relations(self) -> list[RelationInfo]:
+        """The database's foreign keys, for anything that infers a
+        join from the schema. Schema-qualified on the engines that
+        fill `RelationInfo.schema` / `ref_schema`."""
+        return _safe(self.connector.catalog_relations, [])
 
     def describe(self, ref: NodeRef) -> objects.ObjectInfo:
         """The read-only descriptor the info view renders (CORE-01),
@@ -1545,7 +1617,5 @@ class MetadataProvider:
                 "column", column.name, table=ref.name,
                 detail=column.type + (" · PK" if column.is_pk else ""),
             )
-            for column in _safe(
-                lambda: self.connector.catalog_columns(ref.name), []
-            )
+            for column in self.columns_of(ref)
         ]

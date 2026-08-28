@@ -23,7 +23,9 @@ Ctrl+C (or the context menu's Copy) copies the selection as
 tab-separated text; row and block selections include a header line with
 the column names, following the current display order of the columns.
 "Copy As" offers CSV, INSERT statements, pretty (ASCII table) and
-Markdown. Every selection is also summarised (count/sum/avg/min/max)
+Markdown; "Export…" writes the same formats to a file instead
+(frontend/export_dialog.py). Both the clipboard and the file go
+through backend/export.py, so neither can drift from the other. Every selection is also summarised (count/sum/avg/min/max)
 and handed to the on_aggregate callback, which the window routes to
 the Aggregate page of the right side panel — the menu's "Aggregate"
 item only brings that page to the front, it is not what computes the
@@ -66,6 +68,7 @@ from decimal import Decimal
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
+from sqlide.backend import export
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import geo, registry
 from sqlide.backend.db.base import (
@@ -155,6 +158,11 @@ class ResultGrid(Gtk.ScrolledWindow):
         # else, and the row menu then offers neither.
         self.on_insert_row: Callable[[], None] | None = None
         self.on_delete_row: Callable[[RowItem], None] | None = None
+        # "Export…" in the cell menu (CORE-36). Set by an owner that
+        # knows what a whole-query export would mean; grids that only
+        # hold what is on screen get the dialog's loaded-rows scopes
+        # from the default opener installed by export_dialog.attach.
+        self.on_export: Callable[[], None] | None = None
         self._geo_columns: set[int] = set()
         self._sort_order: list[tuple[str, bool]] = []
         # Used by "Copy As > INSERT Statement"; falls back to a placeholder.
@@ -226,6 +234,7 @@ class ResultGrid(Gtk.ScrolledWindow):
             ("show-map", self._on_show_map),
             ("insert-row", self._on_insert_row_action),
             ("delete-row", self._on_delete_row_action),
+            ("export", self._on_export),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", callback)
@@ -262,6 +271,7 @@ class ResultGrid(Gtk.ScrolledWindow):
         for label, fmt in COPY_FORMATS:
             copy_as_menu.append(label, f"grid.copy-as::{fmt}")
         copy_section.append_submenu("Copy As", copy_as_menu)
+        copy_section.append("Export…", "grid.export")
         copy_section.append("Aggregate", "grid.aggregate")
         copy_section.append("Show on Map", "grid.show-map")
         menu.append_section(None, copy_section)
@@ -1306,16 +1316,48 @@ class ResultGrid(Gtk.ScrolledWindow):
         if data is None:
             return False
         headers, rows = data
-        formatter = {
-            "default": self._format_default,
-            "csv": _format_csv,
-            "insert": self._format_insert,
-            "json": _format_json,
-            "pretty": _format_pretty,
-            "markdown": _format_markdown,
-        }[fmt]
-        self.get_clipboard().set(formatter(headers, rows))
+        if fmt == "default":
+            text = self._format_default(headers, rows)
+        else:
+            text = export.format_rows(
+                export.Format(fmt),
+                headers,
+                rows,
+                export.Options(table_name=self.table_name or "table_name"),
+            )
+        self.get_clipboard().set(text)
         return True
+
+    def export_options(self) -> export.Options:
+        return export.Options(table_name=self.table_name or "table_name")
+
+    def selection_rows(self) -> tuple[list[str], list[list[Any]]] | None:
+        """The selected block as (headers, rows) — the export dialog's
+        Selection scope."""
+        return self._selection_data()
+
+    def loaded_rows(self) -> tuple[list[str], list[list[Any]]]:
+        """Every row the grid is holding, in the columns' display
+        order — the export dialog's Loaded rows scope."""
+        order = self._display_order()
+        headers = [self._column_names[i] for i in order]
+        rows = []
+        for position in range(self._store.get_n_items()):
+            item = self._store.get_item(position)
+            if item is not None:
+                rows.append([item.values[i] for i in order])
+        return headers, rows
+
+    def _on_export(self, *_args) -> None:
+        """Export… — the owner's opener when it has one (a table tab
+        can offer the whole table), otherwise the rows this grid is
+        holding, which every grid can offer."""
+        if self.on_export is not None:
+            self.on_export()
+            return
+        from sqlide.frontend.export_dialog import ExportDialog
+
+        ExportDialog.for_grid(self).present(self)
 
     def _selection_data(self) -> tuple[list[str], list[list[Any]]] | None:
         """Selected cells as (header names, row values), in display order."""
@@ -1337,14 +1379,6 @@ class ResultGrid(Gtk.ScrolledWindow):
         lines.extend("\t".join(_cell_text(v) for v in row) for row in rows)
         return "\n".join(lines)
 
-    def _format_insert(self, headers: list[str], rows: list[list[Any]]) -> str:
-        table = self.table_name or "table_name"
-        columns = ", ".join(headers)
-        return "\n".join(
-            f"INSERT INTO {table} ({columns}) "
-            f"VALUES ({', '.join(_sql_literal(v) for v in row)});"
-            for row in rows
-        )
 
     # Aggregate
 
@@ -1391,22 +1425,19 @@ class ResultGrid(Gtk.ScrolledWindow):
         return lines
 
 
-# Binary columns (BLOB, bytea, MySQL binary collations) arrive as
-# bytes/memoryview. str() on those gives a Python repr — b'\x89PNG' —
-# which is neither readable nor valid SQL, so every rendering path goes
-# through _display_text instead.
-_BINARY_TYPES = (bytes, bytearray, memoryview)
+# Rendering and the row formats live in backend/export.py: the
+# clipboard and a file export must never disagree about what a value
+# looks like, so there is one implementation and the grid calls it.
+# Only the grid's own truncating label is local — a cell is read at a
+# glance, an export is read in full.
 
 # Hex bytes shown in full before a blob is summarised by size instead.
 _HEX_PREVIEW = 24
 
-
-def is_binary(value: Any) -> bool:
-    return isinstance(value, _BINARY_TYPES)
-
-
-def _hex(value: Any) -> str:
-    return bytes(value).hex().upper()
+is_binary = export.is_binary
+_hex = export.hex_text
+_cell_text = export.cell_text
+_sql_literal = export.sql_literal
 
 
 def _display_text(value: Any) -> str:
@@ -1421,30 +1452,6 @@ def _display_text(value: Any) -> str:
     return str(value)
 
 
-def _cell_text(value: Any) -> str:
-    """A cell's value for the copy formats. Unlike the grid's own
-    labels these keep a blob's full hex: what is copied has to be what
-    the row holds."""
-    if value is None:
-        return "NULL"
-    return "0x" + _hex(value) if is_binary(value) else str(value)
-
-
-def _sql_literal(value: Any) -> str:
-    if value is None:
-        return "NULL"
-    if isinstance(value, bool):
-        return "TRUE" if value else "FALSE"
-    if isinstance(value, (int, float)):
-        return str(value)
-    if is_binary(value):
-        # X'..' is SQLite's and MySQL's blob literal; PostgreSQL reads
-        # it as a bit string, so a bytea column needs the pasted
-        # literal adjusted to '\x..'::bytea by hand.
-        return "X'" + _hex(value) + "'"
-    return "'" + str(value).replace("'", "''") + "'"
-
-
 def _format_number(value: float) -> str:
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
@@ -1454,63 +1461,19 @@ def _format_number(value: float) -> str:
 
 
 def _format_json(headers: list[str], rows: list[list[Any]]) -> str:
-    return json.dumps(
-        [
-            {
-                header: value if _json_safe(value) else _json_value(value)
-                for header, value in zip(headers, row)
-            }
-            for row in rows
-        ],
-        indent=2,
-        ensure_ascii=False,
-    )
-
-
-def _json_value(value: Any) -> str:
-    """Anything JSON cannot hold, as text. Binary keeps its full hex —
-    an export is not a preview, so it must not lose bytes."""
-    return "0x" + _hex(value) if is_binary(value) else str(value)
-
-
-def _json_safe(value: Any) -> bool:
-    return value is None or isinstance(value, (bool, int, float, str))
+    return export.format_rows(export.Format.JSON, headers, rows)
 
 
 def _format_csv(headers: list[str], rows: list[list[Any]]) -> str:
-    buffer = io.StringIO()
-    writer = csv.writer(buffer, lineterminator="\n")
-    writer.writerow(headers)
-    for row in rows:
-        writer.writerow(
-            "" if v is None else ("0x" + _hex(v) if is_binary(v) else v)
-            for v in row
-        )
-    return buffer.getvalue().rstrip("\n")
+    return export.format_rows(export.Format.CSV, headers, rows)
 
 
 def _format_pretty(headers: list[str], rows: list[list[Any]]) -> str:
-    cells = [headers] + [[_cell_text(v) for v in row] for row in rows]
-    widths = [max(len(line[i]) for line in cells) for i in range(len(headers))]
-    rule = "+" + "+".join("-" * (w + 2) for w in widths) + "+"
-
-    def line(values: list[str]) -> str:
-        return "| " + " | ".join(v.ljust(w) for v, w in zip(values, widths)) + " |"
-
-    body = [line(values) for values in cells[1:]]
-    return "\n".join([rule, line(cells[0]), rule, *body, rule])
+    return export.format_rows(export.Format.PRETTY, headers, rows)
 
 
 def _format_markdown(headers: list[str], rows: list[list[Any]]) -> str:
-    def line(values: list[str]) -> str:
-        return "| " + " | ".join(v.replace("|", "\\|") for v in values) + " |"
-
-    lines = [
-        line(headers),
-        "| " + " | ".join("---" for _ in headers) + " |",
-    ]
-    lines.extend(line([_cell_text(v) for v in row]) for row in rows)
-    return "\n".join(lines)
+    return export.format_rows(export.Format.MARKDOWN, headers, rows)
 
 
 class _FilterRow(Gtk.Box):
@@ -1931,6 +1894,10 @@ class TableTab(Gtk.Box):
         bar.pack_start(self._page_label)
         bar.pack_start(self._next)
 
+        exporter = Gtk.Button(icon_name="document-save-symbolic")
+        describe(exporter, _("Export rows to a file"))
+        exporter.connect("clicked", lambda *_: self.open_export())
+
         refresh = Gtk.Button(icon_name="view-refresh-symbolic")
         describe(refresh, _("Refresh (discards unsaved edits)"))
         refresh.connect("clicked", lambda *_: self.reload())
@@ -1956,6 +1923,7 @@ class TableTab(Gtk.Box):
         self._save.add_css_class("suggested-action")
         self._save.set_visible(False)
         self._save.connect("clicked", self._on_save_clicked)
+        bar.pack_end(exporter)
         bar.pack_end(refresh)
         bar.pack_end(self._filter_toggle)
         bar.pack_end(self._sort_toggle)
@@ -1966,6 +1934,7 @@ class TableTab(Gtk.Box):
 
         self._grid.on_show_map = self._on_show_map_requested
         self._grid.on_row_selected = self._on_grid_row_selected
+        self._grid.on_export = self.open_export
         self._grid.on_insert_row = self._on_insert_row
         self._grid.on_delete_row = self._on_delete_row
         # The map is built the first time a result turns out to hold
@@ -1979,6 +1948,29 @@ class TableTab(Gtk.Box):
         self._prev.set_sensitive(False)
         self._next.set_sensitive(False)
         self.reload()
+
+    def open_export(self) -> None:
+        """Export… from the action bar or the grid's menu.
+
+        A table tab is the one grid that can offer more rows than it
+        holds: the whole scope re-runs this tab's query — its filters,
+        its sort — through the connector's own paging, one page at a
+        time, so the size of the table is not the size of the export.
+        """
+        from sqlide.frontend.export_dialog import ExportDialog, page_source
+
+        whole = (
+            _("Whole query (streamed)"),
+            page_source(
+                lambda: self._ensure(self.profile),
+                self.table,
+                lambda: list(self._result_names or self._column_names),
+                filters=list(self._filters),
+                order_by=list(self._order_by),
+                page_size=PAGE_SIZE,
+            ),
+        )
+        ExportDialog.for_grid(self._grid, whole).present(self)
 
     def tab_state(self) -> TabState:
         return TabState(

@@ -10,15 +10,23 @@ divider back where it was.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from gi.repository import Gtk
 
+from sqlide.frontend.util import describe
 from sqlide.i18n import _
 
 
 class ResultsPanel(Gtk.Box):
     """Starts hidden; call reveal() when there is something to show."""
 
-    def __init__(self, content: Gtk.Widget, paned: Gtk.Paned) -> None:
+    def __init__(
+        self,
+        content: Gtk.Widget,
+        paned: Gtk.Paned,
+        on_export: Callable[[], None] | None = None,
+    ) -> None:
         super().__init__(
             orientation=Gtk.Orientation.VERTICAL, visible=False
         )
@@ -40,6 +48,15 @@ class ResultsPanel(Gtk.Box):
         self._toggle.set_tooltip_text(_("Minimize or expand the results"))
         self._toggle.connect("toggled", self._on_toggled)
         header.append(title)
+        # Export sits in the header rather than only in the grid's
+        # context menu: writing a result to a file is something people
+        # look for above the rows, not inside them (CORE-36).
+        if on_export is not None:
+            export_button = Gtk.Button(icon_name="document-save-symbolic")
+            export_button.add_css_class("flat")
+            describe(export_button, _("Export the result to a file"))
+            export_button.connect("clicked", lambda *_a: on_export())
+            header.append(export_button)
         header.append(self._toggle)
         self.append(header)
         self.append(content)

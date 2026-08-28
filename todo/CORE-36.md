@@ -1,6 +1,6 @@
 ## CORE-36 — Export a result set or table to a file
 
-- **Status:** todo
+- **Status:** done
 - **From:** RS-04 (see `docs/dbeaver-comparison.md`)
 
 ### Problem
@@ -51,17 +51,17 @@ re-run and streamed so a large table does not have to fit in memory.
 
 ### Acceptance criteria
 
-- [ ] `backend/export.py` imports no GTK and no driver, and is the
+- [x] `backend/export.py` imports no GTK and no driver, and is the
       only implementation of each format — `data_grid.copy_selection`
       calls it.
-- [ ] CSV, JSON, SQL `INSERT` and Markdown each round-trip a fixture
+- [x] CSV, JSON, SQL `INSERT` and Markdown each round-trip a fixture
       with NULLs, embedded delimiters, quotes, newlines, non-ASCII
       text and a binary column, covered in `tests/test_export.py`
       with no database server.
-- [ ] Whole-query export streams: exporting a table larger than
+- [x] Whole-query export streams: exporting a table larger than
       `PAGE_SIZE` never holds more than one page of rows at a time
       (assert against a fake connector counting `fetch_rows` calls).
-- [ ] The export honours the tab's active filters and sort order.
-- [ ] A cancelled export leaves no partial file at the destination.
-- [ ] An unwritable destination reports a readable error rather than
+- [x] The export honours the tab's active filters and sort order.
+- [x] A cancelled export leaves no partial file at the destination.
+- [x] An unwritable destination reports a readable error rather than
       raising.

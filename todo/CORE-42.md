@@ -1,6 +1,6 @@
 ## CORE-42 — Value panel and record view for wide cells
 
-- **Status:** todo
+- **Status:** done
 - **From:** RS-04 (see `docs/dbeaver-comparison.md`)
 
 ### Problem
@@ -47,16 +47,16 @@ list, without leaving the tab.
 
 ### Acceptance criteria
 
-- [ ] Focusing a cell fills the Value page; it follows the focus
+- [x] Focusing a cell fills the Value page; it follows the focus
       without the user re-opening it.
-- [ ] JSON is pretty-printed when parseable and shown verbatim when
+- [x] JSON is pretty-printed when parseable and shown verbatim when
       not — never silently reformatted into something that does not
       round-trip.
-- [ ] Binary shows hex, byte length and, for a geometry column, the
+- [x] Binary shows hex, byte length and, for a geometry column, the
       description `backend/db/geo.py` already produces.
-- [ ] Editing in the panel produces the same pending edit as editing
+- [x] Editing in the panel produces the same pending edit as editing
       inline, and appears in the same preview dialog.
-- [ ] Record view shows every column of the focused row, respects the
+- [x] Record view shows every column of the focused row, respects the
       read-only rules, and moves with up/down.
-- [ ] A very large value is truncated for display with the full size
+- [x] A very large value is truncated for display with the full size
       stated, rather than freezing the UI.

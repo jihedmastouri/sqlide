@@ -4,12 +4,12 @@ An Adw.ViewStack behind an Adw.ViewSwitcher in the header bar. Which
 pages are offered depends on the active tab (the window reports it
 through set_context):
 
-- query console ("console"): Properties, Info, Snippets, Queries,
-  Notes, History, Aggregate
-- table data tab ("table"):  Properties, Info, Notes, History,
+- query console ("console"): Properties, Info, Value, Snippets,
+  Queries, Notes, History, Aggregate
+- table data tab ("table"):  Properties, Info, Value, Notes, History,
   Aggregate, Filters
-- other result grids ("grid"): Properties, Info, Notes, History,
-  Aggregate
+- other result grids ("grid"): Properties, Info, Value, Notes,
+  History, Aggregate
 - everything else ("other"): Properties, Info, Notes, History
 
 Pages:
@@ -23,6 +23,12 @@ Pages:
   definition tab (highlighted, read-only), or the connection details
   of a console. The window fills it on tab changes (set_definition /
   set_info).
+- Value: the focused grid cell in full (CORE-42) — wrapped text,
+  pretty-printed JSON, or a hex/ASCII dump with the byte length and a
+  geometry's description. Filled by the grid on every selection
+  change, so opening the panel is enough to read the cell; an edit
+  made here goes back through the grid's own edit path and lands in
+  the same pending list and Save preview as an inline one.
 - History: the query-history list (HistoryPanel) with its own
   scope/clear controls.
 - Snippets / Queries: the global saved-SQL stores (backend/saved.py).
@@ -60,12 +66,14 @@ from sqlide.frontend.history_panel import HistoryPanel
 from sqlide.frontend.notes_panel import NotesPage
 from sqlide.frontend.sql_editor import SqlEditor
 from sqlide.frontend.util import describe
+from sqlide.frontend.value_view import CellValue, ValuePage
 from sqlide.i18n import _
 
 _CONTEXT_PAGES = {
     "console": (
         "properties",
         "info",
+        "value",
         "snippets",
         "queries",
         "notes",
@@ -75,12 +83,20 @@ _CONTEXT_PAGES = {
     "table": (
         "properties",
         "info",
+        "value",
         "notes",
         "history",
         "aggregate",
         "filters",
     ),
-    "grid": ("properties", "info", "notes", "history", "aggregate"),
+    "grid": (
+        "properties",
+        "info",
+        "value",
+        "notes",
+        "history",
+        "aggregate",
+    ),
     "other": ("properties", "info", "notes", "history"),
 }
 
@@ -373,6 +389,7 @@ class SidePanel(Gtk.Box):
             on_error=on_error,
         )
         self._notes = NotesPage()
+        self._value = ValuePage()
         self._filters = _FiltersPage(
             on_apply=on_apply_filter,
             on_save=on_save_filter,
@@ -406,6 +423,7 @@ class SidePanel(Gtk.Box):
                 self._properties,
             ),
             ("info", "Info", "dialog-information-symbolic", info_page),
+            ("value", "Value", "text-x-generic-symbolic", self._value),
             (
                 "snippets",
                 "Snippets",
@@ -460,6 +478,10 @@ class SidePanel(Gtk.Box):
 
     def set_context(self, context: str) -> None:
         names = _CONTEXT_PAGES.get(context, _CONTEXT_PAGES["other"])
+        if "value" not in names:
+            # The Value page is about a grid cell; a tab without a grid
+            # must not leave the previous tab's cell standing.
+            self.set_value(None)
         if "aggregate" not in names:
             # The summary belongs to a grid's selection; a tab without
             # one must not leave the previous tab's numbers standing.
@@ -536,6 +558,20 @@ class SidePanel(Gtk.Box):
 
     def set_filter_target(self, key: str, entries: list[dict]) -> None:
         self._filters.set_target(key, entries)
+
+    # Value (CORE-42)
+
+    def set_value(self, cell: CellValue | None) -> None:
+        """Show the grid's focused cell without moving the panel: the
+        grid calls this on every selection change, whether or not
+        anyone is looking."""
+        self._value.set_value(cell)
+
+    def show_value(self, cell: CellValue | None) -> None:
+        """Fill the Value page and bring it to the front (the cell
+        menu's "View Value")."""
+        self.set_value(cell)
+        self._stack.set_visible_child_name("value")
 
     # Aggregate
 

@@ -82,6 +82,7 @@ from sqlide.frontend import confirm, feedback, keymap
 from sqlide.frontend.data_grid import (
     AggregateCallback,
     ResultGrid,
+    ValueCallback,
     _format_json,
 )
 from sqlide.frontend.lsp_completion import LspCompletionProvider
@@ -108,6 +109,7 @@ class QueryConsole(Gtk.Box):
         connection: str = "",
         on_ran: Callable[[str, str, bool], None] | None = None,
         on_aggregate: AggregateCallback | None = None,
+        on_value: ValueCallback | None = None,
         transaction_active: Callable[[str], bool] | None = None,
         placeholders: dict[str, str] | None = None,
     ) -> None:
@@ -142,6 +144,7 @@ class QueryConsole(Gtk.Box):
         # history entries carry the panel (tab) name.
         self.on_ran = on_ran
         self._on_aggregate = on_aggregate
+        self._on_value = on_value
         # Set by the window after the tab page exists (tab title).
         self.on_connection_changed: Callable[[str], None] | None = None
         # Set by the window: True while a run is in flight, so the
@@ -1116,7 +1119,9 @@ class QueryConsole(Gtk.Box):
         for i, (sql, result, elapsed) in enumerate(outcomes):
             title = _tab_title(i, sql) if len(outcomes) > 1 else "Result"
             if isinstance(result, ResultSet):
-                grid = ResultGrid(on_aggregate=self._on_aggregate)
+                grid = ResultGrid(
+                    on_aggregate=self._on_aggregate, on_value=self._on_value
+                )
                 grid.set_empty_state(
                     "No rows",
                     "The statement ran in "

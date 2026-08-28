@@ -219,9 +219,9 @@ class _HistoryTab(Gtk.Box):
     the main menu's Query History). Not persisted across sessions —
     tab_state() returns None and _save_state skips it."""
 
-    def __init__(self, entries: list[HistoryEntry]) -> None:
+    def __init__(self, entries: list[HistoryEntry], on_value=None) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
-        self._grid = ResultGrid()
+        self._grid = ResultGrid(on_value=on_value)
         self.append(self._grid)
         self.set_entries(entries)
 
@@ -2084,6 +2084,19 @@ class MainWindow(Adw.ApplicationWindow):
         self._side_panel.show_aggregate(lines)
         self._set_side_panel_shown(True)
 
+    def show_cell_value(self, cell, live: bool = True) -> None:
+        """Route a grid's focused cell into the side panel's Value page.
+
+        Live (every selection change) only fills the page, so the panel
+        keeps showing whatever the user put there; the cell menu's
+        "View Value" asks for the page and gets the panel opened on
+        it."""
+        if live:
+            self._side_panel.set_value(cell)
+            return
+        self._side_panel.show_value(cell)
+        self._set_side_panel_shown(True)
+
     # Transfer (frontend/transfer.py, backend/exchange.py)
 
     def _export_workspace(self, *_args) -> None:
@@ -2515,6 +2528,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.ensure_connector,
             self.show_error,
             on_aggregate=self.show_aggregate,
+            on_value=self.show_cell_value,
         )
         page = self._append_tab(
             tab,
@@ -2697,6 +2711,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.show_error,
             table=table,
             on_aggregate=self.show_aggregate,
+            on_value=self.show_cell_value,
             on_open_console=lambda p, sql: self.new_query(p, sql=sql),
         )
         page = self._append_tab(
@@ -3025,7 +3040,7 @@ class MainWindow(Adw.ApplicationWindow):
         if self._focus_tab(key):
             return
         self._append_tab(
-            _HistoryTab(self.workspace.history),
+            _HistoryTab(self.workspace.history, self.show_cell_value),
             key,
             "History",
             f"Query history of {self.workspace.name}",
@@ -3041,6 +3056,7 @@ class MainWindow(Adw.ApplicationWindow):
             sql=sql,
             connection=profile.name if profile is not None else "",
             on_aggregate=self.show_aggregate,
+            on_value=self.show_cell_value,
             transaction_active=self.transaction_active,
             placeholders=self.workspace.placeholders,
         )

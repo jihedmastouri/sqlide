@@ -6,6 +6,13 @@ tick the columns to select, and add filter / sort lines (the same row
 widgets the table tab uses). The generated SQL is always visible in a
 read-only preview and updates live with every change.
 
+The SQL itself is not written here: the widgets describe a
+`QueryModel` (backend/db/query_model.py) and the renderer turns that
+into dialect-correct SQL, with filter values bound as parameters
+rather than pasted in as literals (CORE-17). The preview shows the
+same statement with its values written in, so what is shown is what
+runs.
+
 Run executes the statement and shows the rows in a ResultGrid below;
 Open in Console hands the SQL to a fresh query console for manual
 tweaking. The whole catalog (tables, columns, relations) is loaded
@@ -18,7 +25,7 @@ the rendered SQL drops the table prefix while no join is present.
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, Sequence
 
 from gi.repository import Gtk
 
@@ -27,11 +34,27 @@ from sqlide.backend.db.base import (
     NO_VALUE_OPERATORS,
     ColumnInfo,
     Connector,
+    ConnectorError,
     RelationInfo,
     ResultSet,
 )
+from sqlide.backend.db.query_model import (
+    Column,
+    Condition,
+    Dialect,
+    GENERIC,
+    Join,
+    On,
+    Order,
+    Projection,
+    QueryModel,
+    TableRef,
+    dialect_for,
+    folded_group,
+    render,
+    render_display,
+)
 from sqlide.backend.settings import result_row_cap
-from sqlide.backend.sql_format import format_sql, options_from_settings
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend.data_grid import (
     AggregateCallback,
@@ -39,13 +62,15 @@ from sqlide.frontend.data_grid import (
     ValueCallback,
     _FilterRow,
     _selected_string,
-    _sql_literal,
     _SortRow,
 )
 from sqlide.frontend.results_panel import ResultsPanel
 from sqlide.frontend.util import describe, row_count, run_async
 from sqlide.i18n import _
 
+# What the builder offers. The connected engine may have fewer (SQLite
+# before 3.39 has no RIGHT JOIN); the dialect says which, and the
+# dropdown is filled from the intersection once the catalog loads.
 JOIN_KINDS = ("INNER JOIN", "LEFT JOIN", "RIGHT JOIN")
 DEFAULT_LIMIT = 500
 
@@ -60,6 +85,7 @@ class _JoinRow(Gtk.Box):
         tables: list[str],
         on_remove: Callable[["_JoinRow"], None],
         on_change: Callable[[], None],
+        kinds: Sequence[str] = JOIN_KINDS,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self._on_change = on_change
@@ -69,7 +95,7 @@ class _JoinRow(Gtk.Box):
         # picks instead (reset when the joined table changes) and let
         # the builder prefill from a foreign key until then.
         self._on_touched = False
-        self._kind = Gtk.DropDown(model=Gtk.StringList.new(list(JOIN_KINDS)))
+        self._kind = Gtk.DropDown(model=Gtk.StringList.new(list(kinds)))
         self._table = Gtk.DropDown(model=Gtk.StringList.new(tables))
         self._left = Gtk.DropDown(
             model=Gtk.StringList.new([]), hexpand=True
@@ -168,7 +194,7 @@ class QueryBuilderTab(Gtk.Box):
         self._tables: list[str] = []
         self._columns: dict[str, list[ColumnInfo]] = {}
         self._relations: list[RelationInfo] = []
-        self._quote: Callable[[str], str] = lambda name: name
+        self._sql_dialect: Dialect = GENERIC
         self._join_rows: list[_JoinRow] = []
         self._filter_rows: list[_FilterRow] = []
         self._sort_rows: list[_SortRow] = []
@@ -336,12 +362,17 @@ class QueryBuilderTab(Gtk.Box):
             ]
             columns = {name: connector.list_columns(name) for name in tables}
             relations = connector.list_relations()
-            # quote_ident is a pure string function; safe to keep for
-            # main-thread SQL generation.
-            return tables, columns, relations, connector.quote_ident
+            # A Dialect is pure data (quote_ident is a pure string
+            # function); safe to keep for main-thread SQL generation.
+            return tables, columns, relations, dialect_for(connector)
 
         def done(result) -> None:
-            self._tables, self._columns, self._relations, self._quote = result
+            (
+                self._tables,
+                self._columns,
+                self._relations,
+                self._sql_dialect,
+            ) = result
             self._loading = True
             try:
                 self._table_dropdown.set_model(
@@ -469,7 +500,12 @@ class QueryBuilderTab(Gtk.Box):
     def _add_join_row(self) -> None:
         if not self._tables:
             return
-        row = _JoinRow(self._tables, self._remove_join_row, self._sync_state)
+        row = _JoinRow(
+            self._tables,
+            self._remove_join_row,
+            self._sync_state,
+            kinds=self._join_kinds(),
+        )
         self._join_rows.append(row)
         self._joins_box.append(row)
         self._sync_state()
@@ -529,71 +565,102 @@ class QueryBuilderTab(Gtk.Box):
 
     # SQL generation
 
-    def _quote_column(self, name: str, multi: bool) -> str:
-        """Quote a display column name; qualified names ("t.c") become
-        quoted pairs, plain names a single identifier."""
+    def _column_ref(self, name: str) -> Column:
+        """A display column name ("t.c" once a join is present, "c"
+        otherwise) as a model reference."""
         if "." in name:
-            table, _, column = name.partition(".")
-            if multi:
-                return f"{self._quote(table)}.{self._quote(column)}"
-            return self._quote(column)
-        return self._quote(name)
+            table, _sep, column = name.partition(".")
+            return Column(name=column, source=table)
+        return Column(name=name)
 
-    def build_sql(self) -> str:
+    def query_model(self) -> QueryModel:
+        """The query as data — what the widgets currently describe.
+
+        This is the whole of the builder's SQL knowledge: everything
+        past here is `query_model.render()`, which is engine-aware,
+        pure, and unit-tested without a connection (CORE-17).
+        """
         base = self._base_table()
         if not base:
-            return ""
-        joins = [
-            row
+            return QueryModel()
+        joins = tuple(
+            Join(
+                kind=row.kind(),
+                source=TableRef(name=row.table()),
+                on=(
+                    On(
+                        left=self._column_ref(row.left()),
+                        right=self._column_ref(row.right()),
+                    ),
+                ),
+            )
             for row in self._join_rows
             if row.table() and row.left() and row.right()
-        ]
-        multi = bool(joins)
-        if self._checked:
-            # Keep the schema's column order rather than click order.
-            columns = ", ".join(
-                self._quote_column(q, multi)
-                for q in self._qualified_columns(self._query_tables())
-                if q in self._checked
-            )
-        else:
-            columns = "*"
-        sql = "SELECT "
-        if self._distinct.get_active():
-            sql += "DISTINCT "
-        sql += f"{columns}\nFROM {self._quote(base)}"
-        for row in joins:
-            sql += (
-                f"\n{row.kind()} {self._quote(row.table())}"
-                f" ON {self._quote_column(row.left(), True)}"
-                f" = {self._quote_column(row.right(), True)}"
-            )
-        where = ""
+        )
+        # Keep the schema's column order rather than click order.
+        projections = tuple(
+            Projection(column=self._column_ref(qualified))
+            for qualified in self._qualified_columns(self._query_tables())
+            if qualified in self._checked
+        )
+        lines = []
         for row in self._filter_rows:
             cond = row.condition()
             if not cond.column:
                 continue
-            clause = f"{self._quote_column(cond.column, multi)} {cond.op}"
-            if cond.op not in NO_VALUE_OPERATORS:
-                clause += f" {_sql_literal(cond.value)}"
-            where = (
-                f"({where}) {cond.conjunction} {clause}" if where else clause
+            lines.append(
+                (
+                    cond.conjunction,
+                    Condition(
+                        column=self._column_ref(cond.column),
+                        op=cond.op,
+                        value=(
+                            None
+                            if cond.op in NO_VALUE_OPERATORS
+                            else cond.value
+                        ),
+                    ),
+                )
             )
-        if where:
-            sql += f"\nWHERE {where}"
-        order = [
-            f"{self._quote_column(row.spec().column, multi)} "
-            + ("DESC" if row.spec().descending else "ASC")
-            for row in self._sort_rows
-            if row.spec().column
-        ]
-        if order:
-            sql += "\nORDER BY " + ", ".join(order)
-        sql += f"\nLIMIT {int(self._limit.get_value())};"
-        # Through the formatter, so the SQL the builder shows (and
-        # runs) is laid out exactly like a formatted statement in the
-        # editor, indent width and comma placement included (CORE-44).
-        return format_sql(sql, options_from_settings()).text
+        return QueryModel(
+            source=TableRef(name=base),
+            joins=joins,
+            projections=projections,
+            distinct=self._distinct.get_active(),
+            where=folded_group(lines),
+            order_by=tuple(
+                Order(
+                    column=self._column_ref(row.spec().column),
+                    descending=row.spec().descending,
+                )
+                for row in self._sort_rows
+                if row.spec().column
+            ),
+            limit=int(self._limit.get_value()),
+        )
+
+    def _join_kinds(self) -> list[str]:
+        """The join kinds this engine actually has, in the builder's
+        own order — so a dropdown never offers SQLite a RIGHT JOIN."""
+        allowed = set(self._sql_dialect.join_kinds)
+        kinds = [k for k in JOIN_KINDS if k in allowed]
+        return kinds or list(JOIN_KINDS[:1])
+
+    def _dialect(self) -> Dialect:
+        """The connected engine's dialect, or the generic one until the
+        catalog load has handed us the connector's quoting."""
+        return self._sql_dialect
+
+    def build_sql(self) -> str:
+        """The statement as shown: values inlined, for the preview and
+        for Open in Console. `run_query` runs the bound form."""
+        try:
+            return render_display(self.query_model(), dialect=self._dialect())
+        except ConnectorError as exc:
+            # A query the engine cannot express (a join kind it lacks).
+            # Say so in the preview rather than throwing out of a
+            # widget callback.
+            return f"-- {exc}"
 
     def _refresh_sql(self) -> None:
         self._sql_view.get_buffer().set_text(self.build_sql())
@@ -601,8 +668,15 @@ class QueryBuilderTab(Gtk.Box):
     # Actions
 
     def run_query(self) -> None:
-        sql = self.build_sql()
-        if not sql:
+        model = self.query_model()
+        dialect = self._dialect()
+        try:
+            query = render(model, dialect=dialect)
+            sql = render_display(model, dialect=dialect)
+        except ConnectorError as exc:
+            self._show_error(str(exc))
+            return
+        if not query.sql:
             self._show_error("Pick a table first")
             return
         self._refresh_sql()
@@ -612,7 +686,13 @@ class QueryBuilderTab(Gtk.Box):
 
         def work():
             connector = self._ensure(self.profile)
-            return connector.execute(sql, max_rows=max_rows)
+            if not query.params:
+                return connector.execute(query.sql, max_rows=max_rows)
+            # Filter values travel as parameters, never written into
+            # the text (CORE-17).
+            return connector.run_bound(
+                query.sql, query.params, max_rows=max_rows
+            )
 
         def done(result) -> None:
             if isinstance(result, ResultSet):

@@ -1379,8 +1379,29 @@ class Connector(ABC):
             if obj.table == table and obj.ddl.strip()
         ]
 
+    def _bound_result(
+        self,
+        sql: str,
+        params: Sequence[Any],
+        columns: list[str],
+        rows: list[tuple],
+        max_rows: int | None,
+        placeholder: str = "?",
+    ) -> ResultSet:
+        """Wrap the rows of a run_bound() call, trimming the one extra
+        row that was fetched to tell a capped result from a complete
+        one, and recording the statement with its values written in —
+        so the history shows what ran, not a row of question marks."""
+        truncated = max_rows is not None and len(rows) > max_rows
+        return ResultSet(
+            columns=columns,
+            rows=rows[:max_rows] if truncated else rows,
+            truncated=truncated,
+            statement=inline_params(sql, list(params), placeholder),
+        )
+
     def run_bound(
-        self, sql: str, params: Sequence[Any] = ()
+        self, sql: str, params: Sequence[Any] = (), max_rows: int | None = None
     ) -> ResultSet:
         """One read-only statement the app itself composed, with its
         values bound rather than written into the text.
@@ -1391,6 +1412,10 @@ class Connector(ABC):
         into every one of them. The SQL comes from this codebase and
         its identifiers from the catalog; only the values are the
         user's, and they arrive as parameters.
+
+        With `max_rows` set, at most that many rows come back and the
+        ResultSet is flagged `truncated` if the statement had more —
+        the same contract as `execute`.
 
         Concrete default (not abstract): an adapter with no
         parameterised path says so rather than silently interpolating.

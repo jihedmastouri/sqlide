@@ -52,7 +52,7 @@
 
 | ID | Title | Depends on |
 |---|---|---|
-| CORE-17 | Query model and SQL renderer in the backend | — |
+| CORE-17 | Query model and SQL renderer in the backend (done) | — |
 | CORE-18 | Builder reads the MetadataProvider (schemas, views, capabilities) | CORE-02, CORE-17 |
 | CORE-19 | Persist the builder's query model in the workspace | CORE-17 |
 | CORE-20 | Joins: aliases, self-joins, multi-condition ON, all join kinds | CORE-17, CORE-18 |

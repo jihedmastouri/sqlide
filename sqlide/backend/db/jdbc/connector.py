@@ -175,9 +175,12 @@ class JdbcConnector(Connector):
         )
         return self._page_result(columns, rows, query)
 
-    def run_bound(self, sql: str, params=()) -> ResultSet:
-        columns, rows = self._query(sql, params=list(params))
-        return ResultSet(columns=columns, rows=rows, statement=sql)
+    def run_bound(
+        self, sql: str, params=(), max_rows: int | None = None
+    ) -> ResultSet:
+        limit = max_rows + 1 if max_rows else None
+        columns, rows = self._query(sql, params=list(params), limit=limit)
+        return self._bound_result(sql, params, columns, rows, max_rows)
 
     def execute(self, sql: str, max_rows: int | None = None) -> ResultSet | int:
         if self._conn is None:

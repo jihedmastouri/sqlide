@@ -1,6 +1,6 @@
 ## CORE-17 — Query model and SQL renderer in the backend
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** —
 - **Blocks:** CORE-18, CORE-19, CORE-20, CORE-21, CORE-22
 - **From:** RS-01 (see `docs/query-builder-research.md`)
@@ -38,12 +38,12 @@ The widget edits the model; the SQL is a pure function of it.
 
 ### Acceptance criteria
 
-- [ ] `backend/db/query_model.py` exists with the model and renderer,
+- [x] `backend/db/query_model.py` exists with the model and renderer,
       and imports nothing from `frontend/`.
-- [ ] The builder renders through it; `build_sql()` no longer contains
+- [x] The builder renders through it; `build_sql()` no longer contains
       SQL string assembly.
-- [ ] Executed queries pass filter values as parameters, not as
+- [x] Executed queries pass filter values as parameters, not as
       interpolated literals.
-- [ ] `tests/test_query_model.py` covers: projections vs `*`, DISTINCT,
+- [x] `tests/test_query_model.py` covers: projections vs `*`, DISTINCT,
       each join kind, nested AND/OR filter groups, ordering, limit, and
       quoting for each dialect — with no database connection required.

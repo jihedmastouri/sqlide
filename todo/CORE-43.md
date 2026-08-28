@@ -1,6 +1,6 @@
 ## CORE-43 — Foreign-key navigation in the grid
 
-- **Status:** todo
+- **Status:** done
 - **From:** RS-04 (see `docs/dbeaver-comparison.md`)
 
 ### Problem
@@ -44,14 +44,14 @@ row, open the rows in another table that reference it.
 
 ### Acceptance criteria
 
-- [ ] Outgoing and incoming relations both offered, from the catalog,
+- [x] Outgoing and incoming relations both offered, from the catalog,
       with no engine branching in the frontend.
-- [ ] Composite foreign keys produce one `FilterCondition` per column
+- [x] Composite foreign keys produce one `FilterCondition` per column
       pair, visible in the target tab's filter panel.
-- [ ] Cross-schema relations resolve through the provider's
+- [x] Cross-schema relations resolve through the provider's
       `qualified_name`, so a PostgreSQL FK into another schema opens
       the right table.
-- [ ] A NULL value offers no navigation entry.
-- [ ] SQLite tables without declared foreign keys simply show no
+- [x] A NULL value offers no navigation entry.
+- [x] SQLite tables without declared foreign keys simply show no
       entries — no error, no empty submenu.
-- [ ] Relation lookups are cached per table load, not per right-click.
+- [x] Relation lookups are cached per table load, not per right-click.

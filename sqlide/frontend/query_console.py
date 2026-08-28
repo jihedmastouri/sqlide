@@ -76,6 +76,7 @@ from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import registry
 from sqlide.backend.db.base import Connector, ResultSet
 from sqlide.backend.settings import result_row_cap
+from sqlide.backend.sql_format import format_sql, options_from_settings
 from sqlide.backend.sql_split import split_statements, statement_at
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend import confirm, feedback, keymap
@@ -180,6 +181,12 @@ class QueryConsole(Gtk.Box):
         self._explain_button.connect(
             "clicked", lambda *_: self._run(explain=True)
         )
+        self._format_button = Gtk.Button(label=_("Format"))
+        self._format_button.set_tooltip_text(
+            "Lay out the selection or the statement at the cursor "
+            "(Ctrl+Shift+F)"
+        )
+        self._format_button.connect("clicked", lambda *_: self._format())
         self._cancel_button = Gtk.Button(label=_("Cancel"))
         self._cancel_button.add_css_class("destructive-action")
         self._cancel_button.set_tooltip_text(
@@ -271,6 +278,7 @@ class QueryConsole(Gtk.Box):
         toolbar.append(self._run_button)
         toolbar.append(self._run_all_button)
         toolbar.append(self._explain_button)
+        toolbar.append(self._format_button)
         toolbar.append(self._cancel_button)
         toolbar.append(self._dropdown)
         toolbar.append(self._db_dropdown)
@@ -761,6 +769,9 @@ class QueryConsole(Gtk.Box):
         if keymap.matches("query.run", keyval, state):
             self._run(run_all=False)
             return True
+        if keymap.matches("query.format", keyval, state):
+            self._format()
+            return True
         if keymap.matches("query.open-file", keyval, state):
             self._open_file()
             return True
@@ -784,6 +795,36 @@ class QueryConsole(Gtk.Box):
                 )
                 return [statement.text] if statement else []
         return [s.text for s in split_statements(source)]
+
+    def _format(self) -> None:
+        """Format the selection, or the statement under the cursor when
+        there is none — Run's rule, applied to the text instead of the
+        server. A statement the formatter will not touch (CORE-44) is
+        left exactly as it is and the reason goes to the status bar."""
+        options = options_from_settings()
+        if self._editor.get_selection():
+            result = format_sql(self._editor.get_selection(), options)
+            if result.changed:
+                self._editor.replace_selection(result.text)
+        else:
+            text = self._editor.get_text()
+            statement = statement_at(
+                split_statements(text), self._editor.get_cursor_offset()
+            )
+            if statement is None:
+                return
+            result = format_sql(text[statement.start : statement.end], options)
+            if result.changed:
+                self._editor.replace_range(
+                    statement.start, statement.end, result.text
+                )
+        if result.reason:
+            self._set_status(
+                _("Left as it is: {reason}").format(reason=result.reason),
+                error=False,
+            )
+        elif result.changed:
+            self._set_status(_("Formatted"), error=False)
 
     def _run(self, run_all: bool = False, explain: bool = False) -> None:
         self._run_statements(

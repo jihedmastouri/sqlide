@@ -39,6 +39,7 @@ from gi.repository import Gtk
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import ColumnInfo, Connector, ConnectorError
 from sqlide.backend.sql_split import split_statements
+from sqlide.backend.sql_format import format_sql, options_from_settings
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend.data_grid import ResultGrid, RowItem, UpdatePreviewDialog
 from sqlide.frontend.sql_editor import SqlEditor
@@ -133,7 +134,14 @@ class DefinitionTab(Gtk.Box):
 
         def done(loaded):
             ddl, columns = loaded
-            self._original_ddl = (ddl or "").strip()
+            # One definition of how our SQL looks (CORE-44): what the
+            # server hands back is laid out the same way the editor's
+            # Format lays a statement out. The formatted text is what
+            # an edit is compared against, so re-saving an untouched
+            # definition still counts as no change.
+            self._original_ddl = format_sql(
+                (ddl or "").strip(), options_from_settings()
+            ).text.strip()
             self._text.set_text(
                 self._original_ddl or f"-- No DDL available for {self.table}"
             )

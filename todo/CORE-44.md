@@ -1,6 +1,6 @@
 ## CORE-44 — Format SQL in the editor
 
-- **Status:** todo
+- **Status:** Done
 - **From:** RS-04 (see `docs/dbeaver-comparison.md`)
 
 ### Problem
@@ -45,16 +45,16 @@ SQL can also route through.
 
 ### Acceptance criteria
 
-- [ ] `backend/sql_format.py` imports no GTK and adds no dependency;
+- [x] `backend/sql_format.py` imports no GTK and adds no dependency;
       it reuses `sql_split.tokens`.
-- [ ] Formatting is idempotent: formatting twice equals formatting
+- [x] Formatting is idempotent: formatting twice equals formatting
       once, for every fixture.
-- [ ] Formatting never changes what a statement means — the fixtures
+- [x] Formatting never changes what a statement means — the fixtures
       include strings containing keywords, dollar-quoted bodies,
       `DELIMITER` scripts, block and line comments, and a `CASE`
       expression.
-- [ ] A statement that cannot be tokenized cleanly is returned
+- [x] A statement that cannot be tokenized cleanly is returned
       unchanged with a reported reason, not partially formatted.
-- [ ] Format applies to the selection, or the statement under the
+- [x] Format applies to the selection, or the statement under the
       cursor when there is none, matching Run's rule.
-- [ ] Covered by `tests/test_sql_format.py`, no database server.
+- [x] Covered by `tests/test_sql_format.py`, no database server.

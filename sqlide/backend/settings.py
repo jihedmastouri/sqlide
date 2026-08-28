@@ -55,7 +55,15 @@ Settings:
   `sql.keyword_case`; settings.toml is flat, so it is spelled
   `sql_keyword_case` here. Keywords only — identifier completions keep
   whatever case the catalog reports, since those can be case
-  sensitive. See apply_keyword_case().
+  sensitive. See apply_keyword_case(). The SQL formatter (CORE-44)
+  reads the same key rather than inventing a second one — "follow"
+  has no typed prefix to follow when a whole statement is reformatted,
+  so there it means "leave the keywords as they are".
+- sql_format_indent: how many spaces one indent step of the SQL
+  formatter is worth (backend/sql_format.py).
+- sql_format_comma_leading: whether the formatter puts the comma of a
+  select/order/set list at the start of the next line (", name")
+  rather than the end of the previous one ("name,").
 - lsp_enabled: master switch for completion language servers
 - lsp_defaults: connection kind -> what an "auto" console LSP choice
   resolves to ("auto" keeps the built-in resolution in
@@ -117,7 +125,7 @@ from pathlib import Path
 from typing import Callable
 
 from sqlide import i18n
-from sqlide.backend import config, importer, tiles, tomlwrite
+from sqlide.backend import config, importer, sql_format, tiles, tomlwrite
 from sqlide.backend.db import metrics
 from sqlide.backend.sql_risk import CONFIRM_MODES, DEFAULT_CONFIRM_MODE
 
@@ -135,6 +143,9 @@ DEFAULT_MAX_RESULT_ROWS = 5000
 # so it falls back to the default.
 KEYWORD_CASES = ("upper", "lower", "follow")
 DEFAULT_KEYWORD_CASE = "upper"
+# How the SQL formatter lays a statement out (CORE-44); its keyword
+# case is sql_keyword_case above, not a setting of its own.
+DEFAULT_FORMAT_INDENT = sql_format.DEFAULT_INDENT
 # The connections sidebar: how wide it starts, and how far a drag of
 # its handle may take it either way.
 DEFAULT_SIDEBAR_WIDTH = 280
@@ -180,6 +191,8 @@ class Settings:
     max_result_rows: int = DEFAULT_MAX_RESULT_ROWS
     time_zone: str = DEFAULT_TIME_ZONE
     sql_keyword_case: str = DEFAULT_KEYWORD_CASE
+    sql_format_indent: int = DEFAULT_FORMAT_INDENT
+    sql_format_comma_leading: bool = False
     monitor_interval: int = metrics.DEFAULT_INTERVAL
     lsp_enabled: bool = True
     #: Show the server's own schemas (information_schema, pg_catalog)
@@ -267,6 +280,12 @@ class Settings:
             time_zone=choice("time_zone", TIME_ZONES, DEFAULT_TIME_ZONE),
             sql_keyword_case=choice(
                 "sql_keyword_case", KEYWORD_CASES, DEFAULT_KEYWORD_CASE
+            ),
+            sql_format_indent=number(
+                "sql_format_indent", DEFAULT_FORMAT_INDENT, minimum=1
+            ),
+            sql_format_comma_leading=flag(
+                "sql_format_comma_leading", False
             ),
             monitor_interval=metrics.clamp_interval(
                 number("monitor_interval", metrics.DEFAULT_INTERVAL)

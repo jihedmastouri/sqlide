@@ -186,6 +186,34 @@ class PreferencesDialog(Adw.PreferencesDialog):
         )
         group.add(case_row)
 
+        indent_row = Adw.SpinRow.new_with_range(1, 8, 1)
+        indent_row.set_title(_("Format Indent"))
+        indent_row.set_subtitle(_("Spaces per indent step when Format "
+                                "lays a statement out. Keywords follow "
+                                "the case chosen above."))
+        indent_row.set_value(settings.sql_format_indent)
+        indent_row.connect(
+            "notify::value",
+            lambda row, *_: store.update(
+                sql_format_indent=int(row.get_value())
+            ),
+        )
+        group.add(indent_row)
+
+        comma_row = Adw.SwitchRow(
+            title=_("Leading Commas"),
+            subtitle=_("Format starts a list item's line with its comma "
+            "(\", name\") instead of ending the line before it"),
+        )
+        comma_row.set_active(settings.sql_format_comma_leading)
+        comma_row.connect(
+            "notify::active",
+            lambda row, *_: store.update(
+                sql_format_comma_leading=row.get_active()
+            ),
+        )
+        group.add(comma_row)
+
         page.add(group)
 
         results = Adw.PreferencesGroup(

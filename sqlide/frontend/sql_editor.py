@@ -142,6 +142,40 @@ class SqlEditor(Gtk.ScrolledWindow):
         start, end = bounds
         return self._buffer.get_text(start, end, False)
 
+    def replace_selection(self, text: str) -> None:
+        """Swap the selected text for `text`, leaving it selected —
+        what Format does when the user formatted a selection."""
+        bounds = self._buffer.get_selection_bounds()
+        if not bounds:
+            return
+        start, end = bounds
+        offset = start.get_offset()
+        self._buffer.begin_user_action()
+        self._buffer.delete(start, end)
+        self._buffer.insert(self._buffer.get_iter_at_offset(offset), text)
+        self._buffer.select_range(
+            self._buffer.get_iter_at_offset(offset),
+            self._buffer.get_iter_at_offset(offset + len(text)),
+        )
+        self._buffer.end_user_action()
+
+    def replace_range(self, start: int, end: int, text: str) -> None:
+        """Swap the characters in [start, end) for `text` and put the
+        cursor at its end — Format over the statement at the cursor.
+
+        Offsets are character offsets, the same ones
+        get_cursor_offset() and backend/sql_split.py speak in."""
+        self._buffer.begin_user_action()
+        self._buffer.delete(
+            self._buffer.get_iter_at_offset(start),
+            self._buffer.get_iter_at_offset(end),
+        )
+        self._buffer.insert(self._buffer.get_iter_at_offset(start), text)
+        self._buffer.place_cursor(
+            self._buffer.get_iter_at_offset(start + len(text))
+        )
+        self._buffer.end_user_action()
+
     def get_cursor_offset(self) -> int:
         insert = self._buffer.get_iter_at_mark(self._buffer.get_insert())
         return insert.get_offset()

@@ -31,6 +31,7 @@ from sqlide.backend.db.base import (
     ResultSet,
 )
 from sqlide.backend.settings import result_row_cap
+from sqlide.backend.sql_format import format_sql, options_from_settings
 from sqlide.backend.workspaces import TabState
 from sqlide.frontend.data_grid import (
     AggregateCallback,
@@ -589,7 +590,10 @@ class QueryBuilderTab(Gtk.Box):
         if order:
             sql += "\nORDER BY " + ", ".join(order)
         sql += f"\nLIMIT {int(self._limit.get_value())};"
-        return sql
+        # Through the formatter, so the SQL the builder shows (and
+        # runs) is laid out exactly like a formatted statement in the
+        # editor, indent width and comma placement included (CORE-44).
+        return format_sql(sql, options_from_settings()).text
 
     def _refresh_sql(self) -> None:
         self._sql_view.get_buffer().set_text(self.build_sql())

@@ -155,40 +155,148 @@ def tokens(sql: str, dialect: str = "") -> list[Token]:
 
     String literals, comments and dollar-quoted bodies are skipped, so
     a keyword inside them can never be mistaken for the real thing.
-    Numbers and punctuation are dropped: every caller here matches
-    keywords and picks out object names, and neither needs them.
+    Numbers and punctuation are dropped: the MCP guard and the risk
+    classifier match keywords and pick out object names, and neither
+    needs them. Callers that need every piece — the formatter — use
+    lex() below, which this is a filter over, so there is one scanner
+    and one set of context rules.
     """
-    found: list[Token] = []
+    return [
+        Token(text=piece.text.strip('"`'), word="", quoted=True)
+        if piece.kind == "quoted"
+        else Token(text=piece.text, word=piece.text.upper(), quoted=False)
+        for piece in lex(sql, dialect)
+        if piece.kind in ("word", "quoted")
+    ]
+
+
+# The kinds lex() labels a piece with. "word" is a bare word (keyword,
+# identifier or number-free name), "quoted" a quoted identifier with
+# its quotes still on, "string" a string literal, "dollar" a
+# dollar-quoted body, "comment" a line or block comment, "number" a
+# numeric literal, "param" a placeholder (:name, $1, ?, @var) and
+# "punct" everything else, one operator at a time.
+KINDS = (
+    "word", "quoted", "string", "dollar", "comment",
+    "number", "param", "punct",
+)
+
+# Operators spelled with more than one character, longest first so the
+# scanner never splits "->>" into "->" and ">".
+_OPERATORS = (
+    "->>", "#>>", "<<=", ">>=",
+    "->", "#>", "<=", ">=", "<>", "!=", "||", "::", ":=", "<<", ">>",
+)
+
+
+@dataclass(frozen=True)
+class Piece:
+    """One lexical piece of a script, in source order. Unlike Token
+    this keeps everything, verbatim — concatenating every piece with
+    the whitespace between them reproduces the input exactly.
+
+    `closed` is False for an unterminated string, comment or dollar
+    quote: the formatter refuses such a script rather than guessing
+    where it ended.
+    """
+
+    kind: str
+    text: str
+    start: int
+    end: int
+    closed: bool = True
+    newline_before: bool = False  # a line break precedes it
+
+
+def lex(sql: str, dialect: str = "") -> list[Piece]:
+    """Every lexical piece of `sql`, in order, whitespace dropped.
+
+    The context rules are split_statements' own — strings, comments,
+    dollar-quoted bodies and quoted identifiers — so a caller looking
+    inside a statement can never mistake a keyword in a string for a
+    keyword.
+    """
+    pieces: list[Piece] = []
     i = 0
     n = len(sql)
+    newline = False
+
+    def add(kind: str, start: int, end: int, closed: bool = True) -> None:
+        nonlocal newline
+        pieces.append(
+            Piece(kind, sql[start:end], start, end, closed, newline)
+        )
+        newline = False
+
     while i < n:
         ch = sql[i]
         two = sql[i : i + 2]
-        if two == "--":
-            i = sql.find("\n", i)
-            i = n if i == -1 else i + 1
+        if ch.isspace():
+            newline = newline or ch == "\n"
+            i += 1
+        elif two == "--":
+            end = sql.find("\n", i)
+            end = n if end == -1 else end
+            add("comment", i, end)
+            i = end
         elif two == "/*":
-            i = sql.find("*/", i + 2)
-            i = n if i == -1 else i + 2
-        elif ch == "'":  # string literal
-            i = _quoted_end(sql, i, dialect) + 1
-        elif ch in ('"', "`"):  # quoted identifier
-            j = _quoted_end(sql, i, dialect)
-            found.append(Token(text=sql[i + 1 : j], word="", quoted=True))
-            i = j + 1
+            end = sql.find("*/", i + 2)
+            add("comment", i, n if end == -1 else end + 2, closed=end != -1)
+            i = n if end == -1 else end + 2
+        elif ch == "'" or (ch in "Ee" and sql[i + 1 : i + 2] == "'"):
+            start = i
+            if ch in "Ee":
+                i += 1
+            end = _quoted_end(sql, i, dialect)
+            add("string", start, min(end + 1, n), closed=end < n)
+            i = end + 1
+        elif ch in ('"', "`"):
+            end = _quoted_end(sql, i, dialect)
+            add("quoted", i, min(end + 1, n), closed=end < n)
+            i = end + 1
         elif ch == "$" and (delim := _dollar_delimiter(sql, i)):
             end = sql.find(delim, i + len(delim))
-            i = n if end == -1 else end + len(delim)
+            closed = end != -1
+            end = n if not closed else end + len(delim)
+            add("dollar", i, end, closed=closed)
+            i = end
+        elif ch == "$" and sql[i + 1 : i + 2].isdigit():
+            j = i + 1
+            while j < n and sql[j].isdigit():
+                j += 1
+            add("param", i, j)
+            i = j
+        elif ch == "?" or (
+            ch in ":@" and (sql[i + 1 : i + 2].isalnum() or sql[i + 1 : i + 2] == "_")
+        ):
+            j = i + 1
+            while j < n and (sql[j].isalnum() or sql[j] == "_"):
+                j += 1
+            add("param", i, j)
+            i = j
+        elif ch.isdigit() or (
+            ch == "." and sql[i + 1 : i + 2].isdigit()
+        ):
+            j = i
+            while j < n and (sql[j].isalnum() or sql[j] == "." or (
+                sql[j] in "+-" and sql[j - 1] in "Ee"
+            )):
+                j += 1
+            add("number", i, j)
+            i = j
         elif ch.isalpha() or ch == "_":
             j = i
             while j < n and (sql[j].isalnum() or sql[j] == "_"):
                 j += 1
-            text = sql[i:j]
-            found.append(Token(text=text, word=text.upper(), quoted=False))
+            add("word", i, j)
             i = j
         else:
-            i += 1
-    return found
+            width = next(
+                (len(op) for op in _OPERATORS if sql.startswith(op, i)), 1
+            )
+            add("punct", i, i + width)
+            i += width
+    return pieces
 
 
 def _quoted_end(sql: str, i: int, dialect: str) -> int:

@@ -78,6 +78,10 @@ ACTIONS: tuple[Action, ...] = (
         "Query console", "<primary><shift>Return", "local",
     ),
     Action(
+        "query.format", "Format the selection or the statement at the cursor",
+        "Query console", "<primary><shift>f", "local",
+    ),
+    Action(
         "query.open-file", "Open a file in the editor",
         "Query console", "<primary>o", "local",
     ),

@@ -1,6 +1,6 @@
 ## CORE-21 — Aggregates: GROUP BY, HAVING, computed and aliased columns
 
-- **Status:** todo
+- **Status:** Done
 - **Depends on:** CORE-17
 - **From:** RS-01 (see `docs/query-builder-research.md`)
 
@@ -35,10 +35,10 @@ Answer "how many per X" without leaving the builder.
 
 ### Acceptance criteria
 
-- [ ] An aggregate projection with an alias renders correctly and runs.
-- [ ] `GROUP BY` and `HAVING` sections exist and render in the right
+- [x] An aggregate projection with an alias renders correctly and runs.
+- [x] `GROUP BY` and `HAVING` sections exist and render in the right
       order relative to `WHERE` and `ORDER BY`.
-- [ ] Adding an aggregate beside a plain column prompts for or applies
+- [x] Adding an aggregate beside a plain column prompts for or applies
       the grouping instead of generating an invalid statement.
-- [ ] Renderer cases for aggregates, grouping and having are covered in
+- [x] Renderer cases for aggregates, grouping and having are covered in
       `tests/test_query_model.py`.

@@ -17,6 +17,7 @@ from sqlide.backend.db.query_model import (
     MYSQL,
     POSTGRES,
     SQLITE,
+    AGGREGATES,
     Column,
     Condition,
     FilterGroup,
@@ -598,3 +599,200 @@ def test_unfold_group_declines_a_tree_it_cannot_flatten() -> None:
         )
     )
     assert query_model.unfold_group(nested) is None
+
+
+# Aggregates, grouping and HAVING (CORE-21)
+
+
+def _counted() -> QueryModel:
+    """`how many orders per status`, the query a builder exists for."""
+    return QueryModel(
+        source=TableRef("orders"),
+        projections=(
+            Projection(column=Column("status")),
+            Projection(column=Column("id"), function="COUNT", alias="orders"),
+        ),
+        group_by=(Column("status"),),
+    )
+
+
+def test_an_aliased_aggregate_renders_with_its_grouping():
+    sql = render(_counted(), dialect=POSTGRES, formatted=False).sql
+    assert sql == (
+        'SELECT "status", COUNT("id") AS "orders"\n'
+        'FROM "orders"\n'
+        'GROUP BY "status";'
+    )
+
+
+def test_count_without_a_column_is_count_star():
+    model = QueryModel(
+        source=TableRef("t"),
+        projections=(Projection(function="COUNT", alias="n"),),
+    )
+    assert 'COUNT(*) AS "n"' in render(
+        model, dialect=POSTGRES, formatted=False
+    ).sql
+
+
+def test_count_distinct_is_the_aggregates_own_distinct():
+    model = QueryModel(
+        source=TableRef("orders"),
+        projections=(
+            Projection(column=Column("user_id"), function="COUNT", distinct=True),
+        ),
+    )
+    sql = render(model, dialect=POSTGRES, formatted=False).sql
+    assert 'COUNT(DISTINCT "user_id")' in sql
+    # Not the statement-level DISTINCT, which nobody asked for.
+    assert "SELECT DISTINCT" not in sql
+
+
+def test_an_aggregate_other_than_count_needs_a_column():
+    model = QueryModel(
+        source=TableRef("t"), projections=(Projection(function="SUM"),)
+    )
+    with pytest.raises(ConnectorError):
+        render(model)
+
+
+def test_an_unknown_aggregate_is_refused():
+    model = QueryModel(
+        source=TableRef("t"),
+        projections=(Projection(column=Column("a"), function="MEDIAN"),),
+    )
+    with pytest.raises(ConnectorError):
+        render(model)
+
+
+def test_an_aggregate_the_dialect_lacks_is_refused():
+    from dataclasses import replace as _replace
+
+    dialect = _replace(GENERIC, name="tiny", aggregates=("COUNT",))
+    model = QueryModel(
+        source=TableRef("t"),
+        projections=(Projection(column=Column("a"), function="SUM"),),
+    )
+    with pytest.raises(ConnectorError):
+        render(model, dialect=dialect)
+    assert set(GENERIC.aggregates) == set(AGGREGATES)
+
+
+def test_clauses_render_in_the_order_the_engine_reads_them():
+    model = QueryModel(
+        source=TableRef("orders"),
+        projections=(
+            Projection(column=Column("status")),
+            Projection(column=Column("id"), function="COUNT", alias="n"),
+        ),
+        where=FilterGroup(items=(Condition(Column("total"), ">", 10),)),
+        group_by=(Column("status"),),
+        having=FilterGroup(
+            items=(Condition(column=Column("id"), function="COUNT", op=">", value=2),)
+        ),
+        order_by=(Order(alias="n", descending=True),),
+        limit=5,
+    )
+    out = render(model, dialect=POSTGRES, formatted=False)
+    clauses = [
+        line.split(" ")[0] for line in out.sql.splitlines()
+    ]
+    assert clauses == [
+        "SELECT",
+        "FROM",
+        "WHERE",
+        "GROUP",
+        "HAVING",
+        "ORDER",
+        "LIMIT",
+    ]
+    # Both values are bound, in the order they are read.
+    assert out.params == [10, 2]
+    assert 'HAVING COUNT("id") > %s' in out.sql
+
+
+def test_ordering_by_an_alias_falls_back_to_the_expression():
+    from dataclasses import replace as _replace
+
+    model = QueryModel(
+        source=TableRef("orders"),
+        projections=(
+            Projection(column=Column("id"), function="COUNT", alias="n"),
+        ),
+        order_by=(Order(alias="n", descending=True),),
+    )
+    assert 'ORDER BY "n" DESC' in render(
+        model, dialect=POSTGRES, formatted=False
+    ).sql
+    plain = _replace(POSTGRES, order_by_alias=False)
+    assert 'ORDER BY COUNT("id") DESC' in render(
+        model, dialect=plain, formatted=False
+    ).sql
+
+
+def test_a_computed_expression_is_passed_through_unchanged():
+    model = QueryModel(
+        source=TableRef("t"),
+        projections=(Projection(expression="a * b", alias="area"),),
+        order_by=(Order(expression="a * b"),),
+    )
+    sql = render(model, dialect=POSTGRES, formatted=False).sql
+    assert 'a * b AS "area"' in sql
+    assert "ORDER BY a * b ASC" in sql
+
+
+def test_aggregates_round_trip_through_the_saved_state():
+    model = QueryModel(
+        source=TableRef("orders"),
+        projections=(
+            Projection(column=Column("status")),
+            Projection(
+                column=Column("user_id"),
+                function="COUNT",
+                distinct=True,
+                alias="people",
+            ),
+            Projection(expression="total * 2", alias="doubled"),
+        ),
+        group_by=(Column("status"),),
+        having=FilterGroup(
+            items=(
+                Condition(
+                    column=Column("user_id"),
+                    function="COUNT",
+                    distinct=True,
+                    op=">=",
+                    value=2,
+                ),
+            )
+        ),
+        order_by=(Order(alias="people", descending=True),),
+    )
+    assert query_model.load_state(query_model.dump_state(model)) == model
+
+
+def test_a_workspace_saved_before_aggregates_still_loads():
+    # No function/distinct/alias keys anywhere: exactly what a
+    # pre-CORE-21 build wrote.
+    old = {
+        "source": {"name": "orders"},
+        "projections": [{"column": {"name": "id"}, "expression": "", "alias": ""}],
+        "where": {
+            "kind": "group",
+            "conjunction": "AND",
+            "items": [
+                {
+                    "kind": "condition",
+                    "column": {"name": "id"},
+                    "op": ">",
+                    "value": 1,
+                }
+            ],
+        },
+        "order_by": [{"column": {"name": "id"}, "descending": True}],
+    }
+    model = query_model.from_dict(old)
+    assert model.projections[0] == Projection(column=Column("id"))
+    assert render(model, dialect=SQLITE, formatted=False).sql == (
+        'SELECT "id"\nFROM "orders"\nWHERE "id" > ?\nORDER BY "id" DESC;'
+    )

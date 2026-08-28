@@ -56,7 +56,7 @@
 | CORE-18 | Builder reads the MetadataProvider (schemas, views, capabilities) (done) | CORE-02, CORE-17 |
 | CORE-19 | Persist the builder's query model in the workspace (done) | CORE-17 |
 | CORE-20 | Joins: aliases, self-joins, multi-condition ON, all join kinds (done) | CORE-17, CORE-18 |
-| CORE-21 | Aggregates: GROUP BY, HAVING, computed and aliased columns | CORE-17 |
+| CORE-21 | Aggregates: GROUP BY, HAVING, computed and aliased columns (done) | CORE-17 |
 | CORE-22 | Builder layout: grouped filters, column search, room to grow | CORE-17 |
 
 ### Table creator (from RS-02)

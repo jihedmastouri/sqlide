@@ -463,3 +463,112 @@ def test_a_self_join_survives_the_workspace(joins_tab) -> None:
     assert render(back.query_model(), dialect=back._dialect()).sql == render(
         tab.query_model(), dialect=tab._dialect()
     ).sql
+
+
+# Aggregates, grouping and having in the tab (CORE-21)
+
+
+def _flat_sql(tab) -> str:
+    return _flat(render(tab.query_model(), dialect=tab._dialect()).sql)
+
+
+def test_an_aggregate_with_an_alias_renders_and_runs(sqlite_tab) -> None:
+    tab, connector = sqlite_tab
+    tab._checked = {"orders.user_id"}
+    row = tab._add_aggregate_row()
+    row.restore("COUNT", "", False, "orders_count")
+    sql = _flat_sql(tab)
+    assert 'SELECT "user_id", COUNT(*) AS "orders_count"' in sql
+    # And the statement the engine is actually given comes back.
+    result = connector.execute(render(tab.query_model()).sql.rstrip(";"))
+    assert "orders_count" in result.columns
+
+
+def test_an_aggregate_beside_a_column_groups_rather_than_failing(
+    sqlite_tab,
+) -> None:
+    tab, _connector = sqlite_tab
+    tab._checked = {"orders.user_id"}
+    tab._add_aggregate_row().restore("COUNT", "", False, "n")
+    assert tab._grouping_columns() == ["user_id"]
+    assert 'GROUP BY "user_id"' in _flat_sql(tab)
+    assert "user_id" in tab._group_note.get_text()
+    # And the derived grouping is the user's to refuse.
+    tab._auto_group.set_active(False)
+    assert "GROUP BY" not in _flat_sql(tab)
+
+
+def test_grouping_and_having_render_around_where_and_order(
+    sqlite_tab,
+) -> None:
+    tab, _connector = sqlite_tab
+    tab._checked = {"orders.user_id"}
+    tab._add_aggregate_row().restore("COUNT", "id", True, "n")
+    tab._add_filter_row()
+    tab._filter_rows[0].set_condition(
+        FilterCondition(column="user_id", op=">", value="1")
+    )
+    tab._add_having_row().set_condition(
+        FilterCondition(column="n", op=">", value="2")
+    )
+    tab._add_sort_row()
+    tab._sort_rows[0].set_spec(SortSpec(column="n", descending=True))
+    sql = _flat_sql(tab)
+    order = [
+        sql.index(word)
+        for word in ("WHERE", "GROUP BY", "HAVING", "ORDER BY")
+    ]
+    assert order == sorted(order)
+    assert 'COUNT(DISTINCT "id") AS "n"' in sql
+    assert 'HAVING COUNT(DISTINCT "id") > ?' in sql
+    assert 'ORDER BY "n" DESC' in sql
+    assert render(tab.query_model(), dialect=tab._dialect()).params == [
+        "1",
+        "2",
+    ]
+
+
+def test_an_unaliased_aggregate_sorts_by_its_expression(sqlite_tab) -> None:
+    tab, _connector = sqlite_tab
+    tab._add_aggregate_row().restore("MAX", "id", False, "")
+    assert tab._aggregate_labels() == ["MAX(id)"]
+    tab._add_sort_row()
+    tab._sort_rows[0].set_spec(SortSpec(column="MAX(id)", descending=True))
+    assert 'ORDER BY MAX("id") DESC' in _flat_sql(tab)
+
+
+def test_a_free_text_expression_is_passed_through(sqlite_tab) -> None:
+    tab, _connector = sqlite_tab
+    tab._add_expression_row().restore("id * 2", "doubled")
+    assert 'id * 2 AS "doubled"' in _flat_sql(tab)
+
+
+def test_only_the_aggregates_the_engine_has_are_offered(sqlite_tab) -> None:
+    import dataclasses
+
+    tab, _connector = sqlite_tab
+    assert tab._aggregate_functions() == ["COUNT", "SUM", "AVG", "MIN", "MAX"]
+    tab._sql_dialect = dataclasses.replace(
+        tab._sql_dialect, aggregates=("COUNT", "MAX")
+    )
+    assert tab._aggregate_functions() == ["COUNT", "MAX"]
+
+
+def test_the_whole_summarised_query_survives_the_workspace(
+    sqlite_tab,
+) -> None:
+    tab, connector = sqlite_tab
+    tab._checked = {"orders.user_id"}
+    tab._add_aggregate_row().restore("COUNT", "id", True, "n")
+    tab._add_expression_row().restore("id * 2", "doubled")
+    tab._add_having_row().set_condition(
+        FilterCondition(column="n", op=">", value="2")
+    )
+    tab._add_sort_row()
+    tab._sort_rows[0].set_spec(SortSpec(column="n", descending=True))
+    back = _restored(tab, connector, tab.tab_state())
+    assert back._checked == {"orders.user_id"}
+    assert back._aggregate_labels() == ["n", "doubled"]
+    assert back._having_rows[0].condition().column == "n"
+    assert back._sort_rows[0].spec() == SortSpec("n", descending=True)
+    assert _flat_sql(back) == _flat_sql(tab)

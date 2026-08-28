@@ -40,6 +40,18 @@ The rendered SQL drops the qualification while no join is present,
 writes the schema only where there is one, and writes an alias only
 where it says something the table name does not.
 
+Beside the plain columns a query can summarise (CORE-21): an
+aggregate row is a function from the dialect's own list over a column
+(or `COUNT(*)`), optionally distinct and optionally aliased, and an
+expression row is the escape hatch — free text, passed through
+unchanged and never validated here. An aggregate beside a ticked plain
+column needs a GROUP BY, so the tab derives one from the ticked
+columns rather than emitting a statement PostgreSQL rejects, says in a
+note what it grouped by, and lets you untick that. HAVING reuses the
+filter row over the summary entries, and the sort picker offers them
+too, so an aggregate result stays sortable — by its alias where the
+dialect takes one, by the expression where it does not.
+
 Because the model is data, the tab persists it: `tab_state` writes the
 whole query into the workspace and a restored tab rehydrates it once
 the catalog is in, dropping any join, column, filter or sort whose
@@ -70,6 +82,8 @@ from sqlide.backend.db.base import (
 from sqlide.backend.db.metadata import Capabilities, NodeRef
 from sqlide.backend.db.relations import constraints as key_constraints
 from sqlide.backend.db.query_model import (
+    AGGREGATES,
+    AGGREGATES_WITHOUT_COLUMN,
     Column,
     Condition,
     Dialect,
@@ -83,6 +97,7 @@ from sqlide.backend.db.query_model import (
     Projection,
     QueryModel,
     TableRef,
+    aggregate_label,
     dialect_for,
     dump_state,
     folded_group,
@@ -111,6 +126,9 @@ from sqlide.i18n import _, ngettext
 # once the catalog loads — never from an `if engine == ...` here.
 JOIN_KINDS = MODEL_JOIN_KINDS
 DEFAULT_LIMIT = 500
+#: What an aggregate row offers instead of a column when the function
+#: takes none: COUNT(*).
+ALL_ROWS = "*"
 
 
 @dataclass(frozen=True)
@@ -508,6 +526,228 @@ class _JoinRow(Gtk.Box):
             row.set_condition(left, right, op)
 
 
+class _AggregateRow(Gtk.Box):
+    """One aggregate projection: [function] [column] [distinct] as [alias].
+
+    The functions on offer come from the dialect, not from a test on
+    the engine's name (CORE-21) — the same route the join kinds take.
+    `COUNT` may take `*` instead of a column; the others may not, and
+    the column picker says so by dropping the entry.
+    """
+
+    def __init__(
+        self,
+        columns: Sequence[str],
+        on_remove: Callable[["_AggregateRow"], None],
+        on_change: Callable[[], None],
+        functions: Sequence[str] = AGGREGATES,
+    ) -> None:
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._on_change = on_change
+        self._updating = False
+        self._functions = list(functions) or list(AGGREGATES)
+        self._function = Gtk.DropDown(
+            model=Gtk.StringList.new(self._functions)
+        )
+        self._column = Gtk.DropDown(model=Gtk.StringList.new([]), hexpand=True)
+        self._distinct = Gtk.CheckButton(label=_("Distinct"))
+        self._alias = Gtk.Entry(width_chars=10, max_width_chars=16)
+        describe(self._alias, _("Name for the aggregate column"))
+        remove = Gtk.Button(icon_name="list-remove-symbolic")
+        remove.add_css_class("flat")
+        describe(remove, _("Remove aggregate"))
+        remove.connect("clicked", lambda *_: on_remove(self))
+        for widget in (
+            self._function,
+            self._column,
+            self._distinct,
+            Gtk.Label(label=_("as")),
+            self._alias,
+            remove,
+        ):
+            self.append(widget)
+        self.set_columns(columns)
+        for dropdown in (self._function, self._column):
+            dropdown.connect("notify::selected", self._changed)
+        self._distinct.connect("toggled", self._changed)
+        self._alias.connect("changed", self._changed)
+
+    def _changed(self, *_args) -> None:
+        if self._updating:
+            return
+        self._sync_column_choices()
+        self._on_change()
+
+    def set_columns(self, columns: Sequence[str]) -> None:
+        """Refill the column picker, keeping the current pick."""
+        self._all_columns = list(columns)
+        self._sync_column_choices()
+
+    def _sync_column_choices(self) -> None:
+        wanted = list(self._all_columns)
+        if self.function() in AGGREGATES_WITHOUT_COLUMN:
+            wanted = [ALL_ROWS, *wanted]
+        selected = _selected_string(self._column)
+        if wanted == [
+            self._column.get_model().get_string(i)
+            for i in range(self._column.get_model().get_n_items())
+        ]:
+            return
+        self._updating = True
+        try:
+            self._column.set_model(Gtk.StringList.new(wanted))
+            if selected in wanted:
+                self._column.set_selected(wanted.index(selected))
+        finally:
+            self._updating = False
+
+    # Reading the line
+
+    def function(self) -> str:
+        return _selected_string(self._function) or self._functions[0]
+
+    def column(self) -> str:
+        name = _selected_string(self._column)
+        return "" if name == ALL_ROWS else name
+
+    def distinct(self) -> bool:
+        return self._distinct.get_active()
+
+    def alias(self) -> str:
+        return self._alias.get_text().strip()
+
+    def label(self) -> str:
+        """How this aggregate reads elsewhere in the tab — in the
+        HAVING picker and the sort picker. The alias where there is
+        one, since that is what the result column will be called."""
+        return self.alias() or aggregate_label(
+            self.function(), self.column(), distinct=self.distinct()
+        )
+
+    def is_valid(self) -> bool:
+        """A COUNT is complete on its own; the rest need a column."""
+        return bool(
+            self.column() or self.function() in AGGREGATES_WITHOUT_COLUMN
+        )
+
+    def restore(
+        self, function: str, column: str, distinct: bool, alias: str
+    ) -> None:
+        self._updating = True
+        try:
+            if function in self._functions:
+                self._function.set_selected(self._functions.index(function))
+            self._distinct.set_active(distinct)
+            self._alias.set_text(alias)
+        finally:
+            self._updating = False
+        self._sync_column_choices()
+        self._updating = True
+        try:
+            wanted = column or ALL_ROWS
+            model = self._column.get_model()
+            for i in range(model.get_n_items()):
+                if model.get_string(i) == wanted:
+                    self._column.set_selected(i)
+                    break
+        finally:
+            self._updating = False
+
+
+class _ExpressionRow(Gtk.Box):
+    """A free-text computed column: the escape hatch.
+
+    What is typed here is passed to the engine unchanged — the builder
+    neither parses nor validates it — so the row says so, and an
+    expression is never anywhere near a value that should have been
+    bound.
+    """
+
+    def __init__(
+        self,
+        on_remove: Callable[["_ExpressionRow"], None],
+        on_change: Callable[[], None],
+    ) -> None:
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._expression = Gtk.Entry(
+            hexpand=True, placeholder_text=_("SQL expression")
+        )
+        self._expression.set_tooltip_text(
+            _("Passed to the database unchanged and not checked here")
+        )
+        describe(self._expression, _("SQL expression (not validated)"))
+        self._alias = Gtk.Entry(width_chars=10, max_width_chars=16)
+        describe(self._alias, _("Name for the computed column"))
+        remove = Gtk.Button(icon_name="list-remove-symbolic")
+        remove.add_css_class("flat")
+        describe(remove, _("Remove expression"))
+        remove.connect("clicked", lambda *_: on_remove(self))
+        for widget in (
+            self._expression,
+            Gtk.Label(label=_("as")),
+            self._alias,
+            remove,
+        ):
+            self.append(widget)
+        for entry in (self._expression, self._alias):
+            entry.connect("changed", lambda *_: on_change())
+
+    def expression(self) -> str:
+        return self._expression.get_text().strip()
+
+    def alias(self) -> str:
+        return self._alias.get_text().strip()
+
+    def label(self) -> str:
+        return self.alias() or self.expression()
+
+    def is_valid(self) -> bool:
+        return bool(self.expression())
+
+    def restore(self, expression: str, alias: str) -> None:
+        self._expression.set_text(expression)
+        self._alias.set_text(alias)
+
+
+class _GroupRow(Gtk.Box):
+    """One GROUP BY column, chosen by hand."""
+
+    def __init__(
+        self,
+        columns: Sequence[str],
+        on_remove: Callable[["_GroupRow"], None],
+        on_change: Callable[[], None],
+    ) -> None:
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._column = Gtk.DropDown(
+            model=Gtk.StringList.new(list(columns)), hexpand=True
+        )
+        self._column.connect("notify::selected", lambda *_: on_change())
+        remove = Gtk.Button(icon_name="list-remove-symbolic")
+        remove.add_css_class("flat")
+        describe(remove, _("Remove grouping column"))
+        remove.connect("clicked", lambda *_: on_remove(self))
+        self.append(self._column)
+        self.append(remove)
+
+    def column(self) -> str:
+        return _selected_string(self._column)
+
+    def set_columns(self, names: Sequence[str]) -> None:
+        selected = self.column()
+        names = list(names)
+        self._column.set_model(Gtk.StringList.new(names))
+        if selected in names:
+            self._column.set_selected(names.index(selected))
+
+    def set_column(self, name: str) -> None:
+        model = self._column.get_model()
+        for i in range(model.get_n_items()):
+            if model.get_string(i) == name:
+                self._column.set_selected(i)
+                return
+
+
 class QueryBuilderTab(Gtk.Box):
     """Content of one query-builder tab."""
 
@@ -545,6 +785,10 @@ class QueryBuilderTab(Gtk.Box):
         self._sql_dialect: Dialect = GENERIC
         self._join_rows: list[_JoinRow] = []
         self._filter_rows: list[_FilterRow] = []
+        self._aggregate_rows: list[_AggregateRow] = []
+        self._expression_rows: list[_ExpressionRow] = []
+        self._group_rows: list[_GroupRow] = []
+        self._having_rows: list[_FilterRow] = []
         self._sort_rows: list[_SortRow] = []
         self._checked: set[str] = set()  # qualified "alias.column"
         self._column_checks: list[Gtk.CheckButton] = []
@@ -642,6 +886,26 @@ class QueryBuilderTab(Gtk.Box):
         )
         box.append(self._columns_flow)
 
+        box.append(self._section_label("Summarise"))
+        self._aggregates_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=6
+        )
+        box.append(self._aggregates_box)
+        summarise = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        add_aggregate = Gtk.Button(label=_("Add aggregate"))
+        add_aggregate.connect("clicked", lambda *_: self._add_aggregate_row())
+        summarise.append(add_aggregate)
+        add_expression = Gtk.Button(label=_("Add expression"))
+        add_expression.set_tooltip_text(
+            _("A computed column, passed to the database unchanged")
+        )
+        add_expression.connect(
+            "clicked", lambda *_: self._add_expression_row()
+        )
+        summarise.append(add_expression)
+        summarise.set_halign(Gtk.Align.START)
+        box.append(summarise)
+
         box.append(self._section_label("Filters"))
         self._filters_box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL, spacing=6
@@ -652,6 +916,42 @@ class QueryBuilderTab(Gtk.Box):
         )
         add_filter.connect("clicked", lambda *_: self._add_filter_row())
         box.append(add_filter)
+
+        box.append(self._section_label("Group by"))
+        self._auto_group = Gtk.CheckButton(
+            label=_("Group by the selected plain columns"), active=True
+        )
+        self._auto_group.set_tooltip_text(
+            _(
+                "An aggregate beside a plain column needs a GROUP BY; "
+                "this adds one for every column you have ticked."
+            )
+        )
+        self._auto_group.connect("toggled", lambda *_: self._sync_state())
+        box.append(self._auto_group)
+        self._groups_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=6
+        )
+        box.append(self._groups_box)
+        add_group = Gtk.Button(
+            label=_("Add grouping column"), halign=Gtk.Align.START
+        )
+        add_group.connect("clicked", lambda *_: self._add_group_row())
+        box.append(add_group)
+        self._group_note = Gtk.Label(xalign=0, wrap=True)
+        self._group_note.add_css_class("dim-label")
+        box.append(self._group_note)
+
+        box.append(self._section_label("Having"))
+        self._having_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=6
+        )
+        box.append(self._having_box)
+        add_having = Gtk.Button(
+            label=_("Add condition on an aggregate"), halign=Gtk.Align.START
+        )
+        add_having.connect("clicked", lambda *_: self._add_having_row())
+        box.append(add_having)
 
         box.append(self._section_label("Sort"))
         self._sorts_box = Gtk.Box(
@@ -919,15 +1219,52 @@ class QueryBuilderTab(Gtk.Box):
             qualified = set(self._qualified_columns(instances))
             checked: set[str] = set()
             for projection in model.projections:
+                if projection.expression:
+                    row = self._add_expression_row()
+                    row.restore(projection.expression, projection.alias)
+                    continue
                 name = self._restored_column(
                     projection.column, aliases, base_alias
                 )
+                if projection.function:
+                    # COUNT(*) has no column to lose; the rest go with
+                    # the column they aggregate.
+                    display = self._display_name(name, instances)
+                    if projection.column is not None and (
+                        display is None
+                        or display
+                        not in self._display_columns(instances)
+                    ):
+                        dropped += 1
+                        continue
+                    aggregate = self._add_aggregate_row()
+                    aggregate.restore(
+                        projection.function.upper(),
+                        display or "",
+                        projection.distinct,
+                        projection.alias,
+                    )
+                    continue
                 if name is None or name not in qualified:
                     dropped += 1
                     continue
                 checked.add(name)
             self._checked = checked
             names = self._display_columns(instances)
+            for item in model.group_by:
+                if isinstance(item, str):
+                    dropped += 1
+                    continue
+                name = self._restored_column(item, aliases, base_alias)
+                display = self._display_name(name, instances)
+                if display is None or display not in names:
+                    dropped += 1
+                    continue
+                # A restored query groups exactly as it was saved:
+                # every column is a row of its own and the derived
+                # grouping stands aside rather than adding to it.
+                self._auto_group.set_active(False)
+                self._add_group_row().set_column(display)
             lines = unfold_group(model.where)
             if lines is None and model.where is not None:
                 # A filter tree the flat panel cannot show (nothing
@@ -954,10 +1291,37 @@ class QueryBuilderTab(Gtk.Box):
                         conjunction=conjunction,
                     )
                 )
+            labels = self._aggregate_labels()
+            having = unfold_group(model.having)
+            if having is None and model.having is not None:
+                dropped += 1
+            for conjunction, condition in having or []:
+                label = self._label_for(condition, aliases, base_alias)
+                if label is None or label not in labels:
+                    dropped += 1
+                    continue
+                self._add_having_row().set_condition(
+                    FilterCondition(
+                        column=label,
+                        op=condition.op,
+                        value=(
+                            ""
+                            if condition.value is None
+                            else str(condition.value)
+                        ),
+                        conjunction=conjunction,
+                    )
+                )
+            choices = [*names, *labels]
             for order in model.order_by:
-                name = self._restored_column(order.column, aliases, base_alias)
-                display = self._display_name(name, instances)
-                if display is None or display not in names:
+                if order.alias or order.function or order.expression:
+                    display = self._label_for(order, aliases, base_alias)
+                else:
+                    name = self._restored_column(
+                        order.column, aliases, base_alias
+                    )
+                    display = self._display_name(name, instances)
+                if display is None or display not in choices:
                     dropped += 1
                     continue
                 self._add_sort_row()
@@ -981,6 +1345,48 @@ class QueryBuilderTab(Gtk.Box):
                 )
                 % dropped
             )
+
+    def _label_for(
+        self, item, aliases: dict[str, str], base: str
+    ) -> str | None:
+        """The label a saved aggregate or expression term goes by in
+        the restored tab, so a HAVING condition or a sort finds the row
+        it belongs to.
+
+        Matched against the summary rows themselves rather than
+        rebuilt, because a row that was given an alias goes by that
+        alias everywhere. None when nothing in the tab answers to the
+        term — which is how a condition on a dropped aggregate gets
+        left out instead of naming a column that is not there.
+        """
+        alias = getattr(item, "alias", "")
+        if alias:
+            return alias if alias in self._aggregate_labels() else None
+        if item.expression:
+            for row in self._summary_rows():
+                if (
+                    isinstance(row, _ExpressionRow)
+                    and row.expression() == item.expression
+                ):
+                    return row.label()
+            return None
+        if not item.function:
+            return None
+        column = ""
+        if item.column is not None and item.column.name:
+            name = self._restored_column(item.column, aliases, base)
+            column = self._display_name(name, self._instances()) or ""
+            if not column:
+                return None
+        for row in self._summary_rows():
+            if (
+                isinstance(row, _AggregateRow)
+                and row.function() == item.function.upper()
+                and row.column() == column
+                and row.distinct() == item.distinct
+            ):
+                return row.label()
+        return None
 
     @staticmethod
     def _display_name(
@@ -1137,9 +1543,10 @@ class QueryBuilderTab(Gtk.Box):
                         conjunction=condition.conjunction,
                     )
                 )
+        sort_names = [*names, *self._aggregate_labels()]
         for row in self._sort_rows:
             spec = row.spec()
-            row.set_columns(names)
+            row.set_columns(sort_names)
             if renames:
                 row.set_spec(
                     SortSpec(
@@ -1147,6 +1554,13 @@ class QueryBuilderTab(Gtk.Box):
                         descending=spec.descending,
                     )
                 )
+        for aggregate in self._aggregate_rows:
+            aggregate.set_columns(names)
+        for group in self._group_rows:
+            group.set_columns(names)
+        labels = self._aggregate_labels()
+        for having in self._having_rows:
+            having.set_columns(labels)
         self._rebuild_column_checks(instances)
         self._refresh_sql()
 
@@ -1280,7 +1694,7 @@ class QueryBuilderTab(Gtk.Box):
 
     def _add_sort_row(self) -> None:
         row = _SortRow(
-            self._display_columns(self._instances()),
+            self._sort_choices(),
             self._remove_sort_row,
             self._move_sort_row,
             on_change=self._refresh_sql,
@@ -1305,6 +1719,162 @@ class QueryBuilderTab(Gtk.Box):
         for widget in self._sort_rows:
             self._sorts_box.append(widget)
         self._refresh_sql()
+
+    # Aggregate / expression / group / having rows (CORE-21)
+
+    def _aggregate_functions(self) -> list[str]:
+        """The aggregates this engine has, in the builder's own order.
+
+        Straight from the dialect the catalog load handed over — which
+        is where the provider's and the adapter's knowledge ends up —
+        so the dropdown never needs to know an engine's name.
+        """
+        allowed = set(self._sql_dialect.aggregates)
+        return [f for f in AGGREGATES if f in allowed] or list(AGGREGATES)
+
+    def _add_aggregate_row(self) -> _AggregateRow:
+        row = _AggregateRow(
+            self._display_columns(self._instances()),
+            self._remove_aggregate_row,
+            self._sync_state,
+            functions=self._aggregate_functions(),
+        )
+        self._aggregate_rows.append(row)
+        self._aggregates_box.append(row)
+        self._sync_state()
+        return row
+
+    def _remove_aggregate_row(self, row: _AggregateRow) -> None:
+        self._aggregate_rows.remove(row)
+        self._aggregates_box.remove(row)
+        self._sync_state()
+
+    def _add_expression_row(self) -> _ExpressionRow:
+        row = _ExpressionRow(self._remove_expression_row, self._sync_state)
+        self._expression_rows.append(row)
+        self._aggregates_box.append(row)
+        self._sync_state()
+        return row
+
+    def _remove_expression_row(self, row: _ExpressionRow) -> None:
+        self._expression_rows.remove(row)
+        self._aggregates_box.remove(row)
+        self._sync_state()
+
+    def _add_group_row(self) -> _GroupRow:
+        row = _GroupRow(
+            self._display_columns(self._instances()),
+            self._remove_group_row,
+            self._refresh_sql,
+        )
+        self._group_rows.append(row)
+        self._groups_box.append(row)
+        self._refresh_sql()
+        return row
+
+    def _remove_group_row(self, row: _GroupRow) -> None:
+        self._group_rows.remove(row)
+        self._groups_box.remove(row)
+        self._refresh_sql()
+
+    def _add_having_row(self) -> _FilterRow:
+        row = _FilterRow(
+            self._aggregate_labels(),
+            self._remove_having_row,
+            self.run_query,
+            on_change=self._refresh_sql,
+        )
+        self._having_rows.append(row)
+        self._having_box.append(row)
+        for index, line in enumerate(self._having_rows):
+            line.set_first(index == 0)
+        self._refresh_sql()
+        return row
+
+    def _remove_having_row(self, row: _FilterRow) -> None:
+        self._having_rows.remove(row)
+        self._having_box.remove(row)
+        for index, line in enumerate(self._having_rows):
+            line.set_first(index == 0)
+        self._refresh_sql()
+
+    # Aggregates as the rest of the tab sees them
+
+    def _summary_rows(self) -> list[object]:
+        """Every complete select-list entry that is not a plain
+        column, aggregates first — what HAVING and the sort picker can
+        name, in the order the select list writes them."""
+        return [
+            *(r for r in self._aggregate_rows if r.is_valid()),
+            *(r for r in self._expression_rows if r.is_valid()),
+        ]
+
+    def _sort_choices(self) -> list[str]:
+        """What a sort row may order by: every plain column plus every
+        aggregate or computed column, so an aggregate result stays
+        sortable (by its alias where the dialect allows one)."""
+        return [
+            *self._display_columns(self._instances()),
+            *self._aggregate_labels(),
+        ]
+
+    def _aggregate_labels(self) -> list[str]:
+        return [row.label() for row in self._summary_rows()]
+
+    def _row_for_label(self, label: str) -> object | None:
+        for row in self._summary_rows():
+            if row.label() == label:
+                return row
+        return None
+
+    def _summary_term(self, label: str) -> dict:
+        """The model fields a summary entry contributes, by the label
+        it goes by in the HAVING and sort pickers. `{}` when the label
+        names nothing (a row the user has since removed)."""
+        row = self._row_for_label(label)
+        if isinstance(row, _AggregateRow):
+            return {
+                "column": (
+                    self._column_ref(row.column()) if row.column() else None
+                ),
+                "function": row.function(),
+                "distinct": row.distinct(),
+            }
+        if isinstance(row, _ExpressionRow):
+            return {"expression": row.expression()}
+        return {}
+
+    def _grouping_columns(self) -> list[str]:
+        """The display columns the query groups by.
+
+        The rows the user added by hand, plus — while "Group by the
+        selected plain columns" is on and something is actually being
+        aggregated — the plain columns they ticked. An aggregate beside
+        a bare column without a GROUP BY is a statement PostgreSQL
+        rejects outright and MySQL and SQLite answer arbitrarily, so
+        the builder supplies the grouping rather than emitting it
+        (CORE-21).
+        """
+        names: list[str] = []
+        for row in self._group_rows:
+            if row.column() and row.column() not in names:
+                names.append(row.column())
+        if self._auto_group.get_active() and self._summary_rows():
+            for name in self._plain_projections():
+                if name not in names:
+                    names.append(name)
+        return names
+
+    def _plain_projections(self) -> list[str]:
+        """The ticked plain columns, as the filter panel spells them
+        (qualified once a join is in play), in schema order."""
+        instances = self._instances()
+        return [
+            display
+            for qualified in self._qualified_columns(instances)
+            if qualified in self._checked
+            and (display := self._display_name(qualified, instances))
+        ]
 
     # SQL generation
 
@@ -1381,12 +1951,35 @@ class QueryBuilderTab(Gtk.Box):
                     ),
                 )
             )
-        # Keep the schema's column order rather than click order.
-        projections = tuple(
+        # Keep the schema's column order rather than click order, and
+        # put the summary entries after the plain ones, the way the
+        # select list reads.
+        projections = [
             Projection(column=self._column_ref(qualified))
             for qualified in self._qualified_columns(instances)
             if qualified in self._checked
-        )
+        ]
+        for row in self._aggregate_rows:
+            if not row.is_valid():
+                continue
+            projections.append(
+                Projection(
+                    column=(
+                        self._column_ref(row.column())
+                        if row.column()
+                        else None
+                    ),
+                    function=row.function(),
+                    distinct=row.distinct(),
+                    alias=row.alias(),
+                )
+            )
+        for row in self._expression_rows:
+            if not row.is_valid():
+                continue
+            projections.append(
+                Projection(expression=row.expression(), alias=row.alias())
+            )
         lines = []
         for row in self._filter_rows:
             cond = row.condition()
@@ -1406,22 +1999,75 @@ class QueryBuilderTab(Gtk.Box):
                     ),
                 )
             )
+        having_lines = []
+        for row in self._having_rows:
+            cond = row.condition()
+            term = self._summary_term(cond.column) if cond.column else {}
+            if not term:
+                # A condition on an aggregate that is no longer in the
+                # select list is not part of the query.
+                continue
+            having_lines.append(
+                (
+                    cond.conjunction,
+                    Condition(
+                        op=cond.op,
+                        value=(
+                            None
+                            if cond.op in NO_VALUE_OPERATORS
+                            else cond.value
+                        ),
+                        **term,
+                    ),
+                )
+            )
         return QueryModel(
             source=refs[instances[0].alias],
             joins=tuple(joins),
-            projections=projections,
+            projections=tuple(projections),
             distinct=self._distinct.get_active(),
             where=folded_group(lines),
-            order_by=tuple(
-                Order(
-                    column=self._column_ref(row.spec().column),
-                    descending=row.spec().descending,
-                )
-                for row in self._sort_rows
-                if row.spec().column
+            group_by=tuple(
+                self._column_ref(name) for name in self._grouping_columns()
             ),
+            having=folded_group(having_lines),
+            order_by=tuple(self._orderings()),
             limit=int(self._limit.get_value()),
         )
+
+    def _orderings(self) -> list[Order]:
+        """The sort rows as model orderings.
+
+        A row naming an aggregate orders by its alias where it has one
+        — the renderer falls back to repeating the expression on a
+        dialect that cannot sort by an alias — and by the aggregate
+        itself where the user never named it.
+        """
+        orders: list[Order] = []
+        for row in self._sort_rows:
+            spec = row.spec()
+            if not spec.column:
+                continue
+            summary = self._row_for_label(spec.column)
+            if summary is None:
+                orders.append(
+                    Order(
+                        column=self._column_ref(spec.column),
+                        descending=spec.descending,
+                    )
+                )
+            elif getattr(summary, "alias", lambda: "")():
+                orders.append(
+                    Order(alias=summary.alias(), descending=spec.descending)
+                )
+            else:
+                orders.append(
+                    Order(
+                        descending=spec.descending,
+                        **self._summary_term(spec.column),
+                    )
+                )
+        return orders
 
     def _join_kinds(self) -> list[str]:
         """The join kinds this engine actually has, in the builder's
@@ -1447,7 +2093,32 @@ class QueryBuilderTab(Gtk.Box):
             return f"-- {exc}"
 
     def _refresh_sql(self) -> None:
+        self._update_group_note()
         self._sql_view.get_buffer().set_text(self.build_sql())
+
+    def _update_group_note(self) -> None:
+        """Say what the derived grouping did, if anything.
+
+        Applying a GROUP BY silently would be a statement the user did
+        not write; the note is what makes it visible, and unticking the
+        box is what takes it back.
+        """
+        derived = [
+            name
+            for name in self._plain_projections()
+            if not any(row.column() == name for row in self._group_rows)
+        ]
+        if self._summary_rows() and self._auto_group.get_active() and derived:
+            self._group_note.set_text(
+                _("Grouping by %s so the aggregates are valid.")
+                % ", ".join(derived)
+            )
+        elif self._summary_rows() and not self._grouping_columns():
+            self._group_note.set_text(
+                _("No grouping: the aggregates cover every row.")
+            )
+        else:
+            self._group_note.set_text("")
 
     # Actions
 

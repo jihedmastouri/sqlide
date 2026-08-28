@@ -35,6 +35,7 @@ from sqlide.backend.workspaces import TabState
 from sqlide.frontend.data_grid import (
     AggregateCallback,
     ResultGrid,
+    ValueCallback,
     _FilterRow,
     _selected_string,
     _sql_literal,
@@ -149,6 +150,7 @@ class QueryBuilderTab(Gtk.Box):
         show_error: Callable[[str], None],
         table: str = "",
         on_aggregate: AggregateCallback | None = None,
+        on_value: ValueCallback | None = None,
         on_open_console: Callable[[ConnectionProfile, str], None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
@@ -156,6 +158,7 @@ class QueryBuilderTab(Gtk.Box):
         self._ensure = ensure_connector
         self._show_error = show_error
         self._on_aggregate = on_aggregate
+        self._on_value = on_value
         self._on_open_console = on_open_console
         self._initial_table = table
         # Rebound by the window once the tab page exists (like TableTab).
@@ -300,7 +303,9 @@ class QueryBuilderTab(Gtk.Box):
     def _build_results(self, paned: Gtk.Paned) -> Gtk.Widget:
         # Same collapsible panel as the query console, hidden until the
         # first run produces rows.
-        self._grid = ResultGrid(on_aggregate=self._on_aggregate)
+        self._grid = ResultGrid(
+            on_aggregate=self._on_aggregate, on_value=self._on_value
+        )
         self._results_panel = ResultsPanel(
             self._grid, paned, on_export=self._export_result
         )

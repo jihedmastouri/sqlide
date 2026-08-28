@@ -50,8 +50,19 @@ into an EditableLabel, so setting a cell to NULL instead goes through
 the cell's right-click menu ("Set Cell to NULL", enabled only while
 unlocked) — it calls on_edit with None rather than "".
 
-A table whose rows hold geometries grows a second side, Map, next to
-Data (frontend/map_view.py): the loaded rows drawn on
+Whatever the grid is showing, the focused cell is also handed to the
+side panel's Value page (frontend/value_view.py, CORE-42): a JSON
+document, a stack trace or a blob is unreadable in one ellipsized
+line, so the panel renders it in full — pretty-printed JSON, a hex and
+ASCII dump with the byte length, a geometry's description — and edits
+made there go back through this grid's own on_edit, never a second
+write path.
+
+A table tab has a Record side for the same reason in the other
+direction: forty columns are read down a page, not across one.
+
+A table whose rows hold geometries grows a third side, Map, next to
+Data and Record (frontend/map_view.py): the loaded rows drawn on
 OpenStreetMap tiles, with selection running both ways — clicking a
 feature selects its row, selecting a row highlights its feature.
 """
@@ -86,6 +97,7 @@ from sqlide.backend.workspaces import TabState
 from sqlide.backend.settings import max_map_features as settings_max_map_features
 from sqlide.backend.settings import store as settings_store
 from sqlide.frontend import confirm, feedback, keymap
+from sqlide.frontend.value_view import CellValue, RecordView
 from sqlide.frontend.util import describe, run_async
 from sqlide.i18n import _
 
@@ -109,6 +121,11 @@ EditCallback = Callable[["RowItem", int, str | None], None]
 # live=False is the user asking for it, which may raise the panel.
 AggregateCallback = Callable[[list[str], bool], None]
 
+# on_value(cell_or_None, live). Mirrors on_aggregate: live=True is the
+# focus moving — fill the Value page and leave the panel where it is;
+# live=False is the cell menu's "View Value", which asks for the page.
+ValueCallback = Callable[["CellValue | None", bool], None]
+
 
 class RowItem(GObject.Object):
     """One result row; values indexed by column position."""
@@ -124,6 +141,7 @@ class ResultGrid(Gtk.ScrolledWindow):
         on_edit: EditCallback | None = None,
         table_name: str | None = None,
         on_aggregate: AggregateCallback | None = None,
+        on_value: ValueCallback | None = None,
         on_header_sort: Callable[[list[tuple[str, bool]]], None] | None = None,
         on_edge_reached: Callable[[Gtk.PositionType], None] | None = None,
         on_row_activated: Callable[[int], None] | None = None,
@@ -134,6 +152,10 @@ class ResultGrid(Gtk.ScrolledWindow):
             self.connect("edge-reached", lambda _self, pos: on_edge_reached(pos))
         self._on_edit = on_edit
         self._aggregate_cb = on_aggregate
+        # The focused cell, handed to the side panel's Value page
+        # (CORE-42) so a value too wide for its column can still be
+        # read — and edited, through this grid's own edit path.
+        self._value_cb = on_value
         # When set, the column-header menu grows a sort section: the
         # grid never sorts locally; it reports the composed column list
         # as (name, descending) pairs, primary first, so the owner can
@@ -228,6 +250,7 @@ class ResultGrid(Gtk.ScrolledWindow):
             ("select-column", self._on_select_column),
             ("copy", lambda *_: self.copy_selection()),
             ("aggregate", self._on_aggregate),
+            ("value", self._on_show_value),
             ("move-left", lambda *_: self._move_menu_column(-1)),
             ("move-right", lambda *_: self._move_menu_column(1)),
             ("set-null", self._on_set_null),
@@ -272,6 +295,7 @@ class ResultGrid(Gtk.ScrolledWindow):
             copy_as_menu.append(label, f"grid.copy-as::{fmt}")
         copy_section.append_submenu("Copy As", copy_as_menu)
         copy_section.append("Export…", "grid.export")
+        copy_section.append("View Value", "grid.value")
         copy_section.append("Aggregate", "grid.aggregate")
         copy_section.append("Show on Map", "grid.show-map")
         menu.append_section(None, copy_section)
@@ -510,6 +534,9 @@ class ResultGrid(Gtk.ScrolledWindow):
         # An empty grid is a blank rectangle that teaches nothing; show
         # the state's own message and its fix instead.
         self.set_child(self._view if rows else self._empty_page())
+        # Nothing is focused in a freshly loaded result, so the Value
+        # page must not keep showing the previous one's cell.
+        self._emit_value()
 
     def append_rows(self, rows: list[tuple]) -> None:
         """Add more rows below the ones already shown (scrolled-to-bottom
@@ -709,6 +736,121 @@ class ResultGrid(Gtk.ScrolledWindow):
         """The names of the loaded result's geometry columns."""
         return [self._column_names[i] for i in sorted(self._geo_columns)]
 
+    # Value views (CORE-42)
+    #
+    # The grid is the single source the Value page and the record view
+    # ask: which columns there are, what a row holds, whether a cell may
+    # be edited right now, and how to edit it. Neither view keeps a copy
+    # of any of that, so neither can drift from the grid or slip past
+    # the read-only rules.
+
+    def columns(self) -> list[str]:
+        """The loaded result's column names, in data order."""
+        return list(self._column_names)
+
+    def row_count(self) -> int:
+        return self._store.get_n_items()
+
+    def row_values(self, position: int) -> list[Any] | None:
+        item = self._store.get_item(position)
+        return None if item is None else list(item.values)
+
+    def is_geometry_column(self, index: int) -> bool:
+        return index in self._geo_columns
+
+    def cell_editable(self, index: int, value: Any) -> bool:
+        """Whether an edit of this cell would be taken — the same test
+        _bind_editable applies to the inline editor, so the value views
+        offer exactly what the grid does."""
+        return (
+            self._editable_grid
+            and self._unlocked
+            and self._on_edit is not None
+            and not is_binary(value)
+            and index not in self._geo_columns
+        )
+
+    def edit_cell(self, position: int, index: int, text: str | None) -> None:
+        """Commit an edit made outside the cell itself. Goes through the
+        very same on_edit callback an inline commit does — there is no
+        second write path — and then repaints the cell and re-announces
+        the value, so the grid and the panel say the same thing."""
+        item = self._store.get_item(position)
+        if item is None or not self.cell_editable(index, item.values[index]):
+            return
+        self._on_edit(item, index, text)
+        self.refresh_cell(position, index)
+        self._emit_value()
+
+    def refresh_cell(self, position: int, index: int) -> None:
+        """Repaint one bound cell from the row behind it."""
+        item = self._store.get_item(position)
+        if item is None:
+            return
+        value = item.values[index]
+        for widget, (list_item, col) in self._bound_cells.items():
+            if col != index or list_item.get_position() != position:
+                continue
+            if value is None and isinstance(widget, Gtk.Label):
+                widget.set_text("NULL")
+                widget.add_css_class("dim-label")
+            elif isinstance(widget, Gtk.Label):
+                widget.set_text(self._cell_display(index, value))
+                widget.remove_css_class("dim-label")
+            else:
+                widget.set_text(
+                    "" if value is None else self._cell_display(index, value)
+                )
+
+    def cell_value(self, position: int, index: int) -> CellValue | None:
+        """The focused cell as the value views want it."""
+        item = self._store.get_item(position)
+        if item is None or index >= len(self._column_names):
+            return None
+        value = item.values[index]
+        writable = self.cell_editable(index, value)
+        apply = (
+            (lambda text, p=position, i=index: self.edit_cell(p, i, text))
+            if writable
+            else None
+        )
+        return CellValue(
+            column=self._column_names[index],
+            row=self._row_offset + position + 1,
+            value=value,
+            geometry=index in self._geo_columns,
+            apply=apply,
+        )
+
+    def focused_row(self) -> int:
+        """Store position of the focused cell's row (0 with nothing
+        focused) — where the record view opens."""
+        return self._anchor[0] if self._anchor is not None else 0
+
+    def focus_cell(self, position: int, index: int) -> None:
+        """Move the focus (and the selection) to one cell from outside
+        — what the record view does as it walks rows."""
+        if self._store.get_item(position) is None:
+            return
+        self._anchor = (position, index)
+        self._select({position}, {index}, "cell")
+
+    def _emit_value(self, live: bool = True) -> None:
+        if self._value_cb is None:
+            return
+        if self._anchor is None:
+            self._value_cb(None, live)
+            return
+        row, col = self._anchor
+        self._value_cb(self.cell_value(row, col), live)
+
+    def _on_show_value(self, *_args) -> None:
+        """The cell menu's "View Value": the same page, brought to the
+        front."""
+        row, col = self._menu_cell
+        self._anchor = (row, col)
+        self._emit_value(live=False)
+
     def _refresh_map_action(self) -> None:
         """"Show on Map" is live only over a geometry cell, and only
         where there is a map to show it on."""
@@ -738,6 +880,8 @@ class ResultGrid(Gtk.ScrolledWindow):
         self._delete_row_action.set_enabled(
             enabled and self.on_delete_row is not None
         )
+        # Locking and unlocking changes what the Value page may offer.
+        self._emit_value()
 
     def mark_modified(self, row: RowItem, col: int) -> None:
         """Highlight a cell as locally edited but not yet saved."""
@@ -820,6 +964,8 @@ class ResultGrid(Gtk.ScrolledWindow):
         self._delete_row_action.set_enabled(
             enabled and self.on_delete_row is not None
         )
+        # Locking and unlocking changes what the Value page may offer.
+        self._emit_value()
         # Where the row number sits inside the view, so the menu opens
         # on the row rather than in the grid's corner.
         rect = Gdk.Rectangle()
@@ -944,6 +1090,9 @@ class ResultGrid(Gtk.ScrolledWindow):
         # the selection changes and is simply there when it is opened.
         if self._aggregate_cb is not None and rows and cols:
             self._aggregate_cb(self._aggregate_lines(), True)
+        # The Value page follows the focus for the same reason: it is
+        # filled as the selection moves, so opening the panel is enough.
+        self._emit_value()
         # The map follows the grid's selection (PG-04): one row
         # selected highlights that row's feature, anything else clears
         # the highlight rather than guessing which row was meant.
@@ -1780,6 +1929,10 @@ class TableTab(Gtk.Box):
     follows whichever tab is active, and can be torn off into a window
     of their own. Opening a table shows its rows, full stop.
 
+    The Record side (CORE-42) is the focused row pivoted into a
+    name/value list — the same values, the same editability, read down
+    the page instead of across it.
+
     The Map side (PG-04) is still a side of this tab, because it draws
     the rows that are loaded here; its toggle appears only once a load
     finds geometries on a server that has a spatial extension.
@@ -1800,6 +1953,7 @@ class TableTab(Gtk.Box):
         ensure_connector: Callable[[ConnectionProfile], Connector],
         show_error: Callable[[str], None],
         on_aggregate: AggregateCallback | None = None,
+        on_value: ValueCallback | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.profile = profile
@@ -1857,10 +2011,16 @@ class TableTab(Gtk.Box):
             on_edit=self._commit_edit,
             table_name=table,
             on_aggregate=on_aggregate,
+            on_value=on_value,
             on_header_sort=self._on_header_sort,
             on_edge_reached=self._on_grid_edge_reached,
         )
         data.append(self._grid)
+        # The record side (CORE-42): the focused row read down the page
+        # instead of across it. Built with the tab because it is one
+        # list over the grid's own rows, not a second copy of them.
+        self._record = RecordView(self._grid)
+        self._stack.add_named(self._record, "record")
         # Scrolling to the bottom of the current page fetches the next
         # PAGE_SIZE rows and appends them, so browsing a big table reads
         # as one continuous scroll instead of manual paging. _base_offset
@@ -1996,18 +2156,26 @@ class TableTab(Gtk.Box):
         )
 
     def _view_switch(self) -> Gtk.Widget:
-        """The Data | Map toggle at the top of a table tab.
+        """The Data | Record | Map toggle at the top of a table tab.
 
-        Hidden until a load finds geometry columns: a table with no map
-        to draw has one side, so it gets no switch at all. Two linked
-        toggles rather than a menu — which side is showing should be
-        readable without clicking anything.
+        Data and Record are always both there — every table has rows,
+        and every row can be read as a record. Map appears only once a
+        load finds geometry columns on a server that can make sense of
+        them. Linked toggles rather than a menu — which side is showing
+        should be readable without clicking anything.
         """
-        row = Gtk.CenterBox(margin_top=6, margin_bottom=6, visible=False)
+        row = Gtk.CenterBox(margin_top=6, margin_bottom=6)
         linked = Gtk.Box(spacing=0)
         linked.add_css_class("linked")
         self._data_toggle = Gtk.ToggleButton(label=_("Data"), active=True)
         describe(self._data_toggle, _("The table's rows"))
+        self._record_toggle = Gtk.ToggleButton(label=_("Record"))
+        describe(
+            self._record_toggle,
+            _("The focused row as a list of column names and values"),
+        )
+        self._record_toggle.set_group(self._data_toggle)
+        self._record_toggle.connect("toggled", self._on_view_toggled)
         self._map_toggle = Gtk.ToggleButton(label=_("Map"), visible=False)
         describe(
             self._map_toggle,
@@ -2017,6 +2185,7 @@ class TableTab(Gtk.Box):
         self._data_toggle.connect("toggled", self._on_view_toggled)
         self._map_toggle.connect("toggled", self._on_view_toggled)
         linked.append(self._data_toggle)
+        linked.append(self._record_toggle)
         linked.append(self._map_toggle)
         row.set_center_widget(linked)
         return row
@@ -2029,6 +2198,10 @@ class TableTab(Gtk.Box):
         if button is self._map_toggle:
             self._stack.set_visible_child_name("map")
             self._refresh_map()
+            return
+        if button is self._record_toggle:
+            self._record.show_row(self._grid.focused_row())
+            self._stack.set_visible_child_name("record")
             return
         self._stack.set_visible_child_name("data")
 
@@ -2111,8 +2284,6 @@ class TableTab(Gtk.Box):
         self._grid.geo_enabled = True
         has_geo = bool(self._grid.geometry_columns())
         self._map_toggle.set_visible(has_geo)
-        # The switch row exists for the map: no map, no row.
-        self._switch_row.set_visible(has_geo)
         if not has_geo:
             if self._map_toggle.get_active():
                 self._data_toggle.set_active(True)
@@ -2270,6 +2441,8 @@ class TableTab(Gtk.Box):
             )
             # The map draws the rows the grid is showing, so keep them.
             self._loaded_result_rows = list(result.rows)
+            # The record side reads the same rows; a load replaced them.
+            self._record.reset()
             self._grid.set_sort_state(
                 [(s.column, s.descending) for s in order_by]
             )

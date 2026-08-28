@@ -148,8 +148,10 @@ def test_a_table_tab_has_no_properties_toggle(window) -> None:
     assert not hasattr(tab, "show_properties")
     assert tab._stack.get_child_by_name("properties") is None
     assert tab._stack.get_visible_child_name() == "data"
-    # And with no map to offer, the tab shows no switch at all.
-    assert not tab._switch_row.get_visible()
+    # The switch offers Data and Record (CORE-42); with no geometry in
+    # the result there is still no Map side to switch to.
+    assert not tab._map_toggle.get_visible()
+    assert tab._record_toggle.get_visible()
 
 
 # The panel follows the active tab

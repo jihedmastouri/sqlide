@@ -24,9 +24,21 @@ directly (CORE-18): that is what knows the engine has schemas, which
 relations can be selected from — views and materialized views
 included — and what it can do at all. A source is therefore identified
 by its key, "schema.table" where the engine has schemas and the bare
-name where it does not, and the same key qualifies its columns
-("key.column") inside the tab; the rendered SQL drops the prefix while
-no join is present, and writes the schema only where there is one.
+name where it does not.
+
+Columns, though, are keyed by *alias*, not by that key (CORE-20). Every
+source in the query gets one — the table's own name by default,
+suffixed when that is taken, and editable — so the same table can be
+joined to itself and the two sides never merge: the checklist, the
+filter and sort pickers and the ON dropdowns all spell a column
+"alias.column". A join carries as many ON conditions as it needs, which
+is what a composite foreign key prefills, and the kinds on offer are
+the five the model knows intersected with the ones the dialect declares
+— SQLite gained RIGHT and FULL only in 3.39, and that is a capability
+flag the adapter reports rather than an engine name tested for here.
+The rendered SQL drops the qualification while no join is present,
+writes the schema only where there is one, and writes an alias only
+where it says something the table name does not.
 
 Because the model is data, the tab persists it: `tab_state` writes the
 whole query into the workspace and a restored tab rehydrates it once
@@ -56,12 +68,16 @@ from sqlide.backend.db.base import (
     SortSpec,
 )
 from sqlide.backend.db.metadata import Capabilities, NodeRef
+from sqlide.backend.db.relations import constraints as key_constraints
 from sqlide.backend.db.query_model import (
     Column,
     Condition,
     Dialect,
     GENERIC,
+    JOINS_WITHOUT_ON,
+    JOIN_KINDS as MODEL_JOIN_KINDS,
     Join,
+    ON_OPERATORS,
     On,
     Order,
     Projection,
@@ -90,9 +106,10 @@ from sqlide.frontend.util import describe, row_count, run_async
 from sqlide.i18n import _, ngettext
 
 # What the builder offers. The connected engine may have fewer (SQLite
-# before 3.39 has no RIGHT JOIN); the dialect says which, and the
-# dropdown is filled from the intersection once the catalog loads.
-JOIN_KINDS = ("INNER JOIN", "LEFT JOIN", "RIGHT JOIN")
+# before 3.39 has no RIGHT or FULL JOIN, MySQL 5.7 no FULL); the
+# dialect says which, and the dropdown is filled from the intersection
+# once the catalog loads — never from an `if engine == ...` here.
+JOIN_KINDS = MODEL_JOIN_KINDS
 DEFAULT_LIMIT = 500
 
 
@@ -143,10 +160,154 @@ def _selected_key(dropdown: Gtk.DropDown, keys: Sequence[str]) -> str:
     return ""
 
 
+@dataclass(frozen=True)
+class _Instance:
+    """One appearance of a source in the query.
+
+    A join is not "a table" but *a table under an alias*: joining
+    `employees` to itself puts the same key in the query twice, and
+    only the alias tells the two apart. Everything downstream — the
+    column checklist, the filter and sort pickers, the ON dropdowns —
+    therefore keys columns by `alias`, never by `key` (CORE-20).
+
+    `row` is the join line this instance came from, or None for the
+    base table; it is the stable identity an alias is remembered
+    against across a rebuild.
+    """
+
+    alias: str
+    key: str
+    row: object | None = None
+
+
+def _clean_alias(text: str) -> str:
+    """An alias as typed, made safe to key columns by.
+
+    A dot would make "a.b.c" ambiguous — the tab splits a qualified
+    column at the last one — so it becomes an underscore rather than a
+    silent mis-parse. Quoting is the renderer's job, not ours.
+    """
+    return text.strip().replace(".", "_")
+
+
+def _unique_alias(candidate: str, taken: set[str]) -> str:
+    """`candidate`, suffixed until it names only itself.
+
+    Two sources may honestly want the same alias — the same table
+    twice, two tables of a name in different schemas, or a user who
+    typed one that is already spoken for. The query still has to be
+    unambiguous, so the later one shifts.
+    """
+    alias = candidate or "t"
+    index = 2
+    while alias in taken:
+        alias = f"{candidate}_{index}"
+        index += 1
+    taken.add(alias)
+    return alias
+
+
+class _OnRow(Gtk.Box):
+    """One condition of a join's ON: [left column] [op] [right column].
+
+    A join carries a list of these rather than a single equality, so a
+    composite foreign key is one join with one condition per key column
+    instead of a query that cannot be expressed.
+    """
+
+    def __init__(
+        self,
+        on_remove: Callable[["_OnRow"], None],
+        on_change: Callable[[], None],
+    ) -> None:
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._on_change = on_change
+        self._updating = False
+        self._left = Gtk.DropDown(model=Gtk.StringList.new([]), hexpand=True)
+        self._op = Gtk.DropDown(model=Gtk.StringList.new(list(ON_OPERATORS)))
+        self._right = Gtk.DropDown(model=Gtk.StringList.new([]), hexpand=True)
+        self._remove = Gtk.Button(icon_name="list-remove-symbolic")
+        self._remove.add_css_class("flat")
+        describe(self._remove, _("Remove condition"))
+        self._remove.connect("clicked", lambda *_: on_remove(self))
+        for widget in (self._left, self._op, self._right, self._remove):
+            self.append(widget)
+        for dropdown in (self._left, self._op, self._right):
+            dropdown.connect("notify::selected", self._changed)
+
+    def _changed(self, dropdown, *_args) -> None:
+        if self._updating:
+            return
+        if dropdown is not self._op:
+            self.touched = True
+        self._on_change()
+
+    #: Whether the user picked these columns themselves. A refilled
+    #: DropDown auto-selects its first row, so "empty" cannot mean "not
+    #: chosen yet"; this can.
+    touched = False
+
+    def set_removable(self, removable: bool) -> None:
+        """The only condition of a join cannot be removed — a join
+        without an ON is not a join."""
+        self._remove.set_sensitive(removable)
+
+    def left(self) -> str:
+        return _selected_string(self._left)
+
+    def op(self) -> str:
+        return _selected_string(self._op) or "="
+
+    def right(self) -> str:
+        return _selected_string(self._right)
+
+    def set_choices(
+        self,
+        left: list[str],
+        right: list[str],
+        rename: dict[str, str] | None = None,
+    ) -> None:
+        """Refill both dropdowns, keeping the current picks when they
+        survive the refill. `rename` carries a pick through an alias
+        the user has just renamed (guarded so this never loops)."""
+        self._updating = True
+        try:
+            for dropdown, names in ((self._left, left), (self._right, right)):
+                selected = _selected_string(dropdown)
+                selected = (rename or {}).get(selected, selected)
+                dropdown.set_model(Gtk.StringList.new(names))
+                if selected in names:
+                    dropdown.set_selected(names.index(selected))
+        finally:
+            self._updating = False
+
+    def set_condition(self, left: str, right: str, op: str = "=") -> None:
+        """Put a prefilled or restored condition in without firing the
+        change callback."""
+        self._updating = True
+        try:
+            for dropdown, wanted in (
+                (self._left, left),
+                (self._op, op),
+                (self._right, right),
+            ):
+                model = dropdown.get_model()
+                for i in range(model.get_n_items()):
+                    if model.get_string(i) == wanted:
+                        dropdown.set_selected(i)
+                        break
+        finally:
+            self._updating = False
+
+
 class _JoinRow(Gtk.Box):
-    """One join line: [join kind] [table] ON [left column] = [right
-    column]. The builder feeds the column choices (set_choices) as the
-    tables before this line change."""
+    """One join: kind, source, alias, and one or more ON conditions.
+
+    The alias is what makes a self-join expressible — the same source
+    twice, under two names — and is editable, defaulting to the table's
+    own name (suffixed when that is taken). The builder feeds the
+    column choices (set_choices) as the sources before this line change.
+    """
 
     def __init__(
         self,
@@ -155,52 +316,111 @@ class _JoinRow(Gtk.Box):
         on_change: Callable[[], None],
         kinds: Sequence[str] = JOIN_KINDS,
     ) -> None:
-        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self._on_change = on_change
         # The dropdown shows labels ("crm.orders · view"); everything
         # else works in keys, so the two never get mixed up.
         self._keys = [source.key for source in sources]
         self._updating = False
-        # A refilled DropDown auto-selects its first item, so "left()
-        # is empty" can't signal "not chosen yet" — track explicit ON
-        # picks instead (reset when the joined table changes) and let
-        # the builder prefill from a foreign key until then.
-        self._on_touched = False
+        self._on_rows: list[_OnRow] = []
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self._kind = Gtk.DropDown(model=Gtk.StringList.new(list(kinds)))
         self._table = Gtk.DropDown(
             model=Gtk.StringList.new([source.label for source in sources])
         )
-        self._left = Gtk.DropDown(
-            model=Gtk.StringList.new([]), hexpand=True
+        self._alias = Gtk.Entry(width_chars=10, max_width_chars=14)
+        describe(self._alias, _("Alias for the joined table"))
+        self._alias.connect("changed", self._alias_changed)
+        header.append(self._kind)
+        header.append(self._table)
+        header.append(Gtk.Label(label=_("as")))
+        header.append(self._alias)
+        header.append(Gtk.Box(hexpand=True))
+        self._add_condition = Gtk.Button(icon_name="list-add-symbolic")
+        self._add_condition.add_css_class("flat")
+        describe(self._add_condition, _("Add ON condition"))
+        self._add_condition.connect(
+            "clicked", lambda *_: self._add_on_row(notify=True)
         )
-        self._right = Gtk.DropDown(
-            model=Gtk.StringList.new([]), hexpand=True
-        )
+        header.append(self._add_condition)
         remove = Gtk.Button(icon_name="list-remove-symbolic")
         remove.add_css_class("flat")
         describe(remove, _("Remove join"))
         remove.connect("clicked", lambda *_: on_remove(self))
-        for widget in (self._kind, self._table):
-            self.append(widget)
-        self.append(Gtk.Label(label="ON"))
-        self.append(self._left)
-        self.append(Gtk.Label(label="="))
-        self.append(self._right)
-        self.append(remove)
-        for dropdown in (self._kind, self._table, self._left, self._right):
+        header.append(remove)
+        self.append(header)
+
+        self._on_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=4,
+            margin_start=24,
+        )
+        self.append(self._on_box)
+        self._add_on_row()
+        for dropdown in (self._kind, self._table):
             dropdown.connect("notify::selected", self._changed)
+        self._sync_on_visibility()
+
+    # Conditions
+
+    def _add_on_row(self, *, notify: bool = False) -> _OnRow:
+        row = _OnRow(self._remove_on_row, self._on_change)
+        self._on_rows.append(row)
+        self._on_box.append(row)
+        self._update_removable()
+        if notify and not self._updating:
+            # A condition the user added themselves is theirs: the
+            # foreign-key prefill must not overwrite the line now.
+            row.touched = True
+            self._on_change()
+        return row
+
+    def _remove_on_row(self, row: _OnRow) -> None:
+        if len(self._on_rows) <= 1:
+            return
+        self._on_rows.remove(row)
+        self._on_box.remove(row)
+        self._update_removable()
+        self._on_change()
+
+    def _update_removable(self) -> None:
+        for row in self._on_rows:
+            row.set_removable(len(self._on_rows) > 1)
+
+    def set_condition_count(self, count: int) -> None:
+        """Grow or shrink the ON list to `count` rows, quietly."""
+        while len(self._on_rows) < max(1, count):
+            self._add_on_row()
+        while len(self._on_rows) > max(1, count):
+            row = self._on_rows.pop()
+            self._on_box.remove(row)
+        self._update_removable()
+
+    def _sync_on_visibility(self) -> None:
+        """A CROSS JOIN takes no ON clause, so it shows none."""
+        wanted = self.kind() not in JOINS_WITHOUT_ON
+        self._on_box.set_visible(wanted)
+        self._add_condition.set_visible(wanted)
 
     def _changed(self, dropdown, *_args) -> None:
         if self._updating:
             return
-        if dropdown in (self._left, self._right):
-            self._on_touched = True
-        elif dropdown is self._table:
-            self._on_touched = False
+        if dropdown is self._table:
+            for row in self._on_rows:
+                row.touched = False
+        self._sync_on_visibility()
         self._on_change()
 
+    def _alias_changed(self, *_args) -> None:
+        if self._updating:
+            return
+        self._on_change()
+
+    # Reading the line
+
     def on_touched(self) -> bool:
-        return self._on_touched
+        return any(row.touched for row in self._on_rows)
 
     def kind(self) -> str:
         return _selected_string(self._kind)
@@ -209,27 +429,44 @@ class _JoinRow(Gtk.Box):
         """The joined source's key, not its label."""
         return _selected_key(self._table, self._keys)
 
-    def left(self) -> str:
-        return _selected_string(self._left)
+    def alias(self) -> str:
+        return _clean_alias(self._alias.get_text())
 
-    def right(self) -> str:
-        return _selected_string(self._right)
+    def conditions(self) -> list[tuple[str, str, str]]:
+        """The complete ON conditions, as (left, op, right)."""
+        if self.kind() in JOINS_WITHOUT_ON:
+            return []
+        return [
+            (row.left(), row.op(), row.right())
+            for row in self._on_rows
+            if row.left() and row.right()
+        ]
 
-    def set_choices(self, left: list[str], right: list[str]) -> None:
-        """Refill the ON dropdowns, keeping the current picks when they
-        survive the refill (guarded so this never loops via _changed)."""
-        self._updating = True
-        try:
-            for dropdown, names in ((self._left, left), (self._right, right)):
-                selected = _selected_string(dropdown)
-                dropdown.set_model(Gtk.StringList.new(names))
-                if selected in names:
-                    dropdown.set_selected(names.index(selected))
-        finally:
-            self._updating = False
+    # Writing to the line
 
-    def restore_kind_and_table(self, kind: str, key: str) -> None:
-        """Put a saved line's join kind and joined source back, without
+    def set_default_alias(self, alias: str) -> None:
+        """Show the alias the builder derived.
+
+        As the placeholder, never as the text: writing into an entry
+        the user is typing in re-enters this callback halfway through
+        GTK's own delete-then-insert, and an empty entry is exactly
+        what "I have not named this one" means.
+        """
+        self._alias.set_placeholder_text(alias)
+
+    def set_choices(
+        self,
+        left: list[str],
+        right: list[str],
+        rename: dict[str, str] | None = None,
+    ) -> None:
+        for row in self._on_rows:
+            row.set_choices(left, right, rename)
+
+    def restore_kind_and_table(
+        self, kind: str, key: str, alias: str = ""
+    ) -> None:
+        """Put a saved line's join kind, source and alias back, without
         firing the change callback: the builder re-syncs once, after
         every restored row is in place."""
         self._updating = True
@@ -241,29 +478,34 @@ class _JoinRow(Gtk.Box):
                     break
             if key in self._keys:
                 self._table.set_selected(self._keys.index(key))
+            if alias:
+                self._alias.set_text(alias)
         finally:
             self._updating = False
+        self._sync_on_visibility()
 
-    def restore_on(self, left: str, right: str) -> None:
-        """The saved ON columns, once the choices have been filled.
+    def restore_on(self, conditions: Sequence[tuple[str, str, str]]) -> None:
+        """The saved ON conditions, once the choices have been filled.
 
         Marks the line as touched, so the foreign-key prefill never
         overwrites what the user actually built.
         """
-        self.prefill(left, right)
-        self._on_touched = True
+        self.prefill(conditions)
+        for row in self._on_rows:
+            row.touched = True
 
-    def prefill(self, left: str, right: str) -> None:
+    def prefill(self, conditions: Sequence[tuple[str, str, str]]) -> None:
+        """Fill the ON list from `conditions` — one row each, so a
+        composite key arrives whole rather than as its first column."""
+        if not conditions:
+            return
         self._updating = True
         try:
-            for dropdown, name in ((self._left, left), (self._right, right)):
-                model = dropdown.get_model()
-                for i in range(model.get_n_items()):
-                    if model.get_string(i) == name:
-                        dropdown.set_selected(i)
-                        break
+            self.set_condition_count(len(conditions))
         finally:
             self._updating = False
+        for row, (left, op, right) in zip(self._on_rows, conditions):
+            row.set_condition(left, right, op)
 
 
 class QueryBuilderTab(Gtk.Box):
@@ -304,9 +546,14 @@ class QueryBuilderTab(Gtk.Box):
         self._join_rows: list[_JoinRow] = []
         self._filter_rows: list[_FilterRow] = []
         self._sort_rows: list[_SortRow] = []
-        self._checked: set[str] = set()  # qualified "table.column"
+        self._checked: set[str] = set()  # qualified "alias.column"
         self._column_checks: list[Gtk.CheckButton] = []
         self._loading = True
+        # The alias each instance last went by, keyed by the join row it
+        # belongs to (None for the base). Renaming an alias has to carry
+        # every column that named it along, and this is what says which
+        # name it used to have.
+        self._alias_of: dict[object, str] = {}
 
         paned = Gtk.Paned(
             orientation=Gtk.Orientation.VERTICAL,
@@ -361,6 +608,11 @@ class QueryBuilderTab(Gtk.Box):
             "notify::selected", lambda *_: self._base_changed()
         )
         top.append(self._table_dropdown)
+        top.append(Gtk.Label(label=_("as")))
+        self._base_alias = Gtk.Entry(width_chars=10, max_width_chars=14)
+        describe(self._base_alias, _("Alias for the base table"))
+        self._base_alias.connect("changed", self._base_alias_changed)
+        top.append(self._base_alias)
         self._distinct = Gtk.CheckButton(label=_("Distinct"))
         self._distinct.connect("toggled", lambda *_: self._refresh_sql())
         top.append(self._distinct)
@@ -574,18 +826,25 @@ class QueryBuilderTab(Gtk.Box):
         return matches[0] if len(matches) == 1 else ""
 
     def _restored_column(
-        self, column: Column | None, sources: dict[str, str], base: str
+        self, column: Column | None, aliases: dict[str, str], base: str
     ) -> str | None:
-        """A saved model column as the qualified "key.column" the tab
-        works in, or None when its table or column is gone."""
+        """A saved model column as the qualified "alias.column" the tab
+        works in, or None when its source or column is gone.
+
+        The model qualifies a column by its source's key, which is the
+        alias the tab gave it (CORE-20) — and a restored tab puts those
+        same aliases back, so the saved string needs no translation. A
+        column saved with no source at all belongs to the base.
+        """
         if column is None or not column.name:
             return None
-        key = sources.get(column.source, "") if column.source else base
+        alias = column.source or base
+        key = aliases.get(alias, "")
         if not key:
             return None
         if column.name not in {c.name for c in self._columns.get(key, [])}:
             return None
-        return f"{key}.{column.name}"
+        return f"{alias}.{column.name}"
 
     def _restore_model(self) -> None:
         """Rebuild the widgets from the query this tab was restored
@@ -597,16 +856,22 @@ class QueryBuilderTab(Gtk.Box):
         silently left out when it no longer resolves — the count is
         reported in the status label. Losing a filter must never cost
         you the rest of the query, and must never be an error dialog.
+
+        The saved aliases are restored as the user's own, so a
+        self-joined query comes back with its two sides still apart and
+        every saved column still pointing at the side it named.
         """
         model, self._restore = self._restore, None
         if model is None or model.source is None:
             return
-        sources = {
+        # Saved alias -> the picker key it still resolves to.
+        aliases = {
             ref.key: key
             for ref in model.sources
             if (key := self._picker_key(ref))
         }
-        base = sources.get(model.source.key, "")
+        base_alias = model.source.key
+        base = aliases.get(base_alias, "")
         if not base:
             self._status.set_text(
                 _("The saved query's table is gone; starting fresh.")
@@ -617,19 +882,27 @@ class QueryBuilderTab(Gtk.Box):
         self._loading = True
         try:
             self._table_dropdown.set_selected(keys.index(base))
+            self._base_alias.set_text(base_alias)
             self._distinct.set_active(model.distinct)
             if model.limit:
                 self._limit.set_value(model.limit)
             kinds = self._join_kinds()
-            restored_joins: list[tuple[_JoinRow, str, str]] = []
+            restored: list[tuple[_JoinRow, list[tuple[str, str, str]]]] = []
             for join in model.joins:
-                key = sources.get(join.source.key, "")
-                on = join.on[0] if join.on else None
-                left = right = None
-                if key and on is not None:
-                    left = self._restored_column(on.left, sources, base)
-                    right = self._restored_column(on.right, sources, base)
-                if not key or left is None or right is None:
+                alias = join.source.key
+                key = aliases.get(alias, "")
+                conditions = []
+                for on in join.on:
+                    left = self._restored_column(on.left, aliases, base_alias)
+                    right = self._restored_column(
+                        on.right, aliases, base_alias
+                    )
+                    if left is None or right is None:
+                        continue
+                    conditions.append((left, on.op, right))
+                needs_on = join.kind.upper() not in JOINS_WITHOUT_ON
+                if not key or (needs_on and len(conditions) != len(join.on)):
+                    aliases.pop(alias, None)
                     dropped += 1
                     continue
                 row = _JoinRow(
@@ -638,29 +911,33 @@ class QueryBuilderTab(Gtk.Box):
                     self._sync_state,
                     kinds=kinds if join.kind in kinds else [join.kind, *kinds],
                 )
-                row.restore_kind_and_table(join.kind, key)
+                row.restore_kind_and_table(join.kind, key, alias)
                 self._join_rows.append(row)
                 self._joins_box.append(row)
-                restored_joins.append((row, left, right))
-            tables = self._query_tables()
-            qualified = set(self._qualified_columns(tables))
+                restored.append((row, conditions))
+            instances = self._instances()
+            qualified = set(self._qualified_columns(instances))
             checked: set[str] = set()
             for projection in model.projections:
-                name = self._restored_column(projection.column, sources, base)
+                name = self._restored_column(
+                    projection.column, aliases, base_alias
+                )
                 if name is None or name not in qualified:
                     dropped += 1
                     continue
                 checked.add(name)
             self._checked = checked
-            names = self._display_columns(tables)
+            names = self._display_columns(instances)
             lines = unfold_group(model.where)
             if lines is None and model.where is not None:
                 # A filter tree the flat panel cannot show (nothing
                 # builds one yet — CORE-22 will).
                 dropped += 1
             for conjunction, condition in lines or []:
-                name = self._restored_column(condition.column, sources, base)
-                display = self._display_name(name, tables)
+                name = self._restored_column(
+                    condition.column, aliases, base_alias
+                )
+                display = self._display_name(name, instances)
                 if display is None or display not in names:
                     dropped += 1
                     continue
@@ -678,8 +955,8 @@ class QueryBuilderTab(Gtk.Box):
                     )
                 )
             for order in model.order_by:
-                name = self._restored_column(order.column, sources, base)
-                display = self._display_name(name, tables)
+                name = self._restored_column(order.column, aliases, base_alias)
+                display = self._display_name(name, instances)
                 if display is None or display not in names:
                     dropped += 1
                     continue
@@ -692,8 +969,8 @@ class QueryBuilderTab(Gtk.Box):
         # The ON dropdowns are empty until the choices are derived, so
         # the saved columns go in after the first sync, not before.
         self._sync_state()
-        for row, left, right in restored_joins:
-            row.restore_on(left, right)
+        for row, conditions in restored:
+            row.restore_on(conditions)
         self._sync_state()
         if dropped:
             self._status.set_text(
@@ -706,12 +983,18 @@ class QueryBuilderTab(Gtk.Box):
             )
 
     @staticmethod
-    def _display_name(qualified: str | None, tables: list[str]) -> str | None:
-        """A qualified "key.column" as the filter/sort panels spell it:
-        qualified once a join is present, bare otherwise."""
+    def _display_name(
+        qualified: str | None, instances: list[_Instance]
+    ) -> str | None:
+        """A qualified "alias.column" as the filter/sort panels spell
+        it: qualified once a join is present, bare otherwise."""
         if qualified is None:
             return None
-        return qualified if len(tables) > 1 else qualified.rpartition(".")[2]
+        return (
+            qualified
+            if len(instances) > 1
+            else qualified.rpartition(".")[2]
+        )
 
     # State
 
@@ -729,19 +1012,75 @@ class QueryBuilderTab(Gtk.Box):
                 return source
         return None
 
-    def _query_tables(self) -> list[str]:
-        """Base source plus joined sources, by key, in join order."""
-        tables = [self._base_table()]
-        for row in self._join_rows:
-            if row.table():
-                tables.append(row.table())
-        return [t for t in tables if t]
+    def _default_alias(self, key: str) -> str:
+        """What a source is called when nobody has said otherwise: its
+        bare table name, so a single-table query reads exactly as it
+        always did and `crm.orders` becomes `orders`."""
+        source = self._source(key)
+        return _clean_alias(source.name if source else key)
 
-    def _qualified_columns(self, tables: list[str]) -> list[str]:
+    def _instances(self) -> list[_Instance]:
+        """Base source plus joined sources, in query order, each under
+        a unique alias.
+
+        This is the query's real shape: the same table joined to itself
+        is two instances of one key, and every column, filter and sort
+        in the tab is qualified by the alias rather than by the table,
+        which is what keeps the two sides apart (CORE-20).
+        """
+        instances: list[_Instance] = []
+        taken: set[str] = set()
+        base = self._base_table()
+        if base:
+            typed = _clean_alias(self._base_alias.get_text())
+            instances.append(
+                _Instance(
+                    _unique_alias(typed or self._default_alias(base), taken),
+                    base,
+                )
+            )
+        for row in self._join_rows:
+            key = row.table()
+            if not key:
+                continue
+            instances.append(
+                _Instance(
+                    _unique_alias(row.alias() or self._default_alias(key), taken),
+                    key,
+                    row,
+                )
+            )
+        return instances
+
+    def _renames(self, instances: list[_Instance]) -> dict[str, str]:
+        """`{old alias: new alias}` for the instances that just changed
+        name, and the new register of who is called what.
+
+        An alias the user edits must not quietly drop the columns that
+        named it, so every qualified string the tab holds is carried
+        over rather than re-derived.
+        """
+        previous, self._alias_of = self._alias_of, {}
+        renames: dict[str, str] = {}
+        for instance in instances:
+            self._alias_of[instance.row] = instance.alias
+            was = previous.get(instance.row)
+            if was and was != instance.alias:
+                renames[was] = instance.alias
+        return renames
+
+    def _renamed(self, qualified: str, renames: dict[str, str]) -> str:
+        """A qualified "alias.column" under the alias's new name."""
+        if not renames or "." not in qualified:
+            return qualified
+        alias, _sep, column = qualified.rpartition(".")
+        return f"{renames.get(alias, alias)}.{column}"
+
+    def _qualified_columns(self, instances: list[_Instance]) -> list[str]:
         return [
-            f"{table}.{column.name}"
-            for table in tables
-            for column in self._columns.get(table, [])
+            f"{instance.alias}.{column.name}"
+            for instance in instances
+            for column in self._columns.get(instance.key, [])
         ]
 
     def _base_changed(self) -> None:
@@ -749,32 +1088,66 @@ class QueryBuilderTab(Gtk.Box):
             return
         self._sync_state()
 
+    def _base_alias_changed(self, *_args) -> None:
+        if self._loading:
+            return
+        self._sync_state()
+
     def _sync_state(self) -> None:
-        """Re-derive join choices, the column checklist and the filter
-        and sort column lists from the current base + joins, then
+        """Re-derive aliases, join choices, the column checklist and the
+        filter and sort column lists from the current base + joins, then
         refresh the SQL preview."""
-        tables = self._query_tables()
-        seen: list[str] = tables[:1]
+        instances = self._instances()
+        renames = self._renames(instances)
+        by_row = {instance.row: instance for instance in instances}
+        if instances:
+            self._base_alias.set_placeholder_text(instances[0].alias)
+
+        seen: list[_Instance] = instances[:1]
         for row in self._join_rows:
-            right_table = row.table()
+            joined = by_row.get(row)
+            if joined is not None:
+                row.set_default_alias(joined.alias)
             left_choices = self._qualified_columns(seen)
             right_choices = self._qualified_columns(
-                [right_table] if right_table else []
+                [joined] if joined is not None else []
             )
-            row.set_choices(left_choices, right_choices)
-            if right_table and not row.on_touched():
-                prefill = self._relation_for(seen, right_table)
-                if prefill is not None:
-                    row.prefill(*prefill)
-            if right_table:
-                seen.append(right_table)
+            row.set_choices(left_choices, right_choices, renames)
+            if joined is not None:
+                if not row.on_touched():
+                    prefill = self._relation_for(seen, joined)
+                    if prefill:
+                        row.prefill(prefill)
+                seen.append(joined)
 
-        names = self._display_columns(tables)
-        self._rebuild_column_checks(tables)
+        names = self._display_columns(instances)
+        if renames:
+            self._checked = {
+                self._renamed(name, renames) for name in self._checked
+            }
         for row in self._filter_rows:
+            condition = row.condition()
             row.set_columns(names)
+            if renames:
+                row.set_condition(
+                    FilterCondition(
+                        column=self._renamed(condition.column, renames),
+                        op=condition.op,
+                        value=condition.value,
+                        conjunction=condition.conjunction,
+                    )
+                )
         for row in self._sort_rows:
+            spec = row.spec()
             row.set_columns(names)
+            if renames:
+                row.set_spec(
+                    SortSpec(
+                        column=self._renamed(spec.column, renames),
+                        descending=spec.descending,
+                    )
+                )
+        self._rebuild_column_checks(instances)
         self._refresh_sql()
 
     def _relation_key(self, schema: str, table: str) -> str:
@@ -789,44 +1162,67 @@ class QueryBuilderTab(Gtk.Box):
         return matches[0] if len(matches) == 1 else table
 
     def _relation_for(
-        self, left_tables: list[str], right_table: str
-    ) -> tuple[str, str] | None:
-        """Foreign key connecting the joined source to any source
-        already in the query, as ("key.col", "key.col") for the ON
-        dropdowns."""
-        for rel in self._relations:
-            here = self._relation_key(rel.schema, rel.table)
-            there = self._relation_key(rel.ref_schema, rel.ref_table)
-            if here == right_table and there in left_tables:
-                return (
-                    f"{there}.{rel.ref_column or ''}",
-                    f"{here}.{rel.column}",
-                )
-            if there == right_table and here in left_tables:
-                return (
-                    f"{here}.{rel.column}",
-                    f"{there}.{rel.ref_column or ''}",
-                )
-        return None
+        self, seen: list[_Instance], joined: _Instance
+    ) -> list[tuple[str, str, str]]:
+        """Foreign key connecting the joined source to a source already
+        in the query, as the ON conditions it implies.
 
-    def _display_columns(self, tables: list[str]) -> list[str]:
-        """Column names as shown in filters/sorts: qualified as soon as
-        a join is present."""
-        if len(tables) > 1:
-            return self._qualified_columns(tables)
+        A composite key is one constraint over several columns, so it
+        prefills as several conditions rather than silently as its
+        first one — and it stays a suggestion the user can overwrite.
+        Both sides are named by alias, which is what lets a table's
+        self-referencing key prefill a self-join.
+        """
+        for group in key_constraints(self._relations):
+            first = group[0]
+            here = self._relation_key(first.schema, first.table)
+            there = self._relation_key(first.ref_schema, first.ref_table)
+            if here == joined.key:
+                other = next((i for i in seen if i.key == there), None)
+                if other is not None:
+                    return [
+                        (
+                            f"{other.alias}.{rel.ref_column or ''}",
+                            "=",
+                            f"{joined.alias}.{rel.column}",
+                        )
+                        for rel in group
+                    ]
+            if there == joined.key:
+                other = next((i for i in seen if i.key == here), None)
+                if other is not None:
+                    return [
+                        (
+                            f"{other.alias}.{rel.column}",
+                            "=",
+                            f"{joined.alias}.{rel.ref_column or ''}",
+                        )
+                        for rel in group
+                    ]
+        return []
+
+    def _display_columns(self, instances: list[_Instance]) -> list[str]:
+        """Column names as shown in filters/sorts: qualified by alias as
+        soon as a join is present."""
+        if len(instances) > 1:
+            return self._qualified_columns(instances)
         return [
-            c.name for t in tables for c in self._columns.get(t, [])
+            c.name
+            for i in instances
+            for c in self._columns.get(i.key, [])
         ]
 
-    def _rebuild_column_checks(self, tables: list[str]) -> None:
+    def _rebuild_column_checks(self, instances: list[_Instance]) -> None:
         while (child := self._columns_flow.get_first_child()) is not None:
             self._columns_flow.remove(child)
         self._column_checks = []
-        valid = set(self._qualified_columns(tables))
-        self._checked &= valid
-        for qualified in self._qualified_columns(tables):
+        qualified_names = self._qualified_columns(instances)
+        self._checked &= set(qualified_names)
+        for qualified in qualified_names:
             label = (
-                qualified if len(tables) > 1 else qualified.rpartition(".")[2]
+                qualified
+                if len(instances) > 1
+                else qualified.rpartition(".")[2]
             )
             check = Gtk.CheckButton(label=label)
             check.qualified = qualified
@@ -864,7 +1260,7 @@ class QueryBuilderTab(Gtk.Box):
 
     def _add_filter_row(self) -> None:
         row = _FilterRow(
-            self._display_columns(self._query_tables()),
+            self._display_columns(self._instances()),
             self._remove_filter_row,
             self.run_query,
             on_change=self._refresh_sql,
@@ -884,7 +1280,7 @@ class QueryBuilderTab(Gtk.Box):
 
     def _add_sort_row(self) -> None:
         row = _SortRow(
-            self._display_columns(self._query_tables()),
+            self._display_columns(self._instances()),
             self._remove_sort_row,
             self._move_sort_row,
             on_change=self._refresh_sql,
@@ -912,51 +1308,45 @@ class QueryBuilderTab(Gtk.Box):
 
     # SQL generation
 
-    def _table_refs(self) -> dict[str, TableRef]:
-        """Every source in the query as a model TableRef, by key.
+    def _table_refs(
+        self, instances: list[_Instance]
+    ) -> dict[str, TableRef]:
+        """Every instance in the query as a model TableRef, by alias.
 
         The schema rides along only where the engine has schemas, so
         the rendered SQL says `crm.orders` on PostgreSQL and plain
-        `orders` on SQLite and MySQL. A bare name shared by two
-        schemas gets the qualified key as its alias, which is what
-        keeps the columns of the two apart in the statement.
+        `orders` on SQLite and MySQL. The alias is written into the
+        statement only when it says something the table name does not —
+        a self-join's second side, a renamed source — so a plain
+        one-table query still reads `FROM "orders"`. Either way
+        `TableRef.key` is the tab's alias, which is what the columns
+        are qualified by.
         """
-        keys = self._query_tables()
-        names = [
-            (source.name if (source := self._source(key)) else key)
-            for key in keys
-        ]
         refs: dict[str, TableRef] = {}
-        taken: set[str] = set()
-        for key in keys:
-            source = self._source(key)
-            name = source.name if source else key
-            schema = (
-                source.schema if source and self._caps.schemas else ""
+        for instance in instances:
+            source = self._source(instance.key)
+            name = source.name if source else instance.key
+            schema = source.schema if source and self._caps.schemas else ""
+            refs[instance.alias] = TableRef(
+                name=name,
+                schema=schema,
+                alias="" if instance.alias == name else instance.alias,
             )
-            alias = ""
-            if names.count(name) > 1:
-                # Two schemas, one table name: the statement needs an
-                # alias to tell the columns of the two apart, and
-                # "crm_users" reads better in it than the dotted key.
-                alias = f"{schema}_{name}" if schema else name
-                while alias in taken:
-                    alias += "_"
-                taken.add(alias)
-            refs[key] = TableRef(name=name, schema=schema, alias=alias)
         return refs
 
-    def _column_ref(
-        self, name: str, refs: dict[str, TableRef] | None = None
-    ) -> Column:
-        """A display column name ("key.c" once a join is present, "c"
-        otherwise) as a model reference. The source key is the picker's
-        — possibly "schema.table" — so it is split from the right and
-        translated into how the model qualifies that source."""
+    @staticmethod
+    def _column_ref(name: str) -> Column:
+        """A display column name ("alias.c" once a join is present, "c"
+        otherwise) as a model reference.
+
+        The alias is the model's own way of naming a source
+        (`TableRef.key`), so nothing has to be translated: the two
+        halves of a self-join stay two names here exactly as they are
+        in the widgets.
+        """
         if "." in name:
-            key, _sep, column = name.rpartition(".")
-            ref = (refs or {}).get(key)
-            return Column(name=column, source=ref.key if ref else key)
+            alias, _sep, column = name.rpartition(".")
+            return Column(name=column, source=alias)
         return Column(name=name)
 
     def query_model(self) -> QueryModel:
@@ -966,28 +1356,35 @@ class QueryBuilderTab(Gtk.Box):
         past here is `query_model.render()`, which is engine-aware,
         pure, and unit-tested without a connection (CORE-17).
         """
-        base = self._base_table()
-        if not base:
+        instances = self._instances()
+        if not instances:
             return QueryModel()
-        refs = self._table_refs()
-        joins = tuple(
-            Join(
-                kind=row.kind(),
-                source=refs.get(row.table(), TableRef(name=row.table())),
-                on=(
-                    On(
-                        left=self._column_ref(row.left(), refs),
-                        right=self._column_ref(row.right(), refs),
+        refs = self._table_refs(instances)
+        joins = []
+        for instance in instances[1:]:
+            row = instance.row
+            conditions = row.conditions()
+            if row.kind() not in JOINS_WITHOUT_ON and not conditions:
+                # A half-built join line is not yet part of the query.
+                continue
+            joins.append(
+                Join(
+                    kind=row.kind(),
+                    source=refs[instance.alias],
+                    on=tuple(
+                        On(
+                            left=self._column_ref(left),
+                            right=self._column_ref(right),
+                            op=op,
+                        )
+                        for left, op, right in conditions
                     ),
-                ),
+                )
             )
-            for row in self._join_rows
-            if row.table() and row.left() and row.right()
-        )
         # Keep the schema's column order rather than click order.
         projections = tuple(
-            Projection(column=self._column_ref(qualified, refs))
-            for qualified in self._qualified_columns(self._query_tables())
+            Projection(column=self._column_ref(qualified))
+            for qualified in self._qualified_columns(instances)
             if qualified in self._checked
         )
         lines = []
@@ -999,7 +1396,7 @@ class QueryBuilderTab(Gtk.Box):
                 (
                     cond.conjunction,
                     Condition(
-                        column=self._column_ref(cond.column, refs),
+                        column=self._column_ref(cond.column),
                         op=cond.op,
                         value=(
                             None
@@ -1010,14 +1407,14 @@ class QueryBuilderTab(Gtk.Box):
                 )
             )
         return QueryModel(
-            source=refs.get(base, TableRef(name=base)),
-            joins=joins,
+            source=refs[instances[0].alias],
+            joins=tuple(joins),
             projections=projections,
             distinct=self._distinct.get_active(),
             where=folded_group(lines),
             order_by=tuple(
                 Order(
-                    column=self._column_ref(row.spec().column, refs),
+                    column=self._column_ref(row.spec().column),
                     descending=row.spec().descending,
                 )
                 for row in self._sort_rows

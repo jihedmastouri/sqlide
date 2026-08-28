@@ -90,7 +90,7 @@ def test_join_prefills_from_a_foreign_key(sqlite_tab) -> None:
     row = tab._join_rows[0]
     row._table.set_selected(row._keys.index("users"))
     tab._sync_state()
-    assert (row.left(), row.right()) == ("orders.user_id", "users.id")
+    assert row.conditions() == [("orders.user_id", "=", "users.id")]
     sql = render(tab.query_model(), dialect=tab._dialect()).sql
     assert 'INNER JOIN "users"' in sql
     assert 'ON "orders"."user_id" = "users"."id"' in sql
@@ -117,9 +117,9 @@ def test_postgres_sources_and_sql_are_schema_qualified(postgres) -> None:
         row = tab._join_rows[0]
         row._table.set_selected(row._keys.index("public.users"))
         tab._sync_state()
-        assert (row.left(), row.right()) == (
-            "core18.orders.user_id", "public.users.id",
-        )
+        # Columns are qualified by alias, which defaults to the bare
+        # table name even where the source key carries a schema.
+        assert row.conditions() == [("orders.user_id", "=", "users.id")]
         sql = render(tab.query_model(), dialect=tab._dialect()).sql
         assert 'FROM "core18"."orders"' in sql
         assert 'INNER JOIN "public"."users"' in sql
@@ -171,8 +171,8 @@ def test_tab_state_round_trips_the_whole_query(sqlite_tab) -> None:
     assert back._distinct.get_active() is True
     assert int(back._limit.get_value()) == 42
     assert back._checked == {"orders.id", "users.name"}
-    assert [(r.kind(), r.table(), r.left(), r.right()) for r in back._join_rows] == [
-        ("INNER JOIN", "users", "orders.user_id", "users.id")
+    assert [(r.kind(), r.table(), r.conditions()) for r in back._join_rows] == [
+        ("INNER JOIN", "users", [("orders.user_id", "=", "users.id")])
     ]
     assert back._filter_rows[0].condition().column == "users.name"
     assert back._filter_rows[0].condition().value == "ada"
@@ -263,3 +263,203 @@ def test_a_gone_base_table_starts_fresh_rather_than_failing(
     back = _restored(tab, connector, state)
     assert back._join_rows == [] and back._checked == set()
     assert back._status.get_text()
+
+
+# Joins: aliases, self-joins, multi-condition ON, all kinds (CORE-20)
+
+
+@pytest.fixture()
+def joins_tab(tmp_path):
+    """A database with a self-referencing key and a composite one."""
+    path = tmp_path / "joins.db"
+    sqlite3.connect(path).close()
+    connector = SqliteConnector(str(path))
+    connector.connect()
+    connector.execute(
+        "CREATE TABLE staff ("
+        " id INTEGER PRIMARY KEY,"
+        " name TEXT,"
+        " manager_id INTEGER REFERENCES staff(id))"
+    )
+    connector.execute(
+        "CREATE TABLE parts ("
+        " tenant TEXT, code TEXT, label TEXT,"
+        " PRIMARY KEY (tenant, code))"
+    )
+    connector.execute(
+        "CREATE TABLE lines ("
+        " id INTEGER PRIMARY KEY, tenant TEXT, code TEXT,"
+        " FOREIGN KEY (tenant, code) REFERENCES parts(tenant, code))"
+    )
+    profile = ConnectionProfile(
+        name="joins", kind="sqlite", file_path=str(path)
+    )
+    yield _tab(profile, connector, "staff"), connector
+    connector.close()
+
+
+def _flat(sql: str) -> str:
+    """The rendered statement on one line — the formatter's wrapping is
+    not what these tests are about."""
+    return " ".join(sql.split())
+
+
+def _join_to(tab, key):
+    """Add a join line on `key` and let the builder settle."""
+    tab._add_join_row()
+    row = tab._join_rows[-1]
+    row._table.set_selected(row._keys.index(key))
+    tab._sync_state()
+    return row
+
+
+def test_a_table_can_be_joined_to_itself(joins_tab) -> None:
+    tab, _connector = joins_tab
+    row = _join_to(tab, "staff")
+    # The two sides get distinct aliases without anyone typing one.
+    assert [i.alias for i in tab._instances()] == ["staff", "staff_2"]
+    assert row.conditions() == [("staff.id", "=", "staff_2.manager_id")]
+    sql = render(tab.query_model(), dialect=tab._dialect()).sql
+    assert 'FROM "staff"' in sql
+    assert 'INNER JOIN "staff" AS "staff_2"' in sql
+    assert 'ON "staff"."id" = "staff_2"."manager_id"' in sql
+    # And it is a statement the engine actually accepts.
+    _connector.execute(sql)
+
+
+def test_a_composite_key_prefills_every_condition(joins_tab) -> None:
+    tab, _connector = joins_tab
+    tab._table_dropdown.set_selected(
+        [s.key for s in tab._sources].index("lines")
+    )
+    row = _join_to(tab, "parts")
+    assert row.conditions() == [
+        ("lines.tenant", "=", "parts.tenant"),
+        ("lines.code", "=", "parts.code"),
+    ]
+    sql = render(tab.query_model(), dialect=tab._dialect()).sql
+    assert (
+        'ON "lines"."tenant" = "parts"."tenant"'
+        ' AND "lines"."code" = "parts"."code"'
+    ) in _flat(sql)
+    _connector.execute(sql)
+
+
+def test_a_condition_can_be_added_and_removed_by_hand(joins_tab) -> None:
+    tab, _connector = joins_tab
+    row = _join_to(tab, "staff")
+    row._add_on_row(notify=True)
+    tab._sync_state()
+    row._on_rows[1].set_condition("staff.name", "staff_2.name", "<>")
+    assert row.conditions() == [
+        ("staff.id", "=", "staff_2.manager_id"),
+        ("staff.name", "<>", "staff_2.name"),
+    ]
+    assert '<> "staff_2"."name"' in render(
+        tab.query_model(), dialect=tab._dialect()
+    ).sql
+    # The last condition of a join cannot be removed — a join needs one.
+    row._remove_on_row(row._on_rows[1])
+    row._remove_on_row(row._on_rows[0])
+    assert len(row._on_rows) == 1
+
+
+def test_only_the_join_kinds_the_engine_has_are_offered(joins_tab) -> None:
+    tab, _connector = joins_tab
+    from dataclasses import replace as _replace
+
+    tab._sql_dialect = _replace(
+        tab._sql_dialect,
+        join_kinds=("INNER JOIN", "LEFT JOIN", "CROSS JOIN"),
+    )
+    assert tab._join_kinds() == ["INNER JOIN", "LEFT JOIN", "CROSS JOIN"]
+    tab._sql_dialect = _replace(
+        tab._sql_dialect,
+        join_kinds=(
+            "INNER JOIN", "LEFT JOIN", "RIGHT JOIN",
+            "FULL JOIN", "CROSS JOIN",
+        ),
+    )
+    assert "FULL JOIN" in tab._join_kinds()
+    assert "RIGHT JOIN" in tab._join_kinds()
+
+
+def test_sqlite_declares_its_own_outer_joins(joins_tab) -> None:
+    _tab_, connector = joins_tab
+    modern = sqlite3.sqlite_version_info >= (3, 39)
+    assert ("RIGHT JOIN" in connector.join_kinds) is modern
+    assert ("FULL JOIN" in connector.join_kinds) is modern
+    # Whatever the library has, the dialect says the same thing.
+    from sqlide.backend.db.query_model import dialect_for
+
+    assert set(dialect_for(connector).join_kinds) == set(connector.join_kinds)
+
+
+def test_a_cross_join_takes_no_on_clause(joins_tab) -> None:
+    tab, _connector = joins_tab
+    row = _join_to(tab, "parts")
+    kinds = tab._join_kinds()
+    row._kind.set_selected(kinds.index("CROSS JOIN"))
+    tab._sync_state()
+    assert row.conditions() == []
+    sql = render(tab.query_model(), dialect=tab._dialect()).sql
+    assert 'CROSS JOIN "parts"' in sql and " ON " not in sql
+    _connector.execute(sql)
+
+
+def test_columns_filters_and_sorts_address_a_self_join_by_alias(
+    joins_tab,
+) -> None:
+    tab, _connector = joins_tab
+    _join_to(tab, "staff")
+    names = tab._display_columns(tab._instances())
+    # Both sides are in the checklist, and they do not merge.
+    assert "staff.name" in names and "staff_2.name" in names
+    tab._checked = {"staff.name", "staff_2.name"}
+    tab._add_filter_row()
+    tab._filter_rows[0].set_condition(
+        FilterCondition(column="staff_2.name", op="=", value="ada")
+    )
+    tab._add_sort_row()
+    tab._sort_rows[0].set_spec(SortSpec(column="staff.name"))
+    tab._sync_state()
+    query = render(tab.query_model(), dialect=tab._dialect())
+    assert 'SELECT "staff"."name", "staff_2"."name"' in _flat(query.sql)
+    assert 'WHERE "staff_2"."name" =' in query.sql
+    assert 'ORDER BY "staff"."name" ASC' in query.sql
+    assert query.params == ["ada"]
+
+
+def test_renaming_an_alias_carries_its_columns_along(joins_tab) -> None:
+    tab, _connector = joins_tab
+    row = _join_to(tab, "staff")
+    tab._checked = {"staff_2.name"}
+    tab._add_filter_row()
+    tab._filter_rows[0].set_condition(
+        FilterCondition(column="staff_2.name", op="=", value="ada")
+    )
+    row._alias.set_text("boss")
+    assert [i.alias for i in tab._instances()] == ["staff", "boss"]
+    assert tab._checked == {"boss.name"}
+    assert tab._filter_rows[0].condition().column == "boss.name"
+    assert row.conditions() == [("staff.id", "=", "boss.manager_id")]
+    assert 'INNER JOIN "staff" AS "boss"' in render(
+        tab.query_model(), dialect=tab._dialect()
+    ).sql
+
+
+def test_a_self_join_survives_the_workspace(joins_tab) -> None:
+    tab, connector = joins_tab
+    row = _join_to(tab, "staff")
+    row._alias.set_text("boss")
+    tab._checked = {"staff.name", "boss.name"}
+    tab._add_sort_row()
+    tab._sort_rows[0].set_spec(SortSpec(column="boss.name", descending=True))
+    tab._sync_state()
+    back = _restored(tab, connector, tab.tab_state())
+    assert [i.alias for i in back._instances()] == ["staff", "boss"]
+    assert back._checked == {"staff.name", "boss.name"}
+    assert back._sort_rows[0].spec() == SortSpec("boss.name", descending=True)
+    assert render(back.query_model(), dialect=back._dialect()).sql == render(
+        tab.query_model(), dialect=tab._dialect()
+    ).sql

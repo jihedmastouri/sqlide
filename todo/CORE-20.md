@@ -1,6 +1,6 @@
 ## CORE-20 — Joins: aliases, self-joins, multi-condition ON, all join kinds
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-17, CORE-18
 - **From:** RS-01 (see `docs/query-builder-research.md`)
 
@@ -36,11 +36,11 @@ more than once, and more than one condition per join.
 
 ### Acceptance criteria
 
-- [ ] The same table can be joined to itself, with distinct aliases,
+- [x] The same table can be joined to itself, with distinct aliases,
       and the generated SQL is valid.
-- [ ] A join can carry two or more ON conditions; a composite foreign
+- [x] A join can carry two or more ON conditions; a composite foreign
       key prefills all of them.
-- [ ] `FULL` and `CROSS` are offered where the engine supports them and
+- [x] `FULL` and `CROSS` are offered where the engine supports them and
       absent where it does not.
-- [ ] Filters, sorts and the column checklist all address columns by
+- [x] Filters, sorts and the column checklist all address columns by
       alias, so a self-joined table's two sides never merge.

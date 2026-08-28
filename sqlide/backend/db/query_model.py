@@ -55,6 +55,8 @@ __all__ = [
     "FilterGroup",
     "GENERIC",
     "JOIN_KINDS",
+    "JOINS_WITHOUT_ON",
+    "ON_OPERATORS",
     "Join",
     "MYSQL",
     "On",
@@ -88,6 +90,10 @@ JOIN_KINDS = (
 MARKER = "?"
 # CROSS JOIN carries no ON clause; the rest require one.
 JOINS_WITHOUT_ON = ("CROSS JOIN",)
+#: What an ON condition may compare with. A join is not a filter — no
+#: value is ever bound in an ON, both sides are columns — so the set is
+#: the comparisons and nothing that takes a literal.
+ON_OPERATORS = ("=", "<>", "<", "<=", ">", ">=")
 
 
 # Model
@@ -302,11 +308,17 @@ def dialect_for(connector: Any) -> Dialect:
     base = _BY_NAME.get(name, GENERIC)
     quote = getattr(connector, "quote_ident", None)
     placeholder = getattr(connector, "placeholder", base.placeholder)
+    # An adapter that knows better than the preset says so: SQLite's
+    # join kinds depend on the sqlite3 library actually linked in, not
+    # on the engine's name, and only the adapter can see that (CORE-20).
+    declared = getattr(connector, "join_kinds", None)
+    kinds = tuple(k for k in JOIN_KINDS if k in set(declared or ()))
     return replace(
         base,
         name=name or base.name,
         quote=quote if callable(quote) else base.quote,
         placeholder=placeholder,
+        join_kinds=kinds or base.join_kinds,
     )
 
 
@@ -382,11 +394,18 @@ class _Renderer:
                     raise ConnectorError(f"{kind} needs an ON condition")
                 # A join's ON is always qualified: an unqualified name
                 # there is ambiguous by construction.
-                conditions = " AND ".join(
-                    f"{self.column(on.left, force_qualified=True)} {on.op} "
-                    f"{self.column(on.right, force_qualified=True)}"
-                    for on in join.on
-                )
+                parts = []
+                for on in join.on:
+                    op = on.op.upper()
+                    if op not in ON_OPERATORS:
+                        raise ConnectorError(
+                            f"Unsupported join operator: {on.op}"
+                        )
+                    parts.append(
+                        f"{self.column(on.left, force_qualified=True)} {op} "
+                        f"{self.column(on.right, force_qualified=True)}"
+                    )
+                conditions = " AND ".join(parts)
                 line += f" ON {conditions}"
             lines.append(line)
         return lines

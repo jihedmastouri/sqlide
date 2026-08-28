@@ -658,9 +658,12 @@ class SqliteConnector(Connector):
         columns, rows, _ = self._run(query.sql, tuple(query.params))
         return self._page_result(columns, rows, query)
 
-    def run_bound(self, sql: str, params=()) -> ResultSet:
-        columns, rows, _ = self._run(sql, tuple(params))
-        return ResultSet(columns=columns, rows=rows, statement=sql)
+    def run_bound(
+        self, sql: str, params=(), max_rows: int | None = None
+    ) -> ResultSet:
+        limit = max_rows + 1 if max_rows else None
+        columns, rows, _ = self._run(sql, tuple(params), fetch_limit=limit)
+        return self._bound_result(sql, params, columns, rows, max_rows)
 
     def execute(self, sql: str, max_rows: int | None = None) -> ResultSet | int:
         # One row past the cap: the extra is what tells truncated from

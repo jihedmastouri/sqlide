@@ -1,9 +1,9 @@
 """Workspaces and their file-based store.
 
 A workspace groups 0..n connection profiles and remembers the tabs
-that were open in it (table tabs and query consoles, including the
-console SQL text), so reopening a workspace restores it as it was
-left. It also keeps a capped history of executed queries (successes
+that were open in it (table tabs, query consoles including the
+console SQL text, and query builders including the whole built
+query), so reopening a workspace restores it as it was left. It also keeps a capped history of executed queries (successes
 and failures).
 
 Each workspace is a directory of its own, workspaces/<id>/ under the
@@ -45,6 +45,12 @@ class TabState:
     connection: str  # ConnectionProfile.name within the workspace
     table: str = ""  # table/definition/function tabs: object name; querybuilder: base table
     sql: str = ""  # query tabs only
+    # Query builder tabs: the whole built query, as the versioned JSON
+    # of a backend/db/query_model.QueryModel (query_model.dump_state).
+    # `table` stays filled beside it, so a workspace written here still
+    # opens in an older build (base table only) and one written by an
+    # older build still opens here.
+    builder: str = ""
     # Object info tabs: which node of the tree the tab was opened on.
     # `table` carries the object's own name, so these three are the
     # rest of its identity (see frontend/object_info.py).

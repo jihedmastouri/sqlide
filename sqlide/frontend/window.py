@@ -1948,7 +1948,9 @@ class MainWindow(Adw.ApplicationWindow):
                         ))
                 elif tab.kind == "querybuilder":
                     if profile is not None:
-                        self.open_query_builder(profile, tab.table)
+                        self.open_query_builder(
+                            profile, tab.table, builder=tab.builder
+                        )
                 elif tab.kind == "query":
                     # Restore the console even if its connection is gone.
                     self.new_query(profile, sql=tab.sql)
@@ -2731,7 +2733,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.open_query_builder(profile)
 
     def open_query_builder(
-        self, profile: ConnectionProfile, table: str = ""
+        self, profile: ConnectionProfile, table: str = "", builder: str = ""
     ) -> None:
         # Not deduplicated by tab_key: several builders on the same
         # connection are fine, like query consoles.
@@ -2740,6 +2742,9 @@ class MainWindow(Adw.ApplicationWindow):
             self.ensure_connector,
             self.show_error,
             table=table,
+            # A restored tab carries its whole query (CORE-19); an
+            # older workspace carries only `table`, and rebuilds empty.
+            builder=builder,
             on_aggregate=self.show_aggregate,
             on_value=self.show_cell_value,
             on_open_console=lambda p, sql: self.new_query(p, sql=sql),

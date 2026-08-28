@@ -27,6 +27,13 @@ by its key, "schema.table" where the engine has schemas and the bare
 name where it does not, and the same key qualifies its columns
 ("key.column") inside the tab; the rendered SQL drops the prefix while
 no join is present, and writes the schema only where there is one.
+
+Because the model is data, the tab persists it: `tab_state` writes the
+whole query into the workspace and a restored tab rehydrates it once
+the catalog is in, dropping any join, column, filter or sort whose
+table or column the database no longer has and saying how many in the
+status label (CORE-19). Nothing is parsed back out of SQL — generation
+stays one-way, and the model is what survives a restart.
 """
 
 from __future__ import annotations
@@ -43,8 +50,10 @@ from sqlide.backend.db.base import (
     ColumnInfo,
     Connector,
     ConnectorError,
+    FilterCondition,
     RelationInfo,
     ResultSet,
+    SortSpec,
 )
 from sqlide.backend.db.metadata import Capabilities, NodeRef
 from sqlide.backend.db.query_model import (
@@ -59,9 +68,12 @@ from sqlide.backend.db.query_model import (
     QueryModel,
     TableRef,
     dialect_for,
+    dump_state,
     folded_group,
+    load_state,
     render,
     render_display,
+    unfold_group,
 )
 from sqlide.backend.settings import result_row_cap
 from sqlide.backend.workspaces import TabState
@@ -75,7 +87,7 @@ from sqlide.frontend.data_grid import (
 )
 from sqlide.frontend.results_panel import ResultsPanel
 from sqlide.frontend.util import describe, row_count, run_async
-from sqlide.i18n import _
+from sqlide.i18n import _, ngettext
 
 # What the builder offers. The connected engine may have fewer (SQLite
 # before 3.39 has no RIGHT JOIN); the dialect says which, and the
@@ -216,6 +228,31 @@ class _JoinRow(Gtk.Box):
         finally:
             self._updating = False
 
+    def restore_kind_and_table(self, kind: str, key: str) -> None:
+        """Put a saved line's join kind and joined source back, without
+        firing the change callback: the builder re-syncs once, after
+        every restored row is in place."""
+        self._updating = True
+        try:
+            model = self._kind.get_model()
+            for i in range(model.get_n_items()):
+                if model.get_string(i) == kind:
+                    self._kind.set_selected(i)
+                    break
+            if key in self._keys:
+                self._table.set_selected(self._keys.index(key))
+        finally:
+            self._updating = False
+
+    def restore_on(self, left: str, right: str) -> None:
+        """The saved ON columns, once the choices have been filled.
+
+        Marks the line as touched, so the foreign-key prefill never
+        overwrites what the user actually built.
+        """
+        self.prefill(left, right)
+        self._on_touched = True
+
     def prefill(self, left: str, right: str) -> None:
         self._updating = True
         try:
@@ -238,6 +275,7 @@ class QueryBuilderTab(Gtk.Box):
         ensure_connector: Callable[[ConnectionProfile], Connector],
         show_error: Callable[[str], None],
         table: str = "",
+        builder: str = "",
         on_aggregate: AggregateCallback | None = None,
         on_value: ValueCallback | None = None,
         on_open_console: Callable[[ConnectionProfile, str], None] | None = None,
@@ -250,6 +288,11 @@ class QueryBuilderTab(Gtk.Box):
         self._on_value = on_value
         self._on_open_console = on_open_console
         self._initial_table = table
+        # The saved query this tab is being restored from, if any
+        # (TabState.builder); rehydrated once the catalog has loaded,
+        # since only then do we know which tables and columns still
+        # exist. Unreadable or from a future version reads as None.
+        self._restore: QueryModel | None = load_state(builder)
         # Rebound by the window once the tab page exists (like TableTab).
         self.on_ran: Callable[[str, bool], None] | None = None
 
@@ -279,10 +322,24 @@ class QueryBuilderTab(Gtk.Box):
         self._load_catalog()
 
     def tab_state(self) -> TabState:
+        """What the workspace saves: the whole query as data, plus the
+        base table on its own so an older build (and this one, before
+        the catalog is in) can still reopen the tab (CORE-19)."""
+        base = self._base_table()
+        if not base and self._restore is not None:
+            # The catalog never arrived (offline restore): hand back
+            # what we were given rather than dropping the query.
+            return TabState(
+                kind="querybuilder",
+                connection=self.profile.name,
+                table=self._initial_table,
+                builder=dump_state(self._restore),
+            )
         return TabState(
             kind="querybuilder",
             connection=self.profile.name,
-            table=self._base_table(),
+            table=base,
+            builder=dump_state(self.query_model()) if base else "",
         )
 
     # UI construction
@@ -467,6 +524,7 @@ class QueryBuilderTab(Gtk.Box):
                 self._loading = False
             self._status.set_text("")
             self._base_changed()
+            self._restore_model()
 
         def failed(exc: Exception) -> None:
             self._status.set_text("")
@@ -492,6 +550,168 @@ class QueryBuilderTab(Gtk.Box):
             if source.name == wanted:
                 return index
         return None
+
+    # Restoring a saved query (CORE-19)
+
+    def _picker_key(self, ref: TableRef) -> str:
+        """The picker key for a saved model source, or "" when that
+        table is no longer in the catalog.
+
+        The saved schema is matched first, since it is the half that
+        says which table is meant; a saved bare name is accepted when
+        exactly one source answers to it (the catalog gained schemas,
+        or the workspace predates them).
+        """
+        candidate = (
+            f"{ref.schema}.{ref.name}"
+            if self._caps.schemas and ref.schema
+            else ref.name
+        )
+        keys = [source.key for source in self._sources]
+        if candidate in keys:
+            return candidate
+        matches = [s.key for s in self._sources if s.name == ref.name]
+        return matches[0] if len(matches) == 1 else ""
+
+    def _restored_column(
+        self, column: Column | None, sources: dict[str, str], base: str
+    ) -> str | None:
+        """A saved model column as the qualified "key.column" the tab
+        works in, or None when its table or column is gone."""
+        if column is None or not column.name:
+            return None
+        key = sources.get(column.source, "") if column.source else base
+        if not key:
+            return None
+        if column.name not in {c.name for c in self._columns.get(key, [])}:
+            return None
+        return f"{key}.{column.name}"
+
+    def _restore_model(self) -> None:
+        """Rebuild the widgets from the query this tab was restored
+        with, dropping whatever the database no longer has.
+
+        A saved query is data about a schema that has moved on since:
+        a table may have been dropped, a column renamed. Every part is
+        therefore checked against the freshly loaded catalog and
+        silently left out when it no longer resolves — the count is
+        reported in the status label. Losing a filter must never cost
+        you the rest of the query, and must never be an error dialog.
+        """
+        model, self._restore = self._restore, None
+        if model is None or model.source is None:
+            return
+        sources = {
+            ref.key: key
+            for ref in model.sources
+            if (key := self._picker_key(ref))
+        }
+        base = sources.get(model.source.key, "")
+        if not base:
+            self._status.set_text(
+                _("The saved query's table is gone; starting fresh.")
+            )
+            return
+        dropped = 0
+        keys = [source.key for source in self._sources]
+        self._loading = True
+        try:
+            self._table_dropdown.set_selected(keys.index(base))
+            self._distinct.set_active(model.distinct)
+            if model.limit:
+                self._limit.set_value(model.limit)
+            kinds = self._join_kinds()
+            restored_joins: list[tuple[_JoinRow, str, str]] = []
+            for join in model.joins:
+                key = sources.get(join.source.key, "")
+                on = join.on[0] if join.on else None
+                left = right = None
+                if key and on is not None:
+                    left = self._restored_column(on.left, sources, base)
+                    right = self._restored_column(on.right, sources, base)
+                if not key or left is None or right is None:
+                    dropped += 1
+                    continue
+                row = _JoinRow(
+                    self._sources,
+                    self._remove_join_row,
+                    self._sync_state,
+                    kinds=kinds if join.kind in kinds else [join.kind, *kinds],
+                )
+                row.restore_kind_and_table(join.kind, key)
+                self._join_rows.append(row)
+                self._joins_box.append(row)
+                restored_joins.append((row, left, right))
+            tables = self._query_tables()
+            qualified = set(self._qualified_columns(tables))
+            checked: set[str] = set()
+            for projection in model.projections:
+                name = self._restored_column(projection.column, sources, base)
+                if name is None or name not in qualified:
+                    dropped += 1
+                    continue
+                checked.add(name)
+            self._checked = checked
+            names = self._display_columns(tables)
+            lines = unfold_group(model.where)
+            if lines is None and model.where is not None:
+                # A filter tree the flat panel cannot show (nothing
+                # builds one yet — CORE-22 will).
+                dropped += 1
+            for conjunction, condition in lines or []:
+                name = self._restored_column(condition.column, sources, base)
+                display = self._display_name(name, tables)
+                if display is None or display not in names:
+                    dropped += 1
+                    continue
+                self._add_filter_row()
+                self._filter_rows[-1].set_condition(
+                    FilterCondition(
+                        column=display,
+                        op=condition.op,
+                        value=(
+                            ""
+                            if condition.value is None
+                            else str(condition.value)
+                        ),
+                        conjunction=conjunction,
+                    )
+                )
+            for order in model.order_by:
+                name = self._restored_column(order.column, sources, base)
+                display = self._display_name(name, tables)
+                if display is None or display not in names:
+                    dropped += 1
+                    continue
+                self._add_sort_row()
+                self._sort_rows[-1].set_spec(
+                    SortSpec(column=display, descending=order.descending)
+                )
+        finally:
+            self._loading = False
+        # The ON dropdowns are empty until the choices are derived, so
+        # the saved columns go in after the first sync, not before.
+        self._sync_state()
+        for row, left, right in restored_joins:
+            row.restore_on(left, right)
+        self._sync_state()
+        if dropped:
+            self._status.set_text(
+                ngettext(
+                    "%d part of the saved query no longer exists and was dropped.",
+                    "%d parts of the saved query no longer exist and were dropped.",
+                    dropped,
+                )
+                % dropped
+            )
+
+    @staticmethod
+    def _display_name(qualified: str | None, tables: list[str]) -> str | None:
+        """A qualified "key.column" as the filter/sort panels spell it:
+        qualified once a join is present, bare otherwise."""
+        if qualified is None:
+            return None
+        return qualified if len(tables) > 1 else qualified.rpartition(".")[2]
 
     # State
 

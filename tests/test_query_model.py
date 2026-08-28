@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from sqlide.backend.db import query_model
 from sqlide.backend.db.base import ConnectorError
 from sqlide.backend.db.query_model import (
     GENERIC,
@@ -540,3 +541,60 @@ def test_model_round_trips_through_plain_data():
 def test_from_dict_tolerates_an_empty_or_partial_payload():
     assert from_dict({}) == QueryModel()
     assert from_dict({"source": {"name": "t"}}).source == TableRef("t")
+
+
+# The persisted envelope (CORE-19)
+
+
+def test_dump_state_round_trips_a_model() -> None:
+    model = QueryModel(
+        source=TableRef("orders"),
+        joins=(
+            Join(
+                kind="LEFT JOIN",
+                source=TableRef("users"),
+                on=(On(Column("user_id", "orders"), Column("id", "users")),),
+            ),
+        ),
+        projections=(Projection(column=Column("id", "orders")),),
+        distinct=True,
+        where=FilterGroup(items=(Condition(Column("name", "users"), "=", "ada"),)),
+        order_by=(Order(column=Column("id", "orders"), descending=True),),
+        limit=10,
+    )
+    assert query_model.load_state(query_model.dump_state(model)) == model
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "not json",
+        "[]",
+        '{"model": {}}',  # no version
+        '{"version": 999, "model": {}}',  # written by a later build
+        '{"version": 1}',  # no payload
+        '{"version": 1, "model": "nonsense"}',
+    ],
+)
+def test_load_state_never_raises_on_junk(text) -> None:
+    assert query_model.load_state(text) is None
+
+
+def test_unfold_group_inverts_folded_group() -> None:
+    lines = [
+        ("AND", Condition(Column("a"), "=", 1)),
+        ("OR", Condition(Column("b"), "=", 2)),
+        ("AND", Condition(Column("c"), "=", 3)),
+    ]
+    assert query_model.unfold_group(query_model.folded_group(lines)) == lines
+
+
+def test_unfold_group_declines_a_tree_it_cannot_flatten() -> None:
+    nested = FilterGroup(
+        items=(
+            FilterGroup(items=(Condition(Column("a"), "=", 1),)),
+            FilterGroup(items=(Condition(Column("b"), "=", 2),)),
+        )
+    )
+    assert query_model.unfold_group(nested) is None

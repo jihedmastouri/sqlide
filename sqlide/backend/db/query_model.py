@@ -35,6 +35,7 @@ data, which is what lets a builder tab persist itself (CORE-19).
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable, Sequence
 
@@ -64,7 +65,10 @@ __all__ = [
     "Rendered",
     "SQLITE",
     "TableRef",
+    "MODEL_VERSION",
     "dialect_for",
+    "dump_state",
+    "load_state",
     "render",
     "render_display",
 ]
@@ -711,6 +715,80 @@ def from_dict(data: dict) -> QueryModel:
         limit=data.get("limit"),
         offset=data.get("offset"),
     )
+
+
+# Persisted form (CORE-19): a versioned envelope around to_dict
+
+
+#: Bumped whenever `to_dict`'s shape changes incompatibly. A saved
+#: model from a *newer* version is discarded rather than guessed at;
+#: an older one is migrated here, in one place.
+MODEL_VERSION = 1
+
+
+def dump_state(model: QueryModel) -> str:
+    """`model` as the JSON text a TabState carries.
+
+    A version rides along so a later model change can migrate or
+    discard cleanly instead of half-reading a shape it predates.
+    """
+    return json.dumps({"version": MODEL_VERSION, "model": to_dict(model)})
+
+
+def load_state(text: str) -> QueryModel | None:
+    """The inverse of `dump_state`, and deliberately unexcitable:
+    anything it cannot make sense of — empty text, malformed JSON, a
+    version from the future, a payload that is not a mapping — comes
+    back as None, which callers read as "no saved model", never as an
+    error. A workspace must always open.
+    """
+    if not text:
+        return None
+    try:
+        envelope = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    try:
+        version = int(envelope.get("version", 0))
+    except (TypeError, ValueError):
+        return None
+    if version > MODEL_VERSION or version < 1:
+        return None
+    data = envelope.get("model")
+    if not isinstance(data, dict):
+        return None
+    try:
+        return from_dict(data)
+    except (AttributeError, TypeError, ValueError):
+        # A hand-edited or truncated payload: no model, not a crash.
+        return None
+
+
+def unfold_group(
+    group: "FilterGroup | None",
+) -> list[tuple[str, Condition]] | None:
+    """`folded_group` in reverse: the flat `(conjunction, condition)`
+    lines a left-folded group came from, or None if the tree is not
+    that shape (an explicitly grouped filter, once CORE-22 lands).
+    """
+    if group is None:
+        return None
+    if group.negated:
+        return None
+    items = group.items
+    if len(items) == 1 and isinstance(items[0], Condition):
+        return [("AND", items[0])]
+    if len(items) != 2:
+        return None
+    head, tail = items
+    if not isinstance(tail, Condition) or not isinstance(head, FilterGroup):
+        return None
+    lines = unfold_group(head)
+    if lines is None:
+        return None
+    return [*lines, (group.conjunction, tail)]
 
 
 # Convenience for callers assembling a model from flat lines

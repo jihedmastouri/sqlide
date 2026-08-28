@@ -325,7 +325,9 @@ class QueryConsole(Gtk.Box):
         self._paned = Gtk.Paned(
             orientation=Gtk.Orientation.VERTICAL, vexpand=True
         )
-        self._results_area = ResultsPanel(self._results, self._paned)
+        self._results_area = ResultsPanel(
+            self._results, self._paned, on_export=self._export_result
+        )
         self._paned.set_start_child(self._editor)
         self._paned.set_end_child(self._results_area)
         self._paned.set_shrink_start_child(False)
@@ -1077,6 +1079,19 @@ class QueryConsole(Gtk.Box):
 
     # Result panel
 
+    def _export_result(self) -> None:
+        """The results header's Export: whatever grid the visible
+        result tab holds. A status page or an error page has no rows,
+        so it has nothing to export and says so."""
+        from sqlide.frontend.export_dialog import ExportDialog
+
+        page = self._results.get_nth_page(self._results.get_current_page())
+        grid = _find_grid(page)
+        if grid is None:
+            self._set_status(_("This tab has no rows to export."), error=True)
+            return
+        ExportDialog.for_grid(grid).present(self)
+
     def _append_result_page(self, child: Gtk.Widget, title: str) -> None:
         label = Gtk.Label(label=title)
         label.set_max_width_chars(24)
@@ -1267,6 +1282,20 @@ def _is_explain(sql: str) -> bool:
         text = text.strip()
     first = text.split(None, 1)[0].lower() if text.split() else ""
     return first in _EXPLAIN_WORDS
+
+
+def _find_grid(widget: Gtk.Widget | None) -> ResultGrid | None:
+    """The ResultGrid inside a result tab, whatever it is wrapped in —
+    a truncation notice, an explain stack, or nothing at all."""
+    if widget is None or isinstance(widget, ResultGrid):
+        return widget
+    child = widget.get_first_child()
+    while child is not None:
+        found = _find_grid(child)
+        if found is not None:
+            return found
+        child = child.get_next_sibling()
+    return None
 
 
 def _explain_views(grid: ResultGrid, result: ResultSet) -> Gtk.Widget:

@@ -301,8 +301,16 @@ class QueryBuilderTab(Gtk.Box):
         # Same collapsible panel as the query console, hidden until the
         # first run produces rows.
         self._grid = ResultGrid(on_aggregate=self._on_aggregate)
-        self._results_panel = ResultsPanel(self._grid, paned)
+        self._results_panel = ResultsPanel(
+            self._grid, paned, on_export=self._export_result
+        )
         return self._results_panel
+
+    def _export_result(self) -> None:
+        """The results header's Export — the built rows, as a file."""
+        from sqlide.frontend.export_dialog import ExportDialog
+
+        ExportDialog.for_grid(self._grid).present(self)
 
     @staticmethod
     def _section_label(text: str) -> Gtk.Label:

@@ -1,6 +1,6 @@
 ## CORE-45 — Find a value across a database's tables
 
-- **Status:** todo
+- **Status:** Done
 - **From:** RS-04 (see `docs/dbeaver-comparison.md`)
 
 ### Problem
@@ -46,19 +46,19 @@ table/column/row hits you can open.
 
 ### Acceptance criteria
 
-- [ ] Planning is pure and covered in `tests/test_search.py` with no
+- [x] Planning is pure and covered in `tests/test_search.py` with no
       database server: given a catalog and a term, the chosen columns
       and generated statements are asserted.
-- [ ] A numeric-looking term searches numeric columns; a
+- [x] A numeric-looking term searches numeric columns; a
       non-numeric one does not, and no column is cast to text to make
       it match.
-- [ ] Every statement is parameter-bound, identifier-validated and
+- [x] Every statement is parameter-bound, identifier-validated and
       row-capped.
-- [ ] The scan runs on a worker thread, reports progress per table,
+- [x] The scan runs on a worker thread, reports progress per table,
       and cancels promptly.
-- [ ] A table the account cannot read is skipped with a reported
+- [x] A table the account cannot read is skipped with a reported
       reason, not a failed scan.
-- [ ] Opening a hit lands on the right table tab with a filter that
+- [x] Opening a hit lands on the right table tab with a filter that
       selects that row.
-- [ ] The tab states the table count up front and warns on a
+- [x] The tab states the table count up front and warns on a
       production-classed connection.

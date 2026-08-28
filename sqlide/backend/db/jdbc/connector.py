@@ -175,6 +175,10 @@ class JdbcConnector(Connector):
         )
         return self._page_result(columns, rows, query)
 
+    def run_bound(self, sql: str, params=()) -> ResultSet:
+        columns, rows = self._query(sql, params=list(params))
+        return ResultSet(columns=columns, rows=rows, statement=sql)
+
     def execute(self, sql: str, max_rows: int | None = None) -> ResultSet | int:
         if self._conn is None:
             raise ConnectorError("Not connected")

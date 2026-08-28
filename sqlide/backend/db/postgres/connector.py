@@ -1749,6 +1749,10 @@ class PostgresConnector(Connector):
         columns, rows, _ = self._run(query.sql, tuple(query.params))
         return self._page_result(columns, rows, query)
 
+    def run_bound(self, sql: str, params=()) -> ResultSet:
+        columns, rows, _ = self._run(sql, tuple(params))
+        return ResultSet(columns=columns, rows=rows, statement=sql)
+
     def execute(self, sql: str, max_rows: int | None = None) -> ResultSet | int:
         # One row past the cap: the extra is what tells truncated from
         # a result that happens to be exactly max_rows long.

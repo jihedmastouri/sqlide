@@ -119,6 +119,7 @@ from sqlide.frontend import tree_search
 from sqlide.frontend.sidebar import Sidebar, schema_profile
 from sqlide.frontend.status_bar import StatusBar
 from sqlide.frontend.table_designer import TableDesignerTab
+from sqlide.frontend.data_search import DataSearchTab
 from sqlide.frontend.monitor_tab import MonitorTab
 from sqlide.frontend.pragmas_tab import PragmasTab
 from sqlide.frontend.users_tab import UsersTab
@@ -463,6 +464,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_view_indexes=self.open_indexes,
             on_manage_users=self.open_users,
             on_monitor=self.open_monitor,
+            on_data_search=self.open_data_search,
             on_pragmas=self.open_pragmas,
             on_query_builder=self.open_query_builder,
             on_drop_object=self._drop_object,
@@ -1933,6 +1935,9 @@ class MainWindow(Adw.ApplicationWindow):
                 elif tab.kind == "pragmas":
                     if profile is not None:
                         self.open_pragmas(profile)
+                elif tab.kind == "datasearch":
+                    if profile is not None:
+                        self.open_data_search(profile)
                 elif tab.kind == "object":
                     if profile is not None:
                         self.open_object(profile, objects.ObjectRef(
@@ -3043,6 +3048,30 @@ class MainWindow(Adw.ApplicationWindow):
             key,
             f"{profile.name} ▸ monitor",
             f"Sessions, throughput and storage on {profile.name}",
+        )
+
+    def open_data_search(self, profile: ConnectionProfile) -> None:
+        """Find a value across this connection's tables (CORE-45).
+
+        One per connection scope: the tab is a scan of exactly the
+        tables that scope reaches, and a second copy would only be the
+        same scan twice. A hit opens through the same "open filtered"
+        path foreign-key navigation uses.
+        """
+        key = ("datasearch", profile.name)
+        if self._focus_tab(key):
+            return
+        tab = DataSearchTab(
+            profile,
+            self.ensure_connector,
+            self.show_error,
+            self.open_related_rows,
+        )
+        self._append_tab(
+            tab,
+            key,
+            f"{profile.name} ▸ find data",
+            f"Find a value across the tables on {profile.name}",
         )
 
     def open_backups(self) -> None:

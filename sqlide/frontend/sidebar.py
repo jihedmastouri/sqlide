@@ -388,6 +388,10 @@ class Sidebar(Gtk.ScrolledWindow):
         # harness with no window behind it leaves them out.
         on_open_properties: Callable[..., None] | None = None,
         on_open_properties_window: Callable[..., None] | None = None,
+        # "Find Data…": the cross-table value search (CORE-45), on the
+        # scope the row stands for. Optional like the rest of this tail
+        # — a harness that only walks the tree leaves it inert.
+        on_data_search: Callable[[ConnectionProfile], None] | None = None,
     ) -> None:
         super().__init__(vexpand=True)
         # Both scrollbars, on demand. Row name labels are not ellipsized
@@ -420,6 +424,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_mcp_server = on_mcp_server
         self._on_manage_users = on_manage_users
         self._on_monitor = on_monitor
+        self._on_data_search = on_data_search
         self._on_pragmas = on_pragmas
         self._on_open_window = on_open_window
         self._on_open_properties = on_open_properties
@@ -525,6 +530,7 @@ class Sidebar(Gtk.ScrolledWindow):
             ("mcp-server", self._menu_mcp_server),
             ("manage-users", self._menu_manage_users),
             ("monitor", self._menu_monitor),
+            ("data-search", self._menu_data_search),
             ("pragmas", self._menu_pragmas),
             ("open-schema", self._menu_open_schema),
             ("edit-connection", self._menu_edit_connection),
@@ -1461,6 +1467,10 @@ class Sidebar(Gtk.ScrolledWindow):
             menu.append("Relation Graph", "schema.relation-graph")
             menu.append("Query Builder", "schema.query-builder")
             menu.append("MCP Server", "schema.mcp-server")
+            # The value search reads the tables this row's scope
+            # reaches, so it sits on every level that has tables under
+            # it — connection, database and schema alike (CORE-45).
+            menu.append("Find Data…", "schema.data-search")
             menu.append("Open Schema", "schema.open-schema")
             menu.append_submenu(
                 "New", _new_items(node.ddl_kinds or _DEFAULT_NEW_KINDS)
@@ -1756,6 +1766,15 @@ class Sidebar(Gtk.ScrolledWindow):
         node = self._menu_node
         if node is not None and node.profile is not None and self._on_pragmas:
             self._on_pragmas(node.profile)
+
+    def _menu_data_search(self, *_args) -> None:
+        node = self._menu_node
+        if (
+            node is not None
+            and node.profile is not None
+            and self._on_data_search is not None
+        ):
+            self._on_data_search(node.profile)
 
     def _menu_monitor(self, *_args) -> None:
         node = self._menu_node

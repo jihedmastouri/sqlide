@@ -95,7 +95,7 @@
 | CORE-42 | Value panel and record view for wide cells (done) | — |
 | CORE-43 | Foreign-key navigation in the grid (done) | CORE-41 |
 | CORE-44 | Format SQL in the editor (done) | — |
-| CORE-45 | Find a value across a database's tables | CORE-02, CORE-43 |
+| CORE-45 | Find a value across a database's tables (done) | CORE-02, CORE-43 |
 
 ### Monitoring
 

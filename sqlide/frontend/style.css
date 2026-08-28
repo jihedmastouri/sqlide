@@ -116,6 +116,25 @@ columnview.data-table .cell-modified {
   border-radius: 4px;
 }
 
+/* Rows marked for deletion: struck through and dimmed until Save runs
+   the DELETEs (or Refresh discards them). Nothing is removed from the
+   grid before it is removed from the database. */
+columnview.data-table .cell-deleted {
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+
+/* Rows added locally and not yet inserted. */
+columnview.data-table .cell-inserted {
+  background-color: alpha(@success_bg_color, 0.3);
+}
+
+/* A NOT NULL column still empty on a row being added: the insert will
+   fail as it stands, said before Save rather than after. */
+columnview.data-table .cell-required {
+  background-color: alpha(@error_bg_color, 0.35);
+}
+
 /* Aggregate page of the right side panel: tab-aligned name/value
    lines. */
 label.aggregate-summary {

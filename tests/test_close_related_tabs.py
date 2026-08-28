@@ -219,6 +219,13 @@ def test_a_console_matching_its_file_has_nothing_to_lose(
 # the state they read: the pending edits and the way to the connector.
 
 
+def _pending_update(pk_values, column, value):
+    """One row's pending cell edit, as TableTab holds it."""
+    from sqlide.frontend.data_grid import _PendingRow
+
+    return _PendingRow("update", pk_values, {column: value})
+
+
 class _GridStub:
     """The parts of TableTab that unsaved_work and save_unsaved_work
     touch, and nothing else."""
@@ -230,6 +237,7 @@ class _GridStub:
     unsaved_work = _real.unsaved_work
     save_unsaved_work = _real.save_unsaved_work
     _pending_updates = _real._pending_updates
+    _pending_count = _real._pending_count
     del _real
 
     def __init__(self, connector=None, pending=None) -> None:
@@ -246,7 +254,7 @@ def test_a_clean_grid_has_nothing_to_lose(gtk) -> None:
 
 
 def test_pending_cell_edits_are_unsaved_work(gtk) -> None:
-    tab = _GridStub(pending={object(): ({"id": 1}, {"item": "cup"})})
+    tab = _GridStub(pending={object(): _pending_update({"id": 1}, "item", "cup")})
     assert tab.unsaved_work() == "1 unsaved edit(s)"
 
 
@@ -264,7 +272,7 @@ def test_saving_a_grid_writes_its_pending_edits(gtk) -> None:
 
     tab = _GridStub(
         connector=Recording(),
-        pending={object(): ({"id": 1}, {"item": "cup"})},
+        pending={object(): _pending_update({"id": 1}, "item", "cup")},
     )
     tab.save_unsaved_work()
     assert done.wait(5)

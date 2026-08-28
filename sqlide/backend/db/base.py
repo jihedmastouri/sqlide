@@ -452,21 +452,32 @@ class BatchError(ConnectorError):
 class RowOperation:
     """One row change from the grid, as apply_changes() takes it.
 
-    Today the only kind is "update" — one cell of one row, addressed by
-    that row's primary key. Inserts and deletes (CORE-38) take the same
-    shape, which is why the kind is spelled out rather than implied.
+    Three kinds, all carried in one shape so a Save's worth of them
+    keeps the order the user made them in:
+
+    - "update" — one cell of one row, addressed by `pk_values`.
+    - "delete" — the whole row `pk_values` addresses.
+    - "insert" — a new row, its column/value pairs in `values`; there
+      is no key to address yet, so `pk_values` stays empty.
     """
 
-    pk_values: dict[str, Any]
-    column: str
-    value: Any
+    pk_values: dict[str, Any] = field(default_factory=dict)
+    column: str = ""
+    value: Any = None
     kind: str = "update"
+    #: Column -> value for an insert; unused by the other kinds.
+    values: dict[str, Any] | None = None
 
 
 def describe_operation(op: RowOperation) -> str:
     """The operation as a phrase for an error message: which row, which
     column — not just the driver's complaint."""
     where = ", ".join(f"{name}={value!r}" for name, value in op.pk_values.items())
+    if op.kind == "insert":
+        columns = ", ".join(sorted(op.values or {}))
+        return f"new row ({columns})"
+    if op.kind == "delete":
+        return f"row ({where})"
     return f"row ({where}) column {op.column}"
 
 
@@ -1575,6 +1586,78 @@ class Connector(ABC):
     # each adapter spell their own.
     placeholder = "?"
 
+    def insert_row(self, table: str, values: dict[str, Any]) -> None:
+        """INSERT one row, its columns and values bound as parameters.
+
+        Unlike update_cell and delete_row there is no key to address:
+        the row is described entirely by `values`, and a table with no
+        primary key can still be inserted into (the caller reloads
+        afterwards rather than pretending it can address the new row).
+        """
+        if not values:
+            raise ConnectorError("Refusing to insert a row with no values")
+        # Only identifiers the catalog vouches for reach the SQL text
+        # (cached, and re-read on a miss before rejecting anything).
+        self._assert_known_columns(table, set(values))
+        sql, params = self._insert_statement(table, values)
+        self._run_mutation(sql, params)
+
+    def delete_row(self, table: str, pk_values: dict[str, Any]) -> None:
+        """DELETE the single row `pk_values` addresses.
+
+        An empty filter is refused — it would be "delete every row" —
+        and exactly one row has to be affected, or the statement rolls
+        back: a key that matches two rows is a key that was wrong.
+        """
+        if not pk_values:
+            raise ConnectorError("Refusing to delete without a primary-key filter")
+        self._assert_known_columns(table, set(pk_values))
+        sql, params = self._delete_statement(table, pk_values)
+        self._run_mutation(sql, params, expect_rowcount=1)
+
+    def _insert_statement(
+        self, table: str, values: dict[str, Any]
+    ) -> tuple[str, tuple]:
+        marker = self.placeholder
+        columns = ", ".join(self.quote_ident(name) for name in values)
+        marks = ", ".join([marker] * len(values))
+        sql = (
+            f"INSERT INTO {self.quote_ident(table)} ({columns}) "
+            f"VALUES ({marks})"
+        )
+        return sql, tuple(values.values())
+
+    def _delete_statement(
+        self, table: str, pk_values: dict[str, Any]
+    ) -> tuple[str, tuple]:
+        marker = self.placeholder
+        where = " AND ".join(
+            f"{self.quote_ident(name)} = {marker}" for name in pk_values
+        )
+        sql = f"DELETE FROM {self.quote_ident(table)} WHERE {where}"
+        return sql, tuple(pk_values.values())
+
+    def _run_mutation(
+        self, sql: str, params: tuple, expect_rowcount: int | None = None
+    ) -> None:
+        """One standalone row statement (not part of a batch).
+
+        Adapters with a `_run` get its expect_rowcount handling, which
+        wraps the statement in its own transaction so a mismatch rolls
+        back before it is durable; anything else falls back to the
+        batch runner and checks the count itself.
+        """
+        run = getattr(self, "_run", None)
+        if run is not None:
+            run(sql, params, expect_rowcount=expect_rowcount)
+            return
+        rowcount = self._run_operation(sql, params)
+        if expect_rowcount is not None and rowcount != expect_rowcount:
+            raise ConnectorError(
+                f"Expected to modify {expect_rowcount} row(s), "
+                f"matched {rowcount}"
+            )
+
     def apply_changes(
         self, table: str, operations: list[RowOperation]
     ) -> None:
@@ -1630,6 +1713,7 @@ class Connector(ABC):
         used: set[str] = set()
         for op in operations:
             used |= set(op.pk_values)
+            used |= set(op.values or {})
             if op.column:
                 used.add(op.column)
         if not self.catalog_columns(table) and not self.catalog_columns(
@@ -1641,6 +1725,43 @@ class Connector(ABC):
     def _apply_operation(
         self, table: str, op: RowOperation, index: int
     ) -> None:
+        sql, params, expected = self._operation_statement(op, table, index)
+        try:
+            rowcount = self._run_operation(sql, params)
+        except ConnectorError as exc:
+            raise BatchError(
+                f"{describe_operation(op)}: {exc}", index
+            ) from exc
+        if expected is not None and rowcount != expected:
+            raise BatchError(
+                f"{describe_operation(op)}: expected to modify "
+                f"{expected} row, matched {rowcount}",
+                index,
+            )
+
+    def _operation_statement(
+        self, op: RowOperation, table: str, index: int
+    ) -> tuple[str, tuple, int | None]:
+        """One operation as (SQL, parameters, rows it must affect).
+
+        An insert's rowcount is not checked: a driver is free to report
+        it differently, and a failed INSERT raises rather than matching
+        nothing.
+        """
+        if op.kind == "insert":
+            if not op.values:
+                raise BatchError(
+                    "Refusing to insert a row with no values", index
+                )
+            sql, params = self._insert_statement(table, op.values)
+            return sql, params, None
+        if op.kind == "delete":
+            if not op.pk_values:
+                raise BatchError(
+                    "Refusing to delete without a primary-key filter", index
+                )
+            sql, params = self._delete_statement(table, op.pk_values)
+            return sql, params, 1
         if op.kind != "update":
             raise BatchError(f"Unsupported operation: {op.kind}", index)
         if not op.pk_values:
@@ -1655,20 +1776,7 @@ class Connector(ABC):
             f"UPDATE {self.quote_ident(table)} "
             f"SET {self.quote_ident(op.column)} = {marker} WHERE {where}"
         )
-        try:
-            rowcount = self._run_operation(
-                sql, (op.value, *op.pk_values.values())
-            )
-        except ConnectorError as exc:
-            raise BatchError(
-                f"{describe_operation(op)}: {exc}", index
-            ) from exc
-        if rowcount != 1:
-            raise BatchError(
-                f"{describe_operation(op)}: expected to modify 1 row, "
-                f"matched {rowcount}",
-                index,
-            )
+        return sql, (op.value, *op.pk_values.values()), 1
 
     def _run_operation(self, sql: str, params: tuple) -> int:
         """Run one statement of a batch and report its rowcount.

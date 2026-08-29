@@ -145,6 +145,17 @@ sqlide-backup due             # only what the schedule says is due
 sqlide-backup history         # what happened
 ```
 
+**One-off Backup…** is the same thing without the commitment: pick a
+connection, pick what to include, and say where it goes — a destination or
+a file. It works for **every** connection kind. Where a vendor tool can be
+driven it uses one; where none can — a JDBC bridge, or a server reached
+through sqlide's own SSH tunnel — it falls back to a portable snapshot read
+through the connection the app already holds open, and the dialog says
+which method it is using and why. A snapshot is a logical copy: structure
+and rows, no grants or storage settings. Restoring one into such a
+connection runs the script statement by statement over that same
+connection, stopping at the first error.
+
 **Restore…** goes the other way: pick a backup from a destination (or a
 file on disk), pick the connection to restore *into* — restoring
 production into a scratch database is a click, not a workaround — and

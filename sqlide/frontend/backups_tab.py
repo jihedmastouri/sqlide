@@ -33,6 +33,7 @@ from sqlide.backend.backups.jobs import (
     COMPRESSIONS,
     CONTENTS,
     KIND_CONFIG,
+    ONE_OFF_ID,
     KIND_DATABASE,
     BackupStore,
     Job,
@@ -42,6 +43,7 @@ from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import Connector
 from sqlide.backend.workspaces import Workspace
 from sqlide.frontend.backup_destinations import DestinationsWindow
+from sqlide.frontend.backup_oneoff import OneOffWindow
 from sqlide.frontend.backup_restore import RestoreWindow
 from sqlide.frontend.util import icon_button, run_async
 from sqlide.i18n import _
@@ -93,6 +95,12 @@ class BackupsTab(Gtk.Box):
         destinations = Gtk.Button(label=_("Destinations…"))
         destinations.connect("clicked", lambda *_: self._open_destinations())
         bar.append(destinations)
+        one_off = Gtk.Button(label=_("One-off Backup…"))
+        one_off.set_tooltip_text(
+            _("Back up a connection right now, without creating a job")
+        )
+        one_off.connect("clicked", lambda *_x: self._open_one_off())
+        bar.append(one_off)
         restore = Gtk.Button(label=_("Restore…"))
         restore.connect("clicked", lambda *_: self._open_restore(None))
         bar.append(restore)
@@ -122,6 +130,7 @@ class BackupsTab(Gtk.Box):
         self.append(paned)
 
         self._reload_list()
+        self._reload_one_offs()
 
     # Tab plumbing
 
@@ -135,14 +144,93 @@ class BackupsTab(Gtk.Box):
     # The job list
 
     def _empty_page(self) -> Gtk.Widget:
+        """What fills the pane when no job is selected.
+
+        Not a dead end: one-off backups belong to no job, so their
+        history lives here, where it is visible without having to pick
+        something unrelated first.
+        """
         status = Adw.StatusPage(
             icon_name="drive-harddisk-symbolic",
             title=_("No backup job selected"),
-            description="A job says what to dump, where to put it and how "
-            "often. Start with New Job — or Restore… to put an existing "
-            "backup back.",
+            description=_(
+                "A job says what to dump, where to put it and how often. "
+                "Start with New Job — or One-off Backup… for a copy taken "
+                "right now, from any connection."
+            ),
         )
-        return status
+        status.set_vexpand(False)
+        self._oneoff_group = Adw.PreferencesGroup(
+            title=_("Recent one-off backups"),
+            description=_(
+                "Backups taken by hand, from any connection kind."
+            ),
+        )
+        self._oneoff_rows: list[Gtk.Widget] = []
+        page = Adw.PreferencesPage()
+        page.add(self._oneoff_group)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(status)
+        box.append(page)
+        return Gtk.ScrolledWindow(child=box, vexpand=True)
+
+    def _reload_one_offs(self) -> None:
+        for row in self._oneoff_rows:
+            self._oneoff_group.remove(row)
+        self._oneoff_rows = []
+        runs = self._store.runs_for(ONE_OFF_ID)[:8]
+        if not runs:
+            row = Adw.ActionRow(
+                title=_("None yet"),
+                subtitle=_(
+                    "One-off Backup… takes one now and puts it wherever "
+                    "you say."
+                ),
+            )
+            self._oneoff_group.add(row)
+            self._oneoff_rows.append(row)
+            return
+        for run in runs:
+            row = Adw.ActionRow(
+                title=run.started.replace("T", " ")[:16],
+                subtitle=run.message,
+            )
+            row.add_prefix(
+                Gtk.Image(
+                    icon_name="emblem-ok-symbolic"
+                    if run.ok
+                    else "dialog-warning-symbolic"
+                )
+            )
+            self._oneoff_group.add(row)
+            self._oneoff_rows.append(row)
+
+    def _open_one_off(self) -> None:
+        """A backup with no job behind it. Works for every connection
+        kind: where no vendor tool can be driven (JDBC, an SSH-tunnelled
+        server) it reads through the connection sqlide already has."""
+        window = OneOffWindow(
+            self._store,
+            self.workspace,
+            self._ensure,
+            initial=self._current_profile(),
+            on_done=self._reload_one_offs,
+        )
+        window.set_transient_for(self.get_root())
+        window.present()
+
+    def _current_profile(self) -> ConnectionProfile | None:
+        """The connection the one-off dialog opens on: the one the
+        selected job backs up, else the workspace's first."""
+        if self._selected is not None:
+            for profile in self.workspace.connections:
+                if profile.name == self._selected.connection:
+                    return profile
+        return (
+            self.workspace.connections[0]
+            if self.workspace.connections
+            else None
+        )
 
     def _reload_list(self, select: Job | None = None) -> None:
         self._list.remove_all()
@@ -723,7 +811,7 @@ class _JobEditor(Adw.PreferencesPage):
 
         def loaded(objects) -> None:
             self._set_status("")
-            _TablePicker(
+            TablePicker(
                 [o.name for o in objects if o.kind == "table"],
                 self._objects,
                 self._tables_chosen,
@@ -749,7 +837,7 @@ def _wrap(widget: Gtk.Widget) -> Gtk.ListBoxRow:
     return row
 
 
-class _TablePicker(Adw.Window):
+class TablePicker(Adw.Window):
     """Which tables a job dumps. Empty means all of them — and that is
     the default, because a selection silently going stale as tables are
     added is how a backup quietly stops covering the database."""

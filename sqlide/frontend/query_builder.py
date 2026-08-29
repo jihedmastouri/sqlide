@@ -70,6 +70,7 @@ from gi.repository import Gtk
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import registry
 from sqlide.backend.db.base import (
+    CONJUNCTIONS,
     NO_VALUE_OPERATORS,
     ColumnInfo,
     Connector,
@@ -87,6 +88,7 @@ from sqlide.backend.db.query_model import (
     Column,
     Condition,
     Dialect,
+    FilterGroup,
     GENERIC,
     JOINS_WITHOUT_ON,
     JOIN_KINDS as MODEL_JOIN_KINDS,
@@ -100,11 +102,9 @@ from sqlide.backend.db.query_model import (
     aggregate_label,
     dialect_for,
     dump_state,
-    folded_group,
     load_state,
     render,
     render_display,
-    unfold_group,
 )
 from sqlide.backend.settings import result_row_cap
 from sqlide.backend.workspaces import TabState
@@ -114,6 +114,7 @@ from sqlide.frontend.data_grid import (
     ValueCallback,
     _FilterRow,
     _selected_string,
+    _select_value,
     _SortRow,
 )
 from sqlide.frontend.results_panel import ResultsPanel
@@ -129,6 +130,11 @@ DEFAULT_LIMIT = 500
 #: What an aggregate row offers instead of a column when the function
 #: takes none: COUNT(*).
 ALL_ROWS = "*"
+#: How deep the filter editor lets you *build*. `a AND (b OR c)` needs
+#: one nested level; two is room to say `a AND (b OR (c AND d))`
+#: without the panel turning into a staircase. A saved query deeper
+#: than this is still restored in full — see `_FilterGroupBox.restore`.
+MAX_FILTER_DEPTH = 2
 
 
 @dataclass(frozen=True)
@@ -824,7 +830,7 @@ class _FilterGroupBox(Gtk.Box):
 
     def __init__(
         self,
-        columns: Sequence[str],
+        columns: Callable[[], Sequence[str]],
         term: Callable[[str], dict],
         on_change: Callable[[], None],
         on_activate: Callable[[], None],
@@ -832,7 +838,12 @@ class _FilterGroupBox(Gtk.Box):
         depth: int = 0,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        self._columns = list(columns)
+        # What a new row may filter on, asked for at the moment it is
+        # added: the choices move under the editor as joins come and
+        # go and as aggregates are added, and a row built from a stale
+        # list would silently pick the wrong column.
+        self._offer = columns
+        self._columns: list[str] = []
         self._term = term
         self._on_change = on_change
         self._on_activate = on_activate
@@ -887,6 +898,7 @@ class _FilterGroupBox(Gtk.Box):
     # Editing
 
     def add_row(self, *, notify: bool = True) -> _FilterRow:
+        self._columns = list(self._offer())
         row = _FilterRow(
             list(self._columns),
             self._remove_item,
@@ -903,7 +915,7 @@ class _FilterGroupBox(Gtk.Box):
 
     def add_group(self, *, notify: bool = True) -> "_FilterGroupBox":
         group = _FilterGroupBox(
-            self._columns,
+            self._offer,
             self._term,
             self._on_change,
             self._on_activate,
@@ -1081,14 +1093,14 @@ class QueryBuilderTab(Gtk.Box):
         self._caps = Capabilities()
         self._sql_dialect: Dialect = GENERIC
         self._join_rows: list[_JoinRow] = []
-        self._filter_rows: list[_FilterRow] = []
         self._aggregate_rows: list[_AggregateRow] = []
         self._expression_rows: list[_ExpressionRow] = []
         self._group_rows: list[_GroupRow] = []
-        self._having_rows: list[_FilterRow] = []
         self._sort_rows: list[_SortRow] = []
         self._checked: set[str] = set()  # qualified "alias.column"
         self._column_checks: list[Gtk.CheckButton] = []
+        # One per source in the query, in join order (CORE-22).
+        self._column_groups: list[_ColumnGroup] = []
         self._loading = True
         # The alias each instance last went by, keyed by the join row it
         # belongs to (None for the base). Renaming an alias has to carry
@@ -1133,7 +1145,16 @@ class QueryBuilderTab(Gtk.Box):
     # UI construction
 
     def _build_controls(self) -> Gtk.Widget:
-        box = Gtk.Box(
+        """The editing half: a fixed header, a scrolling stack of
+        collapsible sections, and the SQL preview pinned under them.
+
+        The old layout stacked every control into one 420px scroller,
+        so a query with a few joins and a few filters pushed the SQL
+        preview — the thing being checked — out of view (RS-01). Here
+        only the sections scroll: the preview and the actions live
+        outside that scroller and cannot be pushed anywhere.
+        """
+        outer = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
             spacing=6,
             margin_top=6,
@@ -1163,31 +1184,56 @@ class QueryBuilderTab(Gtk.Box):
         self._limit.set_value(DEFAULT_LIMIT)
         self._limit.connect("value-changed", lambda *_: self._refresh_sql())
         top.append(self._limit)
-        box.append(top)
+        outer.append(top)
 
-        box.append(self._section_label("Joins"))
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+
+        # Joins
+        joins = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self._joins_box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL, spacing=6
         )
-        box.append(self._joins_box)
+        joins.append(self._joins_box)
         add_join = Gtk.Button(label=_("Add join"), halign=Gtk.Align.START)
         add_join.connect("clicked", lambda *_: self._add_join_row())
-        box.append(add_join)
+        joins.append(add_join)
+        self._joins_section = self._section(_("Joins"), joins)
+        box.append(self._joins_section)
 
-        box.append(self._section_label("Columns (none checked = all)"))
-        self._columns_flow = Gtk.FlowBox(
-            selection_mode=Gtk.SelectionMode.NONE,
-            max_children_per_line=6,
-            column_spacing=12,
-            row_spacing=2,
+        # Columns
+        columns = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self._column_search = Gtk.SearchEntry(
+            placeholder_text=_("Search columns")
         )
-        box.append(self._columns_flow)
+        describe(
+            self._column_search,
+            _("Show only the columns whose name contains this"),
+        )
+        self._column_search.connect(
+            "search-changed", lambda *_: self._filter_column_checks()
+        )
+        columns.append(self._column_search)
+        self._columns_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=8
+        )
+        columns.append(self._columns_box)
+        self._columns_empty = Gtk.Label(xalign=0)
+        self._columns_empty.add_css_class("dim-label")
+        self._columns_empty.set_visible(False)
+        columns.append(self._columns_empty)
+        self._columns_section = self._section(
+            _("Columns (none checked = all)"), columns
+        )
+        box.append(self._columns_section)
 
-        box.append(self._section_label("Summarise"))
+        # Summarise
+        summarise_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=6
+        )
         self._aggregates_box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL, spacing=6
         )
-        box.append(self._aggregates_box)
+        summarise_box.append(self._aggregates_box)
         summarise = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         add_aggregate = Gtk.Button(label=_("Add aggregate"))
         add_aggregate.connect("clicked", lambda *_: self._add_aggregate_row())
@@ -1201,20 +1247,22 @@ class QueryBuilderTab(Gtk.Box):
         )
         summarise.append(add_expression)
         summarise.set_halign(Gtk.Align.START)
-        box.append(summarise)
+        summarise_box.append(summarise)
+        box.append(self._section(_("Summarise"), summarise_box))
 
-        box.append(self._section_label("Filters"))
-        self._filters_box = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL, spacing=6
+        # Filters — the root AND/OR group, conditions and nested groups
+        # inside it.
+        self._filters = _FilterGroupBox(
+            lambda: self._display_columns(self._instances()),
+            self._where_term,
+            self._refresh_sql,
+            self.run_query,
         )
-        box.append(self._filters_box)
-        add_filter = Gtk.Button(
-            label=_("Add condition"), halign=Gtk.Align.START
-        )
-        add_filter.connect("clicked", lambda *_: self._add_filter_row())
-        box.append(add_filter)
+        self._filters_section = self._section(_("Filters"), self._filters)
+        box.append(self._filters_section)
 
-        box.append(self._section_label("Group by"))
+        # Group by
+        grouping = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self._auto_group = Gtk.CheckButton(
             label=_("Group by the selected plain columns"), active=True
         )
@@ -1225,43 +1273,73 @@ class QueryBuilderTab(Gtk.Box):
             )
         )
         self._auto_group.connect("toggled", lambda *_: self._sync_state())
-        box.append(self._auto_group)
+        grouping.append(self._auto_group)
         self._groups_box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL, spacing=6
         )
-        box.append(self._groups_box)
+        grouping.append(self._groups_box)
         add_group = Gtk.Button(
             label=_("Add grouping column"), halign=Gtk.Align.START
         )
         add_group.connect("clicked", lambda *_: self._add_group_row())
-        box.append(add_group)
+        grouping.append(add_group)
         self._group_note = Gtk.Label(xalign=0, wrap=True)
         self._group_note.add_css_class("dim-label")
-        box.append(self._group_note)
+        grouping.append(self._group_note)
+        box.append(self._section(_("Group by"), grouping))
 
-        box.append(self._section_label("Having"))
-        self._having_box = Gtk.Box(
-            orientation=Gtk.Orientation.VERTICAL, spacing=6
+        # Having — the same grouped editor, over the summary entries.
+        self._having = _FilterGroupBox(
+            self._aggregate_labels,
+            self._summary_term,
+            self._refresh_sql,
+            self.run_query,
         )
-        box.append(self._having_box)
-        add_having = Gtk.Button(
-            label=_("Add condition on an aggregate"), halign=Gtk.Align.START
-        )
-        add_having.connect("clicked", lambda *_: self._add_having_row())
-        box.append(add_having)
+        self._having_section = self._section(_("Having"), self._having)
+        box.append(self._having_section)
 
-        box.append(self._section_label("Sort"))
+        # Sort
+        sorting = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self._sorts_box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL, spacing=6
         )
-        box.append(self._sorts_box)
+        sorting.append(self._sorts_box)
         add_sort = Gtk.Button(
             label=_("Add sort column"), halign=Gtk.Align.START
         )
         add_sort.connect("clicked", lambda *_: self._add_sort_row())
-        box.append(add_sort)
+        sorting.append(add_sort)
+        self._sorts_section = self._section(_("Sort"), sorting)
+        box.append(self._sorts_section)
 
-        box.append(self._section_label("SQL"))
+        scroller = Gtk.ScrolledWindow(
+            hscrollbar_policy=Gtk.PolicyType.NEVER,
+            vexpand=True,
+        )
+        scroller.set_child(box)
+        outer.append(scroller)
+
+        outer.append(self._build_preview())
+        return outer
+
+    def _build_preview(self) -> Gtk.Widget:
+        """The SQL preview and the actions — pinned below the scrolling
+        sections, so no amount of joins or filters can push them off."""
+        pinned = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        header.append(self._section_label(_("SQL")))
+        header.append(Gtk.Box(hexpand=True))
+        copy = Gtk.Button(icon_name="edit-copy-symbolic")
+        copy.add_css_class("flat")
+        describe(copy, _("Copy the SQL to the clipboard"))
+        copy.connect("clicked", lambda *_: self._copy_sql())
+        header.append(copy)
+        pinned.append(header)
+
+        # Read-only, but a real selectable TextView: the point of the
+        # preview is that you can take the SQL away with you, by
+        # selection or by the Copy button (RS-01).
         self._sql_view = Gtk.TextView(
             editable=False,
             monospace=True,
@@ -1272,29 +1350,64 @@ class QueryBuilderTab(Gtk.Box):
             top_margin=6,
             bottom_margin=6,
         )
-        sql_frame = Gtk.Frame(child=self._sql_view)
-        box.append(sql_frame)
+        describe(self._sql_view, _("The generated SQL, read-only"))
+        sql_scroller = Gtk.ScrolledWindow(
+            hscrollbar_policy=Gtk.PolicyType.NEVER,
+            propagate_natural_height=True,
+        )
+        sql_scroller.set_min_content_height(72)
+        sql_scroller.set_max_content_height(180)
+        sql_scroller.set_child(self._sql_view)
+        pinned.append(Gtk.Frame(child=sql_scroller))
 
         actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         run = Gtk.Button(label=_("Run"))
         run.add_css_class("suggested-action")
         run.connect("clicked", lambda *_: self.run_query())
         actions.append(run)
-        console = Gtk.Button(label=_("Open in Console"))
-        console.set_tooltip_text(_("Edit this SQL in a new query console"))
+        console = Gtk.Button(label=_("Open in Console →"))
+        # The handoff is one-way: nothing parses SQL back into the
+        # builder, so say so rather than letting the user find out by
+        # editing in the console and coming back (RS-01).
+        console.set_tooltip_text(
+            _(
+                "Copy this SQL into a new query console. One way: "
+                "edits you make there do not come back to the builder."
+            )
+        )
         console.connect("clicked", self._open_in_console)
         actions.append(console)
         self._status = Gtk.Label(xalign=1, hexpand=True)
         self._status.add_css_class("dim-label")
         actions.append(self._status)
-        box.append(actions)
+        pinned.append(actions)
+        return pinned
 
-        scroller = Gtk.ScrolledWindow(
-            hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True
+    @staticmethod
+    def _section(title: str, child: Gtk.Widget, expanded: bool = True) -> Gtk.Widget:
+        """One named, collapsible section of the builder.
+
+        Collapsing is what buys the room: a query with five joins can
+        fold the sections it is done with and keep working on the ones
+        it is not."""
+        label = Gtk.Label(label=title, xalign=0)
+        label.add_css_class("heading")
+        expander = Gtk.Expander(label_widget=label, expanded=expanded)
+        expander.set_child(
+            Gtk.Box(
+                orientation=Gtk.Orientation.VERTICAL,
+                margin_start=6,
+                margin_top=4,
+                margin_bottom=4,
+            )
         )
-        scroller.set_max_content_height(420)
-        scroller.set_child(box)
-        return scroller
+        expander.get_child().append(child)
+        return expander
+
+    def _copy_sql(self) -> None:
+        display = self.get_display()
+        if display is not None:
+            display.get_clipboard().set(self.build_sql())
 
     def _build_results(self, paned: Gtk.Paned) -> Gtk.Widget:
         # Same collapsible panel as the query console, hidden until the
@@ -1562,53 +1675,27 @@ class QueryBuilderTab(Gtk.Box):
                 # grouping stands aside rather than adding to it.
                 self._auto_group.set_active(False)
                 self._add_group_row().set_column(display)
-            lines = unfold_group(model.where)
-            if lines is None and model.where is not None:
-                # A filter tree the flat panel cannot show (nothing
-                # builds one yet — CORE-22 will).
-                dropped += 1
-            for conjunction, condition in lines or []:
+            # The filter tree comes back as a tree, nesting and all —
+            # including one built by a version that only ever folded
+            # left, which is just a tree of a particular shape.
+
+            def where_label(condition: Condition) -> str | None:
                 name = self._restored_column(
                     condition.column, aliases, base_alias
                 )
                 display = self._display_name(name, instances)
-                if display is None or display not in names:
-                    dropped += 1
-                    continue
-                self._add_filter_row()
-                self._filter_rows[-1].set_condition(
-                    FilterCondition(
-                        column=display,
-                        op=condition.op,
-                        value=(
-                            ""
-                            if condition.value is None
-                            else str(condition.value)
-                        ),
-                        conjunction=conjunction,
-                    )
-                )
+                return display if display in names else None
+
+            if model.where is not None:
+                dropped += self._filters.restore(model.where, where_label)
             labels = self._aggregate_labels()
-            having = unfold_group(model.having)
-            if having is None and model.having is not None:
-                dropped += 1
-            for conjunction, condition in having or []:
+
+            def having_label(condition: Condition) -> str | None:
                 label = self._label_for(condition, aliases, base_alias)
-                if label is None or label not in labels:
-                    dropped += 1
-                    continue
-                self._add_having_row().set_condition(
-                    FilterCondition(
-                        column=label,
-                        op=condition.op,
-                        value=(
-                            ""
-                            if condition.value is None
-                            else str(condition.value)
-                        ),
-                        conjunction=conjunction,
-                    )
-                )
+                return label if label in labels else None
+
+            if model.having is not None:
+                dropped += self._having.restore(model.having, having_label)
             choices = [*names, *labels]
             for order in model.order_by:
                 if order.alias or order.function or order.expression:
@@ -1828,18 +1915,10 @@ class QueryBuilderTab(Gtk.Box):
             self._checked = {
                 self._renamed(name, renames) for name in self._checked
             }
-        for row in self._filter_rows:
-            condition = row.condition()
-            row.set_columns(names)
-            if renames:
-                row.set_condition(
-                    FilterCondition(
-                        column=self._renamed(condition.column, renames),
-                        op=condition.op,
-                        value=condition.value,
-                        conjunction=condition.conjunction,
-                    )
-                )
+        self._filters.set_columns(
+            names,
+            (lambda n: self._renamed(n, renames)) if renames else None,
+        )
         sort_names = [*names, *self._aggregate_labels()]
         for row in self._sort_rows:
             spec = row.spec()
@@ -1855,9 +1934,7 @@ class QueryBuilderTab(Gtk.Box):
             aggregate.set_columns(names)
         for group in self._group_rows:
             group.set_columns(names)
-        labels = self._aggregate_labels()
-        for having in self._having_rows:
-            having.set_columns(labels)
+        self._having.set_columns(self._aggregate_labels())
         self._rebuild_column_checks(instances)
         self._refresh_sql()
 
@@ -1924,23 +2001,66 @@ class QueryBuilderTab(Gtk.Box):
         ]
 
     def _rebuild_column_checks(self, instances: list[_Instance]) -> None:
-        while (child := self._columns_flow.get_first_child()) is not None:
-            self._columns_flow.remove(child)
+        """The checklist, one group per source.
+
+        A flat FlowBox of every column of every joined table cannot be
+        worked with on a wide schema (RS-01): the columns are grouped
+        under the alias they belong to, each group toggles as a whole,
+        and the search entry narrows all of them at once. Ticking is
+        still by qualified name, so nothing else in the tab changes.
+        """
+        while (child := self._columns_box.get_first_child()) is not None:
+            self._columns_box.remove(child)
         self._column_checks = []
+        self._column_groups = []
         qualified_names = self._qualified_columns(instances)
         self._checked &= set(qualified_names)
-        for qualified in qualified_names:
-            label = (
-                qualified
-                if len(instances) > 1
-                else qualified.rpartition(".")[2]
-            )
-            check = Gtk.CheckButton(label=label)
-            check.qualified = qualified
-            check.set_active(qualified in self._checked)
-            check.connect("toggled", self._column_toggled)
-            self._column_checks.append(check)
-            self._columns_flow.append(check)
+        for instance in instances:
+            group = _ColumnGroup(instance.alias, self._set_group_checked)
+            for info in self._columns.get(instance.key, []):
+                qualified = f"{instance.alias}.{info.name}"
+                if qualified not in qualified_names:
+                    continue
+                check = Gtk.CheckButton(
+                    label=(
+                        qualified if len(instances) > 1 else info.name
+                    )
+                )
+                check.qualified = qualified
+                check.set_active(qualified in self._checked)
+                check.connect("toggled", self._column_toggled)
+                self._column_checks.append(check)
+                group.add(check)
+            if not group.checks:
+                continue
+            self._column_groups.append(group)
+            self._columns_box.append(group)
+        self._filter_column_checks()
+
+    def _filter_column_checks(self) -> None:
+        """Apply the search entry to every group, and say so when it
+        matches nothing at all rather than showing a blank section."""
+        needle = self._column_search.get_text().strip().lower()
+        matched = False
+        for group in self._column_groups:
+            matched |= group.filter_to(needle)
+        self._columns_empty.set_text(
+            _("No column matches “%s”.") % needle if needle else ""
+        )
+        self._columns_empty.set_visible(bool(needle) and not matched)
+
+    def _set_group_checked(self, group: _ColumnGroup, active: bool) -> None:
+        """Select-all / select-none for one source.
+
+        Only the columns the search currently shows are touched: with
+        a search in place, "All" means the ones you are looking at,
+        not the ones you cannot see.
+        """
+        for check in group.checks:
+            parent = check.get_parent()
+            if not (parent or check).get_visible():
+                continue
+            check.set_active(active)
 
     def _column_toggled(self, check: Gtk.CheckButton) -> None:
         if check.get_active():
@@ -1969,25 +2089,21 @@ class QueryBuilderTab(Gtk.Box):
         self._joins_box.remove(row)
         self._sync_state()
 
-    def _add_filter_row(self) -> None:
-        row = _FilterRow(
-            self._display_columns(self._instances()),
-            self._remove_filter_row,
-            self.run_query,
-            on_change=self._refresh_sql,
-        )
-        self._filter_rows.append(row)
-        self._filters_box.append(row)
-        for index, line in enumerate(self._filter_rows):
-            line.set_first(index == 0)
-        self._refresh_sql()
+    @property
+    def _filter_rows(self) -> list[_FilterRow]:
+        """Every WHERE condition, nested groups included, in reading
+        order. The rows live in the group tree now (CORE-22); this is
+        what still lets the rest of the tab talk about them flatly."""
+        return self._filters.rows()
 
-    def _remove_filter_row(self, row: _FilterRow) -> None:
-        self._filter_rows.remove(row)
-        self._filters_box.remove(row)
-        for index, line in enumerate(self._filter_rows):
-            line.set_first(index == 0)
-        self._refresh_sql()
+    @property
+    def _having_rows(self) -> list[_FilterRow]:
+        return self._having.rows()
+
+    def _add_filter_row(self) -> _FilterRow:
+        """A condition in the root group — what the old flat panel's
+        Add condition did, and what it still does."""
+        return self._filters.add_row()
 
     def _add_sort_row(self) -> None:
         row = _SortRow(
@@ -2075,25 +2191,16 @@ class QueryBuilderTab(Gtk.Box):
         self._refresh_sql()
 
     def _add_having_row(self) -> _FilterRow:
-        row = _FilterRow(
-            self._aggregate_labels(),
-            self._remove_having_row,
-            self.run_query,
-            on_change=self._refresh_sql,
-        )
-        self._having_rows.append(row)
-        self._having_box.append(row)
-        for index, line in enumerate(self._having_rows):
-            line.set_first(index == 0)
-        self._refresh_sql()
-        return row
+        return self._having.add_row()
 
-    def _remove_having_row(self, row: _FilterRow) -> None:
-        self._having_rows.remove(row)
-        self._having_box.remove(row)
-        for index, line in enumerate(self._having_rows):
-            line.set_first(index == 0)
-        self._refresh_sql()
+    def _where_term(self, name: str) -> dict:
+        """What a WHERE condition on `name` means to the model: the
+        plain column, or nothing at all once the query stops offering
+        it. The HAVING editor is the same widget over
+        `_summary_term`."""
+        if name not in self._display_columns(self._instances()):
+            return {}
+        return {"column": self._column_ref(name)}
 
     # Aggregates as the rest of the tab sees them
 
@@ -2277,57 +2384,16 @@ class QueryBuilderTab(Gtk.Box):
             projections.append(
                 Projection(expression=row.expression(), alias=row.alias())
             )
-        lines = []
-        for row in self._filter_rows:
-            cond = row.condition()
-            if not cond.column:
-                continue
-            lines.append(
-                (
-                    cond.conjunction,
-                    Condition(
-                        column=self._column_ref(cond.column),
-                        op=cond.op,
-                        value=(
-                            None
-                            if cond.op in NO_VALUE_OPERATORS
-                            else cond.value
-                        ),
-                    ),
-                )
-            )
-        having_lines = []
-        for row in self._having_rows:
-            cond = row.condition()
-            term = self._summary_term(cond.column) if cond.column else {}
-            if not term:
-                # A condition on an aggregate that is no longer in the
-                # select list is not part of the query.
-                continue
-            having_lines.append(
-                (
-                    cond.conjunction,
-                    Condition(
-                        op=cond.op,
-                        value=(
-                            None
-                            if cond.op in NO_VALUE_OPERATORS
-                            else cond.value
-                        ),
-                        **term,
-                    ),
-                )
-            )
         return QueryModel(
             source=refs[instances[0].alias],
             joins=tuple(joins),
             projections=tuple(projections),
             distinct=self._distinct.get_active(),
-            where=folded_group(lines),
+            where=self._filters.model(),
             group_by=tuple(
                 self._column_ref(name) for name in self._grouping_columns()
             ),
-            having=folded_group(having_lines),
+            having=self._having.model(),
             order_by=tuple(self._orderings()),
             limit=int(self._limit.get_value()),
         )

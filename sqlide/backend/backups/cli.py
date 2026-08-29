@@ -23,7 +23,7 @@ import argparse
 import sys
 
 from sqlide.backend.backups import schedule
-from sqlide.backend.backups.jobs import BackupStore, Job
+from sqlide.backend.backups.jobs import ONE_OFF_ID, BackupStore, Job
 from sqlide.backend.backups.runner import run_job
 
 
@@ -106,8 +106,11 @@ def main(argv: list[str] | None = None) -> int:
     runs = store.runs_for(job.id) if job else list(reversed(store.runs))
     for run in runs[:20]:
         mark = "ok  " if run.ok else "FAIL"
-        name = store.job(run.job_id)
-        print(f"{mark} {run.started}  {name.name if name else run.job_id}  {run.message}")
+        job = store.job(run.job_id)
+        label = job.name if job else (
+            "one-off" if run.job_id == ONE_OFF_ID else run.job_id
+        )
+        print(f"{mark} {run.started}  {label}  {run.message}")
     return 0
 
 

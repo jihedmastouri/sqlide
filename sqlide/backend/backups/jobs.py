@@ -48,6 +48,11 @@ DESTINATION_KINDS = (LOCAL, S3, SFTP, FTP)
 
 MAX_RUNS = 200
 
+# Run.job_id for a one-off backup: a backup taken now, from a dialog,
+# with no stored job behind it. They share a bucket in the history so
+# "what did I back up, and where did it go" has one answer.
+ONE_OFF_ID = "__oneoff__"
+
 
 def _new_id() -> str:
     return uuid.uuid4().hex[:12]

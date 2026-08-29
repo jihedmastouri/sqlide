@@ -28,7 +28,7 @@ from typing import Callable
 from gi.repository import Adw, GLib, Gtk
 
 from sqlide.backend.backups import restore as restoring
-from sqlide.backend.backups import targets
+from sqlide.backend.backups import snapshot, targets
 from sqlide.backend.backups.jobs import BackupStore, Job
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import Connector
@@ -226,14 +226,22 @@ class RestoreWindow(Adw.Window):
             self._warning.set_text(_("This workspace has no connections."))
             self._restore_button.set_sensitive(False)
             return
-        reason = restoring.unsupported_reason(profile)
-        self._restore_button.set_sensitive(not reason)
-        self._warning.set_text(
-            reason
-            or restoring.describe_target(
-                profile, self._database.get_text().strip()
-            )
+        # A connection with no vendor client to pipe into — JDBC, or one
+        # behind sqlide's own SSH tunnel — is restored by running the
+        # script's statements over the connector instead. That is the
+        # same path the portable snapshot writes for, so the two halves
+        # of the feature cover the same connections.
+        self._over_connector = bool(restoring.unsupported_reason(profile))
+        self._restore_button.set_sensitive(True)
+        warning = restoring.describe_target(
+            profile, self._database.get_text().strip()
         )
+        if self._over_connector:
+            warning += _(
+                " The script runs statement by statement over sqlide's own "
+                "connection, stopping at the first error."
+            )
+        self._warning.set_text(warning)
 
     # Running
 
@@ -276,17 +284,23 @@ class RestoreWindow(Adw.Window):
         self._restore_button.set_sensitive(False)
         self._say("Restoring…")
 
+        over_connector = self._over_connector
+
+        def apply(path: Path) -> str:
+            if not over_connector:
+                return restoring.run_restore(profile, path, database=database)
+            count = snapshot.apply_script(
+                self._ensure(profile), path, profile.kind
+            )
+            return _("{count} statement(s) run.").format(count=count)
+
         def work() -> str:
             if local is not None:
-                return restoring.run_restore(
-                    profile, local, database=database
-                )
+                return apply(local)
             with tempfile.TemporaryDirectory(prefix="sqlide-restore-") as tmp:
                 path = Path(tmp) / artifact.name
                 targets.open_target(destination).download(artifact.name, path)
-                return restoring.run_restore(
-                    profile, path, database=database
-                )
+                return apply(path)
 
         def done(output: str) -> None:
             self._restore_button.set_sensitive(True)

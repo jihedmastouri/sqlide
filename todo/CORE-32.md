@@ -1,6 +1,6 @@
 ## CORE-32 — Chart view in the result tab, beside Data and Properties
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-30, CORE-31
 - **From:** RS-03 (see `docs/charting-research.md`)
 
@@ -42,16 +42,16 @@ inferred chart immediately and letting the mapping be changed by hand.
 
 ### Acceptance criteria
 
-- [ ] A Chart tab appears in the view switcher for table tabs, console
+- [x] A Chart tab appears in the view switcher for table tabs, console
       results and builder results.
-- [ ] Opening it on a `GROUP BY` result draws a sensible chart with no
+- [x] Opening it on a `GROUP BY` result draws a sensible chart with no
       configuration.
-- [ ] Every mapping control changes the drawing, and a mapping that
+- [x] Every mapping control changes the drawing, and a mapping that
       cannot be drawn explains why instead of blanking.
-- [ ] Clicking a mark selects its rows in the grid; selecting a row
+- [x] Clicking a mark selects its rows in the grid; selecting a row
       highlights its mark.
-- [ ] A partially loaded result says so; **Load all for chart** honours
+- [x] A partially loaded result says so; **Load all for chart** honours
       the cap and refuses past it with actionable text.
-- [ ] Switching Data → Chart → Data preserves grid scroll position,
+- [x] Switching Data → Chart → Data preserves grid scroll position,
       filters and unsaved edits, as it does for Properties today.
-- [ ] No engine-specific code in the view.
+- [x] No engine-specific code in the view.

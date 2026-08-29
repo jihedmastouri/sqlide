@@ -3,7 +3,8 @@
 A workspace groups 0..n connection profiles and remembers the tabs
 that were open in it (table tabs, query consoles including the
 console SQL text, query builders including the whole built
-query, and table designers including the whole designed table), so
+query, table designers including the whole designed table, and the
+chart a query tab was being read as), so
 reopening a workspace restores it as it was left. It also keeps a
 capped history of executed queries (successes and failures).
 
@@ -42,7 +43,7 @@ MAX_HISTORY = 200
 
 @dataclass
 class TabState:
-    kind: str  # "table" | "query" | "cli" | "definition" | "function" | "relations" | "querybuilder" | "designer" | "indexes" | "users" | "monitor" | "pragmas" | "object"
+    kind: str  # "table" | "query" | "cli" | "definition" | "function" | "relations" | "querybuilder" | "designer" | "indexes" | "users" | "monitor" | "pragmas" | "object" | "dashboard"
     connection: str  # ConnectionProfile.name within the workspace
     table: str = ""  # table/definition/function tabs: object name; querybuilder: base table
     sql: str = ""  # query tabs only
@@ -62,6 +63,21 @@ class TabState:
     designer: str = ""
     designer_schema: str = ""
     designer_database: str = ""
+    # Query tabs: the chart configured over the tab's result, as the
+    # versioned JSON of a backend/charts.ChartSpec (charts.dump_state).
+    # Session churn, so it lives here beside `sql` rather than in the
+    # TOML config, and it names columns rather than row indexes, so a
+    # re-run redraws it (CORE-33). A spec from an unknown version, or
+    # one naming a column the new result lacks, is dropped with a
+    # notice rather than raised on.
+    chart: str = ""
+    # Dashboard tabs (CORE-35): the id of the dashboard this tab is
+    # open on. The dashboard itself — its name, layout and the saved
+    # queries it names — is configuration and lives in its own TOML
+    # file under <config>/dashboards/ (backend/dashboards.py); the tab
+    # is only a reference to it, and `connection` is left empty because
+    # the dashboard file carries its own.
+    dashboard: str = ""
     # Object info tabs: which node of the tree the tab was opened on.
     # `table` carries the object's own name, so these three are the
     # rest of its identity (see frontend/object_info.py).

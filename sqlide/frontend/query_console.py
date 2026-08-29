@@ -70,6 +70,7 @@ from typing import Callable
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
+from sqlide.backend import charts
 from sqlide.backend import placeholders as sql_placeholders
 from sqlide.backend import sql_risk
 from sqlide.backend.connections import ConnectionProfile
@@ -113,9 +114,28 @@ class QueryConsole(Gtk.Box):
         on_value: ValueCallback | None = None,
         transaction_active: Callable[[str], bool] | None = None,
         placeholders: dict[str, str] | None = None,
+        chart: str = "",
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._find_connection = find_connection
+        # The chart this console is read as (CORE-33): restored from
+        # the workspace tab or from a saved query, applied to every
+        # result it draws, and handed back to the workspace by
+        # tab_state(). A spec from an unknown model version comes back
+        # as None from load_state and is reported in the chart's notice
+        # bar on the next result, never raised.
+        self._chart_spec = charts.load_state(chart) if chart else None
+        self._chart_notice = (
+            _("The saved chart could not be restored.")
+            if chart and self._chart_spec is None
+            else ""
+        )
+        # A restored chart shows its view when the query is first run;
+        # later runs leave the user where they are.
+        self._chart_pending = self._chart_spec is not None or bool(
+            self._chart_notice
+        )
+        self._chart_panes: list = []
         self._ensure = ensure_connector
         # Hover-DDL caches (reset on connection/database change, which
         # can already fire while the widgets below are being built).
@@ -423,7 +443,25 @@ class QueryConsole(Gtk.Box):
             kind="query",
             connection=self.selected_connection(),
             sql=self._editor.get_text(),
+            chart=self.chart_state(),
         )
+
+    def chart_state(self) -> str:
+        """The console's chart as versioned JSON, or "" when there is
+        none — what the workspace stores and what "save this query with
+        its chart" saves. The mapping on screen wins over the one this
+        console was restored with."""
+        spec = self.chart_spec()
+        return charts.dump_state(spec) if spec is not None else ""
+
+    def chart_spec(self):
+        """The spec the last result is drawn with, falling back to the
+        restored one while nothing has been run yet."""
+        for pane in reversed(self._chart_panes):
+            spec = pane.chart.spec
+            if spec is not None:
+                return spec
+        return self._chart_spec
 
     def selected_database(self) -> str:
         """The database this console runs against — a server connection
@@ -1136,6 +1174,28 @@ class QueryConsole(Gtk.Box):
             return
         ExportDialog.for_grid(grid).present(self)
 
+    def apply_chart(self, pane) -> None:
+        """Put this console's chart on a freshly built result pane
+        (CORE-33).
+
+        Restore is by column name, so a re-run of the same query
+        redraws the same chart from the new rows. A spec naming a
+        column this result no longer has is dropped down to what fits
+        and explained in the notice bar by `ChartView.set_spec` —
+        never an error dialog."""
+        self._chart_panes.append(pane)
+        if self._chart_spec is not None:
+            pane.chart.set_spec(self._chart_spec)
+        if self._chart_notice:
+            pane.chart.report(self._chart_notice)
+        if self._chart_pending:
+            # Consumed by the first result of the first run: later runs
+            # leave the view where the user put it, and the notice is
+            # about the restore, not about every redraw.
+            self._chart_pending = False
+            self._chart_notice = ""
+            pane.show_chart()
+
     def _append_result_page(self, child: Gtk.Widget, title: str) -> None:
         label = Gtk.Label(label=title)
         label.set_max_width_chars(24)
@@ -1150,6 +1210,10 @@ class QueryConsole(Gtk.Box):
         self._results_area.reveal()
         while self._results.get_n_pages():
             self._results.remove_page(-1)
+        # The panes are gone with their pages; the spec they were
+        # showing is kept, so the next run redraws the same chart.
+        self._chart_spec = self.chart_spec()
+        self._chart_panes = []
 
         # Status tab first, then one result tab per statement — the
         # panel always has at least two tabs after a run.
@@ -1169,12 +1233,13 @@ class QueryConsole(Gtk.Box):
                     f"{_format_elapsed(elapsed)} and matched nothing.",
                 )
                 grid.set_result(result.columns, result.rows)
-                # An explain plan is a tree, a table and JSON;
-                # a result is just a table.
+                # An explain plan is a tree, a table and JSON; every
+                # other result is a table and — since CORE-32 — a
+                # chart over the same rows.
                 page: Gtk.Widget = (
                     _explain_views(grid, result)
                     if explain or _is_explain(sql)
-                    else grid
+                    else _chart_views(grid, result, self)
                 )
                 counts.append(
                     _("first %s") % row_count(len(result))
@@ -1342,6 +1407,23 @@ def _find_grid(widget: Gtk.Widget | None) -> ResultGrid | None:
             return found
         child = child.get_next_sibling()
     return None
+
+
+def _chart_views(
+    grid: ResultGrid, result: ResultSet, console: "QueryConsole | None" = None
+) -> Gtk.Widget:
+    """A result tab: Data | Chart over the same loaded rows (CORE-32).
+
+    The chart is offered on every result, inferred and drawn the moment
+    it is shown — a result with nothing numeric in it says so in its
+    notice bar rather than hiding the toggle."""
+    from sqlide.frontend.chart_view import ChartPane
+
+    pane = ChartPane(grid)
+    pane.set_result(result.columns, result.rows, more=result.truncated)
+    if console is not None:
+        console.apply_chart(pane)
+    return pane
 
 
 def _explain_views(grid: ResultGrid, result: ResultSet) -> Gtk.Widget:

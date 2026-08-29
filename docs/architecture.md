@@ -194,6 +194,42 @@ information from `java.sql.DatabaseMetaData` instead of dialect SQL.
 Pagination is emulated client-side. Experimental; requires a JVM and the
 driver jar path in the profile.
 
+## Charts
+
+A result is a grid and, since CORE-32, a chart over the same loaded
+rows. The split follows the one the query builder and the table
+designer use: `backend/charts.py` holds a serialisable `ChartSpec`,
+classifies the result's columns, infers the default mapping and turns
+rows into series — no GTK, no driver, no per-engine branch.
+`frontend/chart_canvas.py` renders a spec plus its series to any cairo
+context (the monitoring sparkline draws through it too), and
+`frontend/chart_view.py` is the widget: a mapping bar over the canvas,
+a notice bar that says what is drawn and what was dropped, and the
+two-way selection contract the map established. The chart draws the
+rows the grid holds; **Load all for chart** fetches the rest up to
+`chart_max_rows` and otherwise says to aggregate in SQL.
+
+Because drawing is a pure function of (spec, data, context, size), the
+picture leaves the app through the same call: `chart_image.py` renders
+the on-screen spec to a `cairo.ImageSurface` or `SVGSurface` — PNG at a
+scale factor, SVG as vectors — and `chart_export_dialog.py` asks for
+the format, the size and the theme (light by default, because a dark
+PNG pasted into a white document is the usual complaint) and copies the
+same render onto the clipboard as a `Gdk.Texture`. The file is written
+through a `.part` and renamed, so a failed export leaves nothing
+behind.
+
+A dashboard (CORE-35) is the same pieces arranged: `backend/dashboards.py`
+holds the definition — a connection, a grid width, an optional refresh
+interval and cells that name saved queries — in one TOML file per
+dashboard under `dashboards/`, so it is hand-editable and diffable, and
+`frontend/dashboard_tab.py` lays the cells out, runs their queries
+sequentially on the dashboard's own connection off the UI thread, and
+draws each cell through `chart_canvas` as its result arrives. A cell is
+never blank: a failed query, a deleted saved query or a chart that no
+longer fits its columns is a sentence in the cell, and the rest of the
+sweep carries on.
+
 ## The geo viewer
 
 A `geometry`/`geography` column is hex in a grid and a map everywhere
@@ -275,6 +311,7 @@ sqlide/
 │   ├── settings.py        # global settings store (settings.toml)
 │   ├── saved.py           # saved snippets/queries
 │   ├── notes.py           # free-form notes (notes.toml)
+│   ├── dashboards.py      # dashboards: cells, layout, dashboards/*.toml
 │   ├── secrets.py         # connection passwords: system keyring or plain text
 │   ├── tiles.py           # map tiles: projection, disk cache, offline policy
 │   ├── backup.py          # zip/restore of the config directory itself
@@ -320,8 +357,13 @@ sqlide/
     ├── notes_panel.py       # side panel Notes page + Markdown editor
     ├── extension_dialog.py  # install/update/drop an extension, confirmed
     ├── side_panel.py        # right panel: Properties, Info, Notes, History…
-    ├── data_grid.py         # ResultGrid + TableTab (Data | Map)
+    ├── data_grid.py         # ResultGrid + TableTab (Data | Chart | Map)
     ├── map_view.py          # geometries drawn on OpenStreetMap tiles
+    ├── chart_canvas.py      # the cairo renderer: axes, marks, hit-testing
+    ├── chart_view.py        # Chart view over a result, and its mapping bar
+    ├── chart_image.py       # the chart as PNG/SVG bytes, and as a file
+    ├── chart_export_dialog.py  # Export Chart: format, size, theme, copy
+    ├── dashboard_tab.py     # a grid of saved charts, refreshed together
     ├── query_console.py
     ├── sql_editor.py        # GtkSourceView 5 with TextView fallback
     └── completion.py        # completion popup + keyword provider

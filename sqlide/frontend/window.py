@@ -97,6 +97,7 @@ from sqlide.backend.db import metrics, objects, registry
 from sqlide.backend.db.base import Connector, ConnectorError, FilterCondition
 from sqlide.backend.db.relations import RelationTarget
 from sqlide.backend.db.metadata import NodeRef
+from sqlide.backend import dashboards
 from sqlide.backend import settings as settings_backend
 from sqlide.backend.workspaces import HistoryEntry, Workspace
 from sqlide.frontend.cli_console import CliConsole
@@ -127,6 +128,7 @@ from sqlide.frontend.status_bar import StatusBar
 from sqlide.frontend.table_designer import TableDesignerTab
 from sqlide.frontend.data_search import DataSearchTab
 from sqlide.frontend.monitor_tab import MonitorTab
+from sqlide.frontend.dashboard_tab import DashboardTab, present_dashboards
 from sqlide.frontend.pragmas_tab import PragmasTab
 from sqlide.frontend.users_tab import UsersTab
 from sqlide.frontend import transfer
@@ -527,6 +529,7 @@ class MainWindow(Adw.ApplicationWindow):
         tabs.append(_("Query Console"), "win.new-query")
         tabs.append(_("CLI Client"), "win.new-cli")
         tabs.append(_("Query Builder"), "win.new-builder")
+        tabs.append(_("Dashboard…"), "win.dashboards")
         new_menu.append_section(None, tabs)
         servers = Gio.Menu()
         servers.append(_("MCP Server"), "win.new-mcp")
@@ -575,10 +578,11 @@ class MainWindow(Adw.ApplicationWindow):
             on_activate=self._history_activated,
             on_clear=self._clear_history,
             on_insert_snippet=self._insert_snippet,
-            on_open_query=lambda sql: self.new_query(
-                self._default_query_profile(), sql=sql
+            on_open_query=lambda item: self.new_query(
+                self._default_query_profile(), sql=item.sql, chart=item.chart
             ),
             get_console_sql=self._current_console_sql,
+            get_console_chart=self._current_console_chart,
             on_error=self.show_error,
             on_apply_filter=self._apply_saved_filter,
             on_save_filter=self._save_current_filter,
@@ -672,6 +676,7 @@ class MainWindow(Adw.ApplicationWindow):
             ("new-cli", self._new_cli_console),
             ("new-builder", self._new_query_builder),
             ("new-mcp", lambda *_: self.open_mcp_server()),
+            ("dashboards", lambda *_: self.present_dashboards()),
             ("refresh-schema", lambda *_: self._sidebar.reload_all()),
             ("split-view", self._toggle_split),
             ("export-workspace", self._export_workspace),
@@ -1525,6 +1530,13 @@ class MainWindow(Adw.ApplicationWindow):
         child = page.get_child() if page is not None else None
         return child.current_sql() if isinstance(child, QueryConsole) else ""
 
+    def _current_console_chart(self) -> str:
+        """The chart the active console is showing, as versioned JSON —
+        what "save this query with its chart" saves (CORE-33)."""
+        page = self._active_pane.view.get_selected_page()
+        child = page.get_child() if page is not None else None
+        return child.chart_state() if isinstance(child, QueryConsole) else ""
+
     def _active_table_tab(self) -> TableTab | None:
         page = self._active_pane.view.get_selected_page()
         child = page.get_child() if page is not None else None
@@ -1620,6 +1632,10 @@ class MainWindow(Adw.ApplicationWindow):
         if isinstance(child, MonitorTab):
             # Polling stops with the view: no timer, and no monitoring
             # connection, outlives the tab that opened it.
+            child.shutdown()
+        if isinstance(child, DashboardTab):
+            # Same rule as the monitoring dashboard: the refresh timer
+            # and the connection die with the tab (CORE-35).
             child.shutdown()
         if isinstance(child, McpServerTab) and child.running:
             self._confirm_mcp_close(view, page, child)
@@ -1941,6 +1957,13 @@ class MainWindow(Adw.ApplicationWindow):
                 elif tab.kind == "monitor":
                     if profile is not None:
                         self.open_monitor(profile)
+                elif tab.kind == "dashboard":
+                    # The tab is only a reference; the dashboard itself
+                    # is its TOML file (CORE-35). One that has been
+                    # deleted on disk simply does not reopen.
+                    board = dashboards.store.get(tab.dashboard)
+                    if board is not None:
+                        self.open_dashboard(board)
                 elif tab.kind == "pragmas":
                     if profile is not None:
                         self.open_pragmas(profile)
@@ -1981,8 +2004,9 @@ class MainWindow(Adw.ApplicationWindow):
                             profile, tab.table, builder=tab.builder
                         )
                 elif tab.kind == "query":
-                    # Restore the console even if its connection is gone.
-                    self.new_query(profile, sql=tab.sql)
+                    # Restore the console even if its connection is gone,
+                    # with the chart it was being read as (CORE-33).
+                    self.new_query(profile, sql=tab.sql, chart=tab.chart)
                 elif tab.kind == "cli":
                     # Restore the CLI session even if its connection is gone.
                     self.open_cli(profile)
@@ -3257,6 +3281,39 @@ class MainWindow(Adw.ApplicationWindow):
             f"Sessions, throughput and storage on {profile.name}",
         )
 
+    def present_dashboards(self) -> None:
+        """The Dashboards dialog: open one, create one, delete one
+        (CORE-35). Dashboards are global configuration, so this is the
+        list — they are not nodes in the connections tree."""
+        present_dashboards(
+            self,
+            self.workspace.connections,
+            self.open_dashboard,
+            self.show_error,
+        )
+
+    def open_dashboard(self, dashboard: dashboards.Dashboard) -> None:
+        """A dashboard's tab (CORE-35). One per dashboard: a second copy
+        would be a second connection asking the same questions."""
+        key = ("dashboard", dashboard.id)
+        if self._focus_tab(key):
+            return
+        profile = self.workspace.find_connection(dashboard.connection)
+        tab = DashboardTab(
+            dashboard,
+            profile,
+            self.show_error,
+            lambda target, sql, chart: self.new_query(
+                target, sql=sql, chart=chart
+            ),
+        )
+        self._append_tab(
+            tab,
+            key,
+            f"{dashboard.name} ▸ dashboard",
+            f"Saved charts on {dashboard.connection}",
+        )
+
     def open_data_search(self, profile: ConnectionProfile) -> None:
         """Find a value across this connection's tables (CORE-45).
 
@@ -3308,7 +3365,10 @@ class MainWindow(Adw.ApplicationWindow):
         )
 
     def new_query(
-        self, profile: ConnectionProfile | None = None, sql: str = ""
+        self,
+        profile: ConnectionProfile | None = None,
+        sql: str = "",
+        chart: str = "",
     ) -> Adw.TabPage:
         console = QueryConsole(
             self._connection_names,
@@ -3320,6 +3380,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_value=self.show_cell_value,
             transaction_active=self.transaction_active,
             placeholders=self.workspace.placeholders,
+            chart=chart,
         )
         view = self._active_pane.view
         page = view.append(console)

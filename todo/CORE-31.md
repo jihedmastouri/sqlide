@@ -1,6 +1,6 @@
 ## CORE-31 — Cairo chart canvas, shared with the monitoring sparkline
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-30
 - **From:** RS-03 (see `docs/charting-research.md`)
 
@@ -42,16 +42,16 @@ monitoring sparkline rewritten to use it.
 
 ### Acceptance criteria
 
-- [ ] No new runtime dependency is added to `pyproject.toml`.
-- [ ] All five chart types render, in both light and dark, and redraw
+- [x] No new runtime dependency is added to `pyproject.toml`.
+- [x] All five chart types render, in both light and dark, and redraw
       on a live theme change.
-- [ ] Tick selection is unit-tested for representative ranges (tiny,
+- [x] Tick selection is unit-tested for representative ranges (tiny,
       huge, negative, zero-span, single point) with no crash and no
       duplicate labels.
-- [ ] The monitoring dashboard looks and behaves as it does today, with
+- [x] The monitoring dashboard looks and behaves as it does today, with
       `_ChartCard` holding no scaling or path code of its own.
-- [ ] Hit-testing returns the expected point for a click inside and
+- [x] Hit-testing returns the expected point for a click inside and
       `None` outside the plot area.
-- [ ] Drawing is a pure function of (spec, data, context, size) — the
+- [x] Drawing is a pure function of (spec, data, context, size) — the
       same call renders to a `Gtk.DrawingArea` and to an
       `ImageSurface`, which is what CORE-34 needs.

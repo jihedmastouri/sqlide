@@ -356,3 +356,45 @@ def test_state_round_trips_and_bad_state_is_no_state():
     assert load_state("[]") is None
     assert load_state('{"version": 99, "chart": {}}') is None
     assert load_state('{"version": 1}') is None
+
+
+# Row provenance — the two-way selection contract (CORE-32)
+
+
+def test_row_keys_name_the_mark_each_row_was_drawn_into():
+    result = Result(
+        ["city", "kind", "sales"],
+        [("Paris", "web", 3), ("Paris", "shop", 4), ("Lyon", "web", 5)],
+    )
+    spec = ChartSpec(type="bar", x="city", series=("sales",), split="kind")
+    assert charts.row_keys(spec, result) == [
+        ("Paris", "web"),
+        ("Paris", "shop"),
+        ("Lyon", "web"),
+    ]
+
+
+def test_row_keys_agree_with_the_series_that_were_built():
+    result = Result(
+        ["city", "sales"],
+        [("Paris", 3), ("Lyon", 5), ("Paris", 4)],
+    )
+    spec = ChartSpec(type="bar", x="city", series=("sales",), aggregation="sum")
+    data = series_from(spec, result)
+    keys = charts.row_keys(spec, result)
+    drawn = {x for x, _y in data.series[0].points}
+    assert {key[0] for key in keys if key} == drawn
+
+
+def test_row_keys_drop_the_rows_the_chart_dropped():
+    result = Result(
+        ["city", "sales"], [("Paris", 3), (None, 4), ("Lyon", None)]
+    )
+    spec = ChartSpec(type="bar", x="city", series=("sales",))
+    assert charts.row_keys(spec, result) == [("Paris", ""), None, None]
+
+
+def test_row_keys_report_a_spec_the_result_no_longer_fits():
+    result = Result(["city", "sales"], [("Paris", 3)])
+    spec = ChartSpec(type="bar", x="region", series=("sales",))
+    assert charts.row_keys(spec, result) == [None]

@@ -1,6 +1,6 @@
 ## CORE-35 — Dashboard tab: several saved charts, refreshed together
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-33
 - **From:** RS-03 (see `docs/charting-research.md`)
 
@@ -38,15 +38,15 @@ refreshed on demand or on an interval, within one workspace.
 
 ### Acceptance criteria
 
-- [ ] A dashboard can be created, named, and given cells from saved
+- [x] A dashboard can be created, named, and given cells from saved
       queries that have charts.
-- [ ] Cells can be added, removed, resized and reordered, and the
+- [x] Cells can be added, removed, resized and reordered, and the
       layout persists.
-- [ ] The dashboard definition is a readable TOML file that can be
+- [x] The dashboard definition is a readable TOML file that can be
       hand-edited and committed.
-- [ ] Manual refresh re-runs every cell; the optional interval does the
+- [x] Manual refresh re-runs every cell; the optional interval does the
       same and is pausable and stops on close.
-- [ ] A cell whose query fails shows the error in place; the rest still
+- [x] A cell whose query fails shows the error in place; the rest still
       refresh.
-- [ ] A cell referencing a deleted saved query says so instead of
+- [x] A cell referencing a deleted saved query says so instead of
       disappearing or erroring the whole dashboard.

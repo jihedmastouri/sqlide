@@ -66,6 +66,7 @@ __all__ = [
     "from_dict",
     "infer",
     "load_state",
+    "row_keys",
     "series_from",
     "to_dict",
     "validate",
@@ -521,6 +522,30 @@ def _sort_key(value: Any) -> tuple[int, Any]:
     return (0, number if number is not None else 0.0)
 
 
+def _x_value(
+    row: Sequence[Any], x_index: int, x_kind: str, position: int
+) -> Any:
+    """The X key one row falls under, or None when it has none.
+
+    Shared by `series_from` and `row_keys` so that the chart and the
+    grid can never disagree about which rows a mark was drawn from.
+    """
+    if x_index < 0:
+        # No X column: the row number is the axis, which is what a
+        # result with nothing ordered to plot against gets.
+        return float(position)
+    if x_index >= len(row):
+        return None
+    value = row[x_index]
+    if value is None:
+        return None
+    if x_kind == CATEGORICAL:
+        return _label(value)
+    if x_kind == NUMERIC:
+        return _as_float(value)
+    return value
+
+
 def series_from(
     spec: ChartSpec,
     result: Any,
@@ -563,26 +588,10 @@ def series_from(
     seen_x: set[Any] = set()
 
     for position, row in enumerate(rows):
-        if x_index >= 0:
-            if x_index >= len(row):
-                dropped += 1
-                continue
-            x_value = row[x_index]
-            if x_value is None:
-                dropped += 1
-                continue
-            if x_kind == CATEGORICAL:
-                x_value = _label(x_value)
-            elif x_kind == NUMERIC:
-                number = _as_float(x_value)
-                if number is None:
-                    dropped += 1
-                    continue
-                x_value = number
-        else:
-            # No X column: the row number is the axis, which is what a
-            # result with nothing ordered to plot against gets.
-            x_value = float(position)
+        x_value = _x_value(row, x_index, x_kind, position)
+        if x_value is None:
+            dropped += 1
+            continue
         split_label = ""
         if split_index >= 0 and split_index < len(row):
             split_label = _label(row[split_index])
@@ -691,6 +700,54 @@ def series_from(
         capped=capped,
         rows=plotted,
     )
+
+
+def row_keys(
+    spec: ChartSpec,
+    result: Any,
+    classes: Mapping[str, str] | None = None,
+) -> list[tuple[Any, str] | None]:
+    """Where every row of `result` landed, in the same keys the series
+    are built from: `(x value, split label)`, or None for a row the
+    chart dropped.
+
+    This is the two-way selection contract PG-04 established, done
+    without the view knowing anything about the mapping: a mark's
+    (x, split) names the rows behind it, and a row's key names the mark
+    to highlight. It never raises — a spec the result no longer fits
+    comes back as all-None, which highlights nothing.
+    """
+    columns = [str(c) for c in getattr(result, "columns", []) or []]
+    rows = list(getattr(result, "rows", []) or [])
+    if validate(spec, columns):
+        return [None] * len(rows)
+    if classes is None:
+        classes = classify(columns, rows)
+    index = {name: i for i, name in enumerate(columns)}
+    x_index = index[spec.x] if spec.x else -1
+    split_index = index[spec.split] if spec.split else -1
+    x_kind = classes.get(spec.x, NUMERIC) if spec.x else NUMERIC
+    if spec.type == "pie":
+        x_kind = CATEGORICAL
+
+    keys: list[tuple[Any, str] | None] = []
+    for position, row in enumerate(rows):
+        x_value = _x_value(row, x_index, x_kind, position)
+        if x_value is None:
+            keys.append(None)
+            continue
+        if not any(
+            _as_float(row[index[name]] if index[name] < len(row) else None)
+            is not None
+            for name in spec.series
+        ):
+            keys.append(None)
+            continue
+        split_label = ""
+        if 0 <= split_index < len(row):
+            split_label = _label(row[split_index])
+        keys.append((x_value, split_label))
+    return keys
 
 
 def _cap_slices(

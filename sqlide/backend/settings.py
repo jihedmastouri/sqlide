@@ -103,6 +103,10 @@ Settings:
   disables tiles rather than dropping the credit.
 - map_max_features: how many geometries one map draws before it stops
   and says "showing N of M".
+- chart_max_rows: the ceiling on "Load all for chart" (CORE-32). The
+  chart draws the rows the grid holds; loading everything for a chart
+  stops here and says so, because past this point the answer is a
+  GROUP BY rather than more rows on the wire.
 - import_batch_size: how many rows a CSV import sends to the server in
   one executemany (CORE-37). The whole file is still one transaction;
   this only sets how often it goes over the wire, so raise it for a
@@ -163,6 +167,8 @@ SIDE_PANEL_MAX_WIDTH = 900
 DEFAULT_TILE_URL = tiles.DEFAULT_TILE_URL
 DEFAULT_TILE_ATTRIBUTION = tiles.DEFAULT_ATTRIBUTION
 DEFAULT_MAX_FEATURES = 2000
+#: The ceiling on "Load all for chart" (CORE-32/RS-03).
+DEFAULT_CHART_MAX_ROWS = 50000
 # Rows per executemany when importing a file (CORE-37).
 DEFAULT_IMPORT_BATCH_SIZE = importer.DEFAULT_BATCH_SIZE
 
@@ -210,6 +216,7 @@ class Settings:
     map_tile_url: str = DEFAULT_TILE_URL
     map_attribution: str = DEFAULT_TILE_ATTRIBUTION
     map_max_features: int = DEFAULT_MAX_FEATURES
+    chart_max_rows: int = DEFAULT_CHART_MAX_ROWS
     import_batch_size: int = DEFAULT_IMPORT_BATCH_SIZE
     lsp_defaults: dict[str, str] = field(default_factory=dict)
     mcp_defaults: dict[str, str] = field(default_factory=dict)
@@ -303,6 +310,9 @@ class Settings:
             map_max_features=number(
                 "map_max_features", DEFAULT_MAX_FEATURES, minimum=1
             ),
+            chart_max_rows=number(
+                "chart_max_rows", DEFAULT_CHART_MAX_ROWS, minimum=1
+            ),
             import_batch_size=number(
                 "import_batch_size", DEFAULT_IMPORT_BATCH_SIZE, minimum=1
             ),
@@ -354,6 +364,11 @@ def tile_source() -> tiles.TileSource:
 def max_map_features() -> int:
     """The cap on features one map draws (PG-04)."""
     return max(1, store.settings.map_max_features)
+
+
+def max_chart_rows() -> int:
+    """The cap on how many rows "Load all for chart" will fetch."""
+    return max(1, store.settings.chart_max_rows)
 
 
 def session_time_zone() -> str | None:

@@ -233,3 +233,47 @@ def test_the_interval_is_remembered_globally(gtk, monkeypatch) -> None:
 def test_the_footer_never_promises_host_metrics() -> None:
     assert "agent" in metrics.HOST_METRICS_NOTE
     assert "CPU" in metrics.HOST_METRICS_NOTE
+
+
+def test_a_card_draws_through_the_shared_renderer(gtk, monkeypatch) -> None:
+    """CORE-31: `_ChartCard` owns no scale and no path of its own — it
+    hands the window to `frontend/chart_canvas` and the percentage
+    metrics keep their 0–100 pinning."""
+    import cairo
+
+    from sqlide.frontend import chart_canvas, monitor_tab
+
+    calls: list[dict] = []
+    real = chart_canvas.render
+
+    def spy(cr, spec, data, width, height, **kwargs):
+        calls.append(kwargs)
+        return real(cr, spec, data, width, height, **kwargs)
+
+    monkeypatch.setattr(monitor_tab.chart_canvas, "render", spy)
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 200, 48)
+
+    percent = monitor_tab._ChartCard(
+        metrics.Chart("cpu", "CPU", "percent", ("cpu",))
+    )
+    percent.update([(float(i), float(i)) for i in range(20)], 5.0, None)
+    percent._draw(None, cairo.Context(surface), 200, 48)
+
+    counter = monitor_tab._ChartCard(
+        metrics.Chart("tps", "Commits", "counter", ("xact_commit",))
+    )
+    counter.update([(0.0, 1.0)], 1.0, None)  # too few points to plot
+    counter._draw(None, cairo.Context(surface), 200, 48)
+
+    assert [call["sparkline"] for call in calls] == [True, True]
+    assert calls[0]["y_range"] == (0.0, 100.0)
+    assert calls[1]["y_range"] is None
+
+
+def test_the_card_keeps_no_scaling_code_of_its_own() -> None:
+    import inspect
+
+    from sqlide.frontend import monitor_tab
+
+    source = inspect.getsource(monitor_tab._ChartCard._draw)
+    assert "line_to" not in source and "set_line_width" not in source

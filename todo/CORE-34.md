@@ -1,6 +1,6 @@
 ## CORE-34 — Export a chart as PNG or SVG, and copy it
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-31, CORE-32
 - **From:** RS-03 (see `docs/charting-research.md`)
 
@@ -34,10 +34,10 @@ the user picks.
 
 ### Acceptance criteria
 
-- [ ] PNG and SVG export produce a file matching the on-screen chart,
+- [x] PNG and SVG export produce a file matching the on-screen chart,
       at the requested size, with legend and axes.
-- [ ] The SVG has real vector text, not paths of a bitmap.
-- [ ] Copy puts an image on the clipboard that pastes into another app.
-- [ ] Theme choice is honoured and defaults to light.
-- [ ] A failed write reports the path and the reason, and does not
+- [x] The SVG has real vector text, not paths of a bitmap.
+- [x] Copy puts an image on the clipboard that pastes into another app.
+- [x] Theme choice is honoured and defaults to light.
+- [x] A failed write reports the path and the reason, and does not
       leave a partial file.

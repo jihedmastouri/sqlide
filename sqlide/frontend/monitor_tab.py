@@ -41,22 +41,23 @@ from typing import Callable
 
 from gi.repository import Adw, Gio, GLib, GObject, Gtk, Pango
 
+from sqlide.backend import charts
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import metrics, monitoring, registry
 from sqlide.backend.db.base import Connector, ConnectorError
 from sqlide.backend.settings import store as settings_store
 from sqlide.backend.workspaces import TabState
-from sqlide.frontend import confirm
-from sqlide.frontend.canvas import palette, rgb
+from sqlide.frontend import chart_canvas, confirm
 from sqlide.frontend.util import describe, run_async
 from sqlide.i18n import _, format_size
 
 
-#: The sparkline itself. One colour, per theme, reaching 3:1 against
-#: the card behind it — a chart with six lines in six meanings would be
-#: a legend to learn; each card here has exactly one line.
-_LINE_LIGHT = "#1c71d8"
-_LINE_DARK = "#99c1f1"
+#: The card's sparkline is drawn by the shared chart renderer
+#: (`frontend/chart_canvas.py`, CORE-31) in its `sparkline=True` mode:
+#: no axes, no ticks, no legend, one series. The colour and the
+#: geometry live there, so the dashboard and the result chart cannot
+#: drift apart.
+_SPARK_SPEC = charts.ChartSpec(type="line", series=("value",))
 
 
 class MonitorTab(Gtk.Box):
@@ -716,31 +717,25 @@ class _ChartCard(Gtk.Box):
         self._area.queue_draw()
 
     def _draw(self, _area, cr, width: int, height: int) -> None:
-        dark = Adw.StyleManager.get_default().get_dark()
-        colors = palette(dark)
-        cr.set_source_rgb(*rgb(colors.border))
-        cr.set_line_width(1.0)
-        cr.move_to(0, height - 0.5)
-        cr.line_to(width, height - 0.5)
-        cr.stroke()
-        if len(self._points) < 2:
-            return
-        values = [value for _at, value in self._points]
-        low, high = min(values), max(values)
-        # Percentages are read against their own scale, not against the
-        # narrow band the last five minutes happened to occupy.
-        if self.chart.kind == "percent":
-            low, high = 0.0, 100.0
-        if high <= low:
-            high = low + 1.0
-        span = self._points[-1][0] - self._points[0][0] or 1.0
-        cr.set_source_rgb(*rgb(_LINE_DARK if dark else _LINE_LIGHT))
-        cr.set_line_width(1.6)
-        for index, (at, value) in enumerate(self._points):
-            x = width * (at - self._points[0][0]) / span
-            y = height - 2 - (height - 6) * (value - low) / (high - low)
-            if index == 0:
-                cr.move_to(x, y)
-            else:
-                cr.line_to(x, y)
-        cr.stroke()
+        """Hand the window to the shared renderer and nothing else.
+
+        The card owns no scale and no path of its own (CORE-31): the
+        only thing it still decides is that a percentage is read
+        against 0–100 rather than against the narrow band the last five
+        minutes happened to occupy.
+        """
+        data = charts.ChartData(
+            series=(charts.Series("value", tuple(self._points), "value"),),
+            x_kind=charts.NUMERIC,
+            rows=len(self._points),
+        )
+        chart_canvas.render(
+            cr,
+            _SPARK_SPEC,
+            data,
+            width,
+            height,
+            dark=Adw.StyleManager.get_default().get_dark(),
+            sparkline=True,
+            y_range=(0.0, 100.0) if self.chart.kind == "percent" else None,
+        )

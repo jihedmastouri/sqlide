@@ -72,6 +72,8 @@ __all__ = [
     "from_dict",
     "load_state",
     "option_on",
+    "option_set",
+    "option_value",
     "plan",
     "preflight",
     "prune_options",
@@ -181,7 +183,20 @@ def option_on(value: Any) -> bool:
         return True
     if value is False or value is None:
         return False
-    return bool(str(value).strip()) and str(value).strip().lower() != "false"
+    return bool(str(value).strip())
+
+
+def option_set(spec: OptionSpec, value: Any) -> bool:
+    """Whether `value` means this option is on.
+
+    Almost always "is there anything there", with one exception worth
+    the line: a boolean stores "true"/"" and a stored "false" means
+    off, while a *choice* whose values happen to be "true" and "false"
+    (PostgreSQL's autovacuum_enabled) means exactly what it says.
+    """
+    if spec.kind == "boolean" and str(value).strip().lower() == "false":
+        return False
+    return option_on(value)
 
 
 #: PostgreSQL's table options. UNLOGGED and the storage parameters are
@@ -1026,7 +1041,7 @@ def _present_options(
         if spec.field:
             continue  # rendered by the field's own code, not as an option
         value = option_value(holder, spec)
-        if option_on(value):
+        if option_set(spec, value):
             out.append((spec, value.strip()))
     return out
 

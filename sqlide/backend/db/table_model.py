@@ -67,6 +67,7 @@ __all__ = [
     "SQLITE",
     "Statement",
     "TableModel",
+    "copy_structure",
     "dialect_for",
     "dump_state",
     "from_dict",
@@ -1100,6 +1101,56 @@ def _column_options_sql(column: ColumnModel, dialect: Dialect) -> str:
         if spec.placement in ("column", "tail")
     ]
     return (" " + " ".join(parts)) if parts else ""
+
+
+def copy_structure(
+    model: TableModel,
+    name: str,
+    *,
+    indexes: bool = True,
+    foreign_keys: bool = True,
+) -> TableModel:
+    """`model` as the design of a *new* table called `name` (CORE-29).
+
+    "New table like this one" is a rename and two questions: are the
+    indexes coming, are the foreign keys coming. Everything else — the
+    columns, their types and options, the checks and unique keys, the
+    table options — is carried verbatim, so the statement the designer
+    shows differs from the source table's only where it has to.
+
+    Names that belong to the schema rather than to the table are the
+    part that cannot be copied verbatim: two indexes cannot share a
+    name, so every index and constraint name that mentions the source
+    table is rewritten to mention the new one, and one that does not
+    gets a suffix. Nothing is dropped for want of a name.
+    """
+    old = model.name
+
+    def renamed(existing: str) -> str:
+        if not existing:
+            return ""
+        if old and old.lower() in existing.lower():
+            start = existing.lower().index(old.lower())
+            return existing[:start] + name + existing[start + len(old):]
+        return f"{existing}_{name}" if name else existing
+
+    return replace(
+        model,
+        name=name,
+        constraints=tuple(
+            replace(con, name=renamed(con.name))
+            for con in model.constraints
+            if foreign_keys or con.kind.upper() != "FOREIGN KEY"
+        ),
+        indexes=(
+            tuple(
+                replace(index, name=renamed(index.name))
+                for index in model.indexes
+            )
+            if indexes
+            else ()
+        ),
+    )
 
 
 def prune_options(model: TableModel, connector: Any) -> TableModel:

@@ -113,9 +113,12 @@ from sqlide.backend.db.table_model import (
     option_value,
     plan,
     preflight,
+    prune_options,
     render_create,
     worst,
 )
+from sqlide.backend.table_templates import store as template_store
+from sqlide.frontend.side_panel import ask_name
 from sqlide.frontend.sql_editor import SqlEditor
 from sqlide.frontend.util import describe, run_async
 from sqlide.i18n import _, ngettext
@@ -651,6 +654,28 @@ class _ColumnRow(Gtk.ListBoxRow):
         )
         self.options.load(column)
 
+    def mark_untranslated(self, unknown: bool) -> None:
+        """Flag a type this engine has no entry for.
+
+        A template saved on one engine and opened on another keeps its
+        types verbatim in "Custom…" — that is what makes the design
+        survive at all — but a `timestamptz` on SQLite is the user's
+        problem to solve, so the row says so instead of the preview
+        quietly rendering DDL the server will refuse.
+        """
+        if unknown:
+            self._custom.add_css_class("error")
+            self._custom.set_tooltip_text(
+                _("This type came from another engine; check it.")
+            )
+        else:
+            self._custom.remove_css_class("error")
+            self._custom.set_tooltip_text(None)
+
+    def untranslated(self) -> bool:
+        """Whether the row's type matched no entry in the type list."""
+        return self._selected_spec() is None and bool(self.type_text())
+
     def _select_type(self, type_text: str) -> None:
         index = next(
             (
@@ -1147,6 +1172,12 @@ class _IndexRow(Gtk.ListBoxRow):
         )
 
 
+def _option_count(model: TableModel) -> int:
+    """How many options a model carries, table and column together —
+    the number pruning is measured against."""
+    return len(model.options) + sum(len(c.options) for c in model.columns)
+
+
 class TableDesignerTab(Gtk.Box):
     def __init__(
         self,
@@ -1157,6 +1188,8 @@ class TableDesignerTab(Gtk.Box):
         ref: NodeRef | None = None,
         table_ref: NodeRef | None = None,
         designer: str = "",
+        designer_engine: str = "",
+        designer_source: str = "",
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.profile = profile
@@ -1177,6 +1210,14 @@ class TableDesignerTab(Gtk.Box):
         # with and — in alter mode — what the table looks like today.
         # Unreadable or from a future version reads as None.
         self._restore: TableModel | None = load_state(designer)
+        # Where that design came from, when it did not come from this
+        # workspace: a saved template ("template") or another table's
+        # structure ("copy"), and the engine it was saved on (CORE-29).
+        # A design carried across engines loses the options this one
+        # does not offer and says which types it could not translate,
+        # rather than rendering DDL the server would refuse.
+        self._restore_engine = designer_engine
+        self._restore_source = designer_source
         self._specs: list[TypeSpec] = []
         self._rows: list[_ColumnRow] = []
         self._constraint_rows: list[_ConstraintRow] = []
@@ -1239,6 +1280,16 @@ class TableDesignerTab(Gtk.Box):
         switcher = Gtk.StackSwitcher(stack=self._stack)
         self._add = Gtk.Button(label=_("Add Column"))
         self._add.connect("clicked", lambda *_: self._add_current())
+        # Save the design itself, under a name, for the next table
+        # that wants this shape (CORE-29). A template is the model, so
+        # this is the same data the workspace saves — written to the
+        # config directory rather than to the workspace.
+        self._save_template = Gtk.Button(icon_name="document-save-symbolic")
+        self._save_template.add_css_class("flat")
+        describe(self._save_template, _("Save this design as a template"))
+        self._save_template.connect(
+            "clicked", lambda *_: self._on_save_template()
+        )
         self._create = Gtk.Button(
             label=_("Apply") if table_ref is not None else _("Create")
         )
@@ -1250,6 +1301,7 @@ class TableDesignerTab(Gtk.Box):
         bar.append(self._table_name)
         bar.append(switcher)
         bar.append(self._add)
+        bar.append(self._save_template)
         bar.append(self._create)
         self.append(bar)
 
@@ -1484,6 +1536,16 @@ class TableDesignerTab(Gtk.Box):
         if model is None:
             return
         dropped = 0
+        # A design that came from another engine — a template, or a
+        # structure copied from a connection of a different kind
+        # (CORE-29) — loses the options this engine does not offer.
+        # Pruning is the backend's (CORE-27); what is counted here is
+        # only how much it took away, so the label can say so.
+        options_dropped = 0
+        if self._connector is not None:
+            pruned = prune_options(model, self._connector)
+            options_dropped = _option_count(model) - _option_count(pruned)
+            model = pruned
         names = {c.name.lower() for c in model.columns}
         constraints = tuple(
             c
@@ -1502,10 +1564,53 @@ class TableDesignerTab(Gtk.Box):
             pk_row=True,
         )
         dropped += self._rebase_rows()
+        # Types are engine words. Carried across engines they stay as
+        # they were written and land in "Custom…"; the rows are marked
+        # and named here rather than the user finding out from the
+        # server. Within one engine a type the catalog spells its own
+        # way is normal, so nothing is marked.
+        untranslated: list[str] = []
+        if self._restore_engine and self._restore_engine != self.profile.kind:
+            for row in self._rows:
+                if row.untranslated():
+                    row.mark_untranslated(True)
+                    untranslated.append(row.name_text() or row.type_text())
         notes = []
+        # Where this design came from, when it did not come from this
+        # workspace — said once, in the same place every other note
+        # about the restore is said (CORE-29).
+        source = {
+            "copy": _("Structure copied; no rows come with it."),
+            "template": _("Started from a saved template."),
+        }.get(self._restore_source, "")
+        if source:
+            notes.append(source)
         if self.editing and self._current is None:
             notes.append(
                 _("The table this design edits is gone; nothing is loaded.")
+            )
+        if options_dropped:
+            notes.append(
+                ngettext(
+                    "%d option this engine does not offer was dropped.",
+                    "%d options this engine does not offer were dropped.",
+                    options_dropped,
+                )
+                % options_dropped
+            )
+        if untranslated:
+            notes.append(
+                ngettext(
+                    "%(count)d column type could not be translated"
+                    " (%(columns)s); check it.",
+                    "%(count)d column types could not be translated"
+                    " (%(columns)s); check them.",
+                    len(untranslated),
+                )
+                % {
+                    "count": len(untranslated),
+                    "columns": ", ".join(untranslated),
+                }
             )
         if dropped:
             notes.append(
@@ -1548,6 +1653,43 @@ class TableDesignerTab(Gtk.Box):
                     dropped += 1
             row.loaded = match
         return dropped
+
+    # Templates (CORE-29)
+
+    def _on_save_template(self) -> None:
+        """Save the design under a name, into the config directory.
+
+        A template is the serialised model and nothing else, so what is
+        saved is exactly what the workspace would save — and what a
+        designer on any other connection can be opened with. The engine
+        is recorded beside it so opening it elsewhere can say what it
+        could not carry over.
+        """
+        model = self.model()
+        if not model.columns:
+            self._status.set_text(
+                _("A template needs at least one column.")
+            )
+            return
+
+        def save(name: str) -> None:
+            try:
+                template = template_store.save(
+                    name, model, engine=self.profile.kind
+                )
+            except OSError as exc:
+                self._show_error(str(exc))
+                return
+            self._status.set_text(
+                _("Saved as the template “%s”.") % template.name
+            )
+
+        ask_name(
+            self,
+            _("Save as Template"),
+            model.name or _("Template"),
+            save,
+        )
 
     # Schema
 

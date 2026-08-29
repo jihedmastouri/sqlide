@@ -33,6 +33,7 @@ The first of these that applies wins:
 <config>/
 ├── settings.toml            # app and UI preferences
 ├── notes.toml               # free-form notes (side panel -> Notes)
+├── table_templates/         # saved table shapes (one .toml per template)
 ├── snippets.json            # saved SQL snippets (content, not config)
 ├── saved_queries.json       # saved queries      (content, not config)
 ├── backups.json             # backup jobs, destinations and run history
@@ -260,6 +261,41 @@ connection = "analytics-primary"
 table = "public.orders"
 created = "2026-08-26T10:04:00"
 updated = "2026-08-26T10:04:00"
+```
+
+## `table_templates/*.toml`
+
+The table shapes saved from the designer (**Save as Template**, the
+save button beside Create), listed under **New ▸ Table ▸ From
+Template**. One file per template, so a shape can be dropped in,
+mailed, or committed on its own; a file that will not parse is skipped
+and the rest still list.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `version` | integer | The file's shape. `1` today; a template from a newer version is skipped rather than half-read. |
+| `name` | string | What the menu calls it. Required. |
+| `engine` | string | The engine it was saved on (`"postgres"`, `"mysql"`, `"sqlite"`, …). Opening the template elsewhere is allowed: options that engine does not offer are dropped and untranslatable types are marked. |
+| `created` | ISO-8601 string | Written by the app. |
+| `table_name`, `schema`, `comment` | string | The table the design describes; all may be empty. |
+| `options` | inline table | Table-level engine options, keyed as the adapter names them (`{ENGINE = "InnoDB"}`). |
+| `[[column]]` | table array | One per column: `name`, `type`, `nullable`, `primary_key`, `default = {kind = …, value = …}`, `comment`, `collation`, `identity`, `generated`, `generated_stored`, `options`. |
+| `[[constraint]]` | table array | `kind` (`PRIMARY KEY`/`UNIQUE`/`CHECK`/`FOREIGN KEY`), `name`, `columns`, `ref_schema`, `ref_table`, `ref_columns`, `on_delete`, `on_update`, `expression`. |
+| `[[index]]` | table array | `name`, `columns`, `unique`, `method`, `where`, `directions`. |
+
+```toml
+# ~/.config/sqlide/table_templates/audit-columns.toml
+version = 1
+name = "Audit columns"
+engine = "postgres"
+created = "2026-08-29T10:00:00"
+table_name = ""
+
+[[column]]
+name = "created_at"
+type = "timestamptz"
+nullable = false
+default = {kind = "expression", value = "now()"}
 ```
 
 ## `workspaces/<id>/workspace.toml`

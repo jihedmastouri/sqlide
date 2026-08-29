@@ -39,6 +39,23 @@ press lists what that adapter can really create.
   saved edit the table can no longer support — a rename of a column
   that has since been dropped, an index over one — is left out and
   said so beside the preview.
+  A table need not be started from nothing. **Duplicate Structure…**
+  on a table's right-click menu opens a designer on a *new* table with
+  that table's columns, constraints and options — the same statement
+  under a new name, with the index and constraint names rewritten so
+  they cannot clash — and asks first whether its indexes and its
+  foreign keys are coming. Rows never are; copying data is Transfer's
+  job.
+  The designer's **save** button (beside Create) saves the design
+  itself as a **template**, under a name, in the config directory —
+  one plain TOML file per template in `table_templates/`, so a shape
+  can be written by hand, mailed or committed. Saved templates are
+  listed under **New ▸ Table ▸ From Template**, on any connection. A
+  template records the engine it was saved on: opening one elsewhere
+  is allowed and keeps the columns, drops the options that engine does
+  not offer, and leaves types it cannot translate in **Custom…**,
+  marked, with a line beside the preview naming the columns to check —
+  rather than an error, or invalid DDL.
 - **Everything else** opens a query console prefilled with a commented,
   dialect-correct skeleton to fill in and run.
 

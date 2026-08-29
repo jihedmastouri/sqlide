@@ -1,6 +1,6 @@
 ## CORE-29 — Copy structure from an existing table, and saved templates
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-23, CORE-28
 - **From:** RS-02 (see `docs/table-creator-research.md`)
 
@@ -35,11 +35,11 @@ earlier.
 
 ### Acceptance criteria
 
-- [ ] Duplicate structure on a table opens a designer whose preview
+- [x] Duplicate structure on a table opens a designer whose preview
       differs from the source's DDL only in the table name.
-- [ ] A saved template appears under New ▸ Table and restores its
+- [x] A saved template appears under New ▸ Table and restores its
       columns, constraints and options.
-- [ ] A template saved on PostgreSQL and opened on SQLite opens with
+- [x] A template saved on PostgreSQL and opened on SQLite opens with
       untranslatable types marked and an explanation, not an error.
-- [ ] Template files are plain TOML in the config directory,
+- [x] Template files are plain TOML in the config directory,
       consistent with CORE-13.

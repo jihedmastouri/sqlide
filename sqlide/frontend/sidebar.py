@@ -163,6 +163,7 @@ from sqlide.backend.db import metrics, objects, registry
 from sqlide.backend.db.base import Connector
 from sqlide.backend.db.metadata import NodeRef
 from sqlide.backend.settings import store as settings_store
+from sqlide.backend.table_templates import store as template_store
 from sqlide.frontend import identity as identity_ui
 from sqlide.frontend import tree_search
 from sqlide.frontend.util import describe, run_async
@@ -397,6 +398,18 @@ class Sidebar(Gtk.ScrolledWindow):
         # scope the row stands for. Optional like the rest of this tail
         # — a harness that only walks the tree leaves it inert.
         on_data_search: Callable[[ConnectionProfile], None] | None = None,
+        # "Duplicate Structure…": the table this row names, loaded into
+        # a designer as a new table (CORE-29). Optional like the rest of
+        # this tail — a harness that only walks the tree leaves it
+        # inert.
+        on_duplicate_table: (
+            Callable[[ConnectionProfile, NodeRef], None] | None
+        ) = None,
+        # "New ▸ From Template ▸ …": a saved table shape, opened in a
+        # designer on this connection (CORE-29).
+        on_new_from_template: (
+            Callable[[ConnectionProfile, str, NodeRef], None] | None
+        ) = None,
     ) -> None:
         super().__init__(vexpand=True)
         # Both scrollbars, on demand. Row name labels are not ellipsized
@@ -426,6 +439,8 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_drop_object = on_drop_object
         self._on_import_data = on_import_data
         self._on_new_object = on_new_object
+        self._on_duplicate_table = on_duplicate_table
+        self._on_new_from_template = on_new_from_template
         self._on_extension_action = on_extension_action
         self._on_mcp_server = on_mcp_server
         self._on_manage_users = on_manage_users
@@ -524,6 +539,7 @@ class Sidebar(Gtk.ScrolledWindow):
             ("cli-console", self._menu_cli_console),
             ("definition", self._menu_definition),
             ("edit-table", self._menu_edit_table),
+            ("duplicate-table", self._menu_duplicate_table),
             ("edit-function", self._menu_edit_function),
             ("relation-graph", self._menu_relation_graph),
             ("view-indexes", self._menu_view_indexes),
@@ -553,6 +569,14 @@ class Sidebar(Gtk.ScrolledWindow):
         )
         new_object.connect("activate", self._menu_new_object)
         actions.add_action(new_object)
+        # One action for every saved template, the name as its target,
+        # so the submenu is rebuilt per popup and no action has to be
+        # added or removed as templates come and go (CORE-29).
+        new_template = Gio.SimpleAction.new(
+            "new-from-template", GLib.VariantType.new("s")
+        )
+        new_template.connect("activate", self._menu_new_from_template)
+        actions.add_action(new_template)
         self._view.insert_action_group("schema", actions)
 
         self._popover = Gtk.PopoverMenu.new_from_model(Gio.Menu())
@@ -1443,6 +1467,11 @@ class Sidebar(Gtk.ScrolledWindow):
                 # The designer, on this table: columns, constraints and
                 # indexes as a form, applied as a diff (CORE-26).
                 menu.append("Edit Table…", "schema.edit-table")
+                # A new table shaped like this one: the same columns,
+                # constraints and indexes in a designer, under a new
+                # name (CORE-29). Structure only — data is transfer's
+                # job, not the designer's.
+                menu.append("Duplicate Structure…", "schema.duplicate-table")
             menu.append("Table Definition", "schema.definition")
             menu.append("Query Builder", "schema.query-builder")
             # A view is not something rows can be inserted into here,
@@ -1702,6 +1731,27 @@ class Sidebar(Gtk.ScrolledWindow):
         node = self._menu_node
         if node is not None and node.kind == "table" and node.profile:
             self._on_edit_table(node.profile, _node_ref(node))
+
+    def _menu_duplicate_table(self, *_args) -> None:
+        node = self._menu_node
+        if (
+            node is not None
+            and node.kind == "table"
+            and node.profile
+            and self._on_duplicate_table is not None
+        ):
+            self._on_duplicate_table(node.profile, _node_ref(node))
+
+    def _menu_new_from_template(self, _action, param) -> None:
+        node = self._menu_node
+        if (
+            node is not None
+            and node.profile is not None
+            and self._on_new_from_template is not None
+        ):
+            self._on_new_from_template(
+                node.profile, param.get_string(), _node_ref(node)
+            )
 
     def _menu_definition(self, *_args) -> None:
         node = self._menu_node
@@ -2495,6 +2545,34 @@ def _new_items(kinds: tuple[str, ...]) -> Gio.Menu:
         item = Gio.MenuItem.new(_NEW_LABELS.get(kind, kind.capitalize()), None)
         item.set_action_and_target_value(
             "schema.new-object", GLib.Variant.new_string(kind)
+        )
+        menu.append_item(item)
+        if kind == "table":
+            # The shapes somebody saved, right under the thing they
+            # make (CORE-29). No templates saved yet: no submenu, so
+            # the menu keeps the shape it always had.
+            templates = _template_items()
+            if templates is not None:
+                menu.append_submenu("From Template", templates)
+    return menu
+
+
+def _template_items() -> Gio.Menu | None:
+    """One item per saved table template, or None when there are none.
+
+    Read per popup, from the config directory: a template dropped in by
+    hand shows up in the menu without a restart, and an unreadable file
+    is simply not listed.
+    """
+    templates = template_store.templates()
+    if not templates:
+        return None
+    menu = Gio.Menu()
+    for template in templates:
+        item = Gio.MenuItem.new(template.name, None)
+        item.set_action_and_target_value(
+            "schema.new-from-template",
+            GLib.Variant.new_string(template.name),
         )
         menu.append_item(item)
     return menu

@@ -1,6 +1,6 @@
 ## CORE-23 — Table model and DDL renderer in the backend
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** —
 - **Blocks:** CORE-24, CORE-25, CORE-26, CORE-27, CORE-28, CORE-29
 - **From:** RS-02 (see `docs/table-creator-research.md`)
@@ -48,13 +48,13 @@ it.
 
 ### Acceptance criteria
 
-- [ ] `backend/db/table_model.py` exists with the model, renderer and
+- [x] `backend/db/table_model.py` exists with the model, renderer and
       planner, and imports nothing from `frontend/`.
-- [ ] The designer renders through it; `_build_sql()` contains no SQL
+- [x] The designer renders through it; `_build_sql()` contains no SQL
       string assembly.
-- [ ] `Connector.create_table_sql()` still produces byte-identical
+- [x] `Connector.create_table_sql()` still produces byte-identical
       output for the cases in `tests/test_ddl.py`.
-- [ ] `tests/test_table_model.py` covers: create rendering per
+- [x] `tests/test_table_model.py` covers: create rendering per
       dialect, quoting, composite primary keys, defaults as literal vs
       expression, JSON round-trip, and a plan for each classification
       — with no database connection required.

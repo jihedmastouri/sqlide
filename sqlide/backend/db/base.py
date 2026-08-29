@@ -1277,28 +1277,41 @@ class Connector(ABC):
     ) -> str:
         """CREATE TABLE statement for the table designer: column names,
         types, DEFAULT expressions, NOT NULL and the primary key.
-        Dialects only override quirks."""
-        defaults = defaults or {}
-        defs = []
-        for column in columns:
-            line = f"  {self.quote_ident(column.name)} {column.type}".rstrip()
-            if defaults.get(column.name, "").strip():
-                line += f" DEFAULT {defaults[column.name].strip()}"
-            if not column.nullable:
-                line += " NOT NULL"
-            defs.append(line)
-        pks = [c.name for c in columns if c.is_pk]
-        if pks:
-            defs.append(
-                "  PRIMARY KEY ("
-                + ", ".join(self.quote_ident(p) for p in pks)
-                + ")"
-            )
-        return (
-            f"CREATE TABLE {self.quote_ident(table)} (\n"
-            + ",\n".join(defs)
-            + "\n)"
+
+        A thin shim over `db/table_model.py` since CORE-23: it builds
+        the equivalent `TableModel` and renders it, so there is one
+        renderer rather than two that can drift. New callers should
+        build a model and call `render_create` directly — this stays
+        for the callers that still speak `ColumnInfo`.
+        """
+        from sqlide.backend.db.table_model import (
+            ColumnDefault,
+            ColumnModel,
+            TableModel,
+            render_create,
         )
+
+        defaults = defaults or {}
+        model = TableModel(
+            name=table,
+            columns=tuple(
+                ColumnModel(
+                    name=c.name,
+                    type=c.type,
+                    nullable=c.nullable,
+                    primary_key=c.is_pk,
+                    # The old signature's defaults are free text the
+                    # caller vouched for, which is exactly "expression".
+                    default=(
+                        ColumnDefault("expression", defaults[c.name])
+                        if defaults.get(c.name, "").strip()
+                        else ColumnDefault()
+                    ),
+                )
+                for c in columns
+            ),
+        )
+        return render_create(model, self)
 
     # DDL editing (definition tab). All return SQL for the user to
     # review — nothing here executes anything.

@@ -75,7 +75,7 @@
 
 | ID | Title | Depends on |
 |---|---|---|
-| CORE-30 | Chart model and data mapping in the backend | CORE-02 |
+| CORE-30 | Chart model and data mapping in the backend (done) | CORE-02 |
 | CORE-31 | Cairo chart canvas, shared with the monitoring sparkline | CORE-30 |
 | CORE-32 | Chart view in the result tab, beside Data and Properties | CORE-30, CORE-31 |
 | CORE-33 | Persist chart specs: with the tab, and on saved queries | CORE-30, CORE-32 |

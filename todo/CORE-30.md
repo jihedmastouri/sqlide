@@ -1,6 +1,6 @@
 ## CORE-30 — Chart model and data mapping in the backend
 
-- **Status:** todo
+- **Status:** done
 - **From:** RS-03 (see `docs/charting-research.md`)
 
 ### Problem
@@ -43,17 +43,17 @@ third sibling of the proposed `backend/db/query_model.py` (CORE-17) and
 
 ### Acceptance criteria
 
-- [ ] `backend/charts.py` imports no GTK and no driver.
-- [ ] Column classification is covered for temporal, numeric,
+- [x] `backend/charts.py` imports no GTK and no driver.
+- [x] Column classification is covered for temporal, numeric,
       categorical, all-NULL and mixed columns.
-- [ ] `infer` produces the documented mapping for a time series, a
+- [x] `infer` produces the documented mapping for a time series, a
       category/count result and a two-numeric-column result, and returns
       a reason for a result with no numeric column.
-- [ ] `series_from` aggregates duplicate X values for every supported
+- [x] `series_from` aggregates duplicate X values for every supported
       aggregation, and reports capped/dropped counts rather than
       silently truncating.
-- [ ] A spec round-trips through `to_dict`/`from_dict`; a spec with an
+- [x] A spec round-trips through `to_dict`/`from_dict`; a spec with an
       unknown type or a missing column loads as a reported failure, not
       an exception.
-- [ ] `metrics.Chart` is untouched — this is not a generalisation of it.
-- [ ] Covered by `tests/test_charts.py`, needing no database server.
+- [x] `metrics.Chart` is untouched — this is not a generalisation of it.
+- [x] Covered by `tests/test_charts.py`, needing no database server.

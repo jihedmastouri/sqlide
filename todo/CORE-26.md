@@ -1,6 +1,6 @@
 ## CORE-26 — Alter mode: one designer for create and alter, over a diff
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-23, CORE-24
 - **From:** RS-02 (see `docs/table-creator-research.md`)
 
@@ -47,14 +47,14 @@ before you run it.
 
 ### Acceptance criteria
 
-- [ ] "Edit table" from the sidebar opens the designer populated from
+- [x] "Edit table" from the sidebar opens the designer populated from
       the catalog, and applying with no edits produces an empty plan.
-- [ ] Adding a column, renaming one, changing a type and dropping one
+- [x] Adding a column, renaming one, changing a type and dropping one
       each produce the right statements per engine, covered by tests
       over the planner.
-- [ ] Dropping a column or a constraint is labelled destructive in the
+- [x] Dropping a column or a constraint is labelled destructive in the
       preview dialog and is not the default focus.
-- [ ] A `NOT NULL` add against a table with nulls reports the
+- [x] A `NOT NULL` add against a table with nulls reports the
       offending row count instead of failing on the server.
-- [ ] On SQLite the plan is the rebuild sequence, wrapped as
+- [x] On SQLite the plan is the rebuild sequence, wrapped as
       `wrap_rebuild()` requires.

@@ -4,6 +4,8 @@ Everything here runs against a `Dialect` rather than a connector, so
 no test in this file opens a database.
 """
 
+from dataclasses import replace
+
 import pytest
 
 from sqlide.backend.db.table_model import (
@@ -417,3 +419,96 @@ def test_plan_falls_back_to_a_rebuild_on_sqlite():
 def test_plan_is_empty_when_nothing_changed():
     model = _people()
     assert plan(model, model, POSTGRES) == []
+
+
+def test_every_constraint_kind_renders_on_every_dialect():
+    """CORE-25: each kind, each dialect, no connection."""
+    model = TableModel(
+        name="orders",
+        columns=(
+            ColumnModel("id", "INT"),
+            ColumnModel("code", "TEXT"),
+            ColumnModel("customer", "INT"),
+        ),
+        constraints=(
+            ConstraintModel(
+                "PRIMARY KEY", name="orders_pk", columns=("id", "code")
+            ),
+            ConstraintModel("UNIQUE", name="orders_code", columns=("code",)),
+            ConstraintModel("CHECK", name="orders_ck", expression="id > 0"),
+            ConstraintModel(
+                "FOREIGN KEY",
+                name="orders_fk",
+                columns=("customer",),
+                ref_table="customers",
+                ref_columns=("id",),
+                on_delete="cascade",
+                on_update="restrict",
+            ),
+        ),
+    )
+    for dialect, q in ((POSTGRES, '"'), (MYSQL, "`"), (SQLITE, '"')):
+        sql = render_create(model, dialect)
+        i, c, cu = (f"{q}id{q}", f"{q}code{q}", f"{q}customer{q}")
+        assert f"CONSTRAINT {q}orders_pk{q} PRIMARY KEY ({i}, {c})" in sql
+        assert f"CONSTRAINT {q}orders_code{q} UNIQUE ({c})" in sql
+        assert f"CONSTRAINT {q}orders_ck{q} CHECK (id > 0)" in sql
+        assert (
+            f"CONSTRAINT {q}orders_fk{q} FOREIGN KEY ({cu}) REFERENCES "
+            f"{q}customers{q} ({i}) ON DELETE CASCADE ON UPDATE RESTRICT"
+            in sql
+        )
+
+
+def test_an_unnamed_primary_key_constraint_still_renders_bare():
+    model = TableModel(
+        name="t",
+        columns=(ColumnModel("a", "INT"), ColumnModel("b", "INT")),
+        constraints=(ConstraintModel("PRIMARY KEY", columns=("a", "b")),),
+    )
+    assert '  PRIMARY KEY ("a", "b")' in render_create(model, POSTGRES)
+
+
+def test_a_dialect_without_a_kind_leaves_it_out():
+    limited = replace(POSTGRES, constraint_kinds=("PRIMARY KEY", "UNIQUE"))
+    model = TableModel(
+        name="t",
+        columns=(ColumnModel("a", "INT"),),
+        constraints=(ConstraintModel("CHECK", expression="a > 0"),),
+    )
+    assert "CHECK" not in render_create(model, limited)
+
+
+def test_index_columns_carry_a_direction():
+    model = TableModel(
+        name="t",
+        columns=(ColumnModel("a", "INT"), ColumnModel("b", "INT")),
+        indexes=(
+            IndexModel(
+                name="t_ab",
+                columns=("a", "b"),
+                directions=("DESC", ""),
+            ),
+        ),
+    )
+    assert render_indexes(model, POSTGRES) == [
+        'CREATE INDEX "t_ab" ON "t" ("a" DESC, "b")'
+    ]
+    # An index that says nothing about direction renders as it always did.
+    plain = TableModel(
+        name="t",
+        columns=(ColumnModel("a", "INT"),),
+        indexes=(IndexModel(name="t_a", columns=("a",)),),
+    )
+    assert render_indexes(plain, POSTGRES) == ['CREATE INDEX "t_a" ON "t" ("a")']
+
+
+def test_index_directions_round_trip():
+    model = TableModel(
+        name="t",
+        columns=(ColumnModel("a", "INT"),),
+        indexes=(
+            IndexModel(name="t_a", columns=("a",), directions=("DESC",)),
+        ),
+    )
+    assert from_dict(to_dict(model)).indexes[0].directions == ("DESC",)

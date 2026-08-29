@@ -21,7 +21,7 @@ import pytest
 from gi.repository import Gtk  # noqa: F401  (initialises GTK types)
 
 from sqlide.backend.connections import ConnectionProfile
-from sqlide.backend.db.base import TypeSpec
+from sqlide.backend.db.base import ColumnInfo, TypeSpec
 from sqlide.backend.db.metadata import Capabilities, NodeRef
 from sqlide.backend.db.sqlite.connector import SqliteConnector
 from sqlide.frontend import table_designer as designer_module
@@ -56,6 +56,17 @@ class _FakeProvider:
 
     def schemas(self, *, include_system: bool = False):
         return ["billing", "public"] if self._schemas else []
+
+    def list_sources(self):
+        schema = "billing" if self._schemas else ""
+        return [
+            NodeRef(kind="table", name="customers", schema=schema),
+            NodeRef(kind="table", name="regions", schema=schema),
+        ]
+
+    def columns_of(self, ref):
+        return [ColumnInfo(name="id", type="integer"),
+            ColumnInfo(name="code", type="text"),]
 
 
 @pytest.fixture()
@@ -158,3 +169,111 @@ def test_designer_makes_no_direct_connector_catalog_calls(connector):
     text = open(source).read()
     assert "connector.column_type_specs" not in text
     assert ".column_type_specs()" in text  # via the provider
+
+
+# Constraints and indexes (CORE-25)
+
+
+def test_a_table_with_every_constraint_kind_is_designed_in_the_tab(
+    monkeypatch, connector
+):
+    tab = _tab(monkeypatch, connector, schemas=False)
+    tab._table_name.set_text("orders")
+    for index, (name, pk) in enumerate(
+        [("id", True), ("code", True), ("customer", False)]
+    ):
+        if index:
+            tab._add_row()
+        row = tab._rows[index]
+        row.name.set_text(name)
+        row._type.set_selected(0)
+        row.pk.set_active(pk)
+
+    unique = tab._add_constraint()
+    unique.set_kind("UNIQUE")
+    unique.name.set_text("orders_code")
+    unique.columns.set_columns(["code"])
+
+    check = tab._add_constraint()
+    check.set_kind("CHECK")
+    check._expression.set_text("id > 0")
+
+    fk = tab._add_constraint()
+    fk.set_kind("FOREIGN KEY")
+    fk.columns.set_columns(["customer"])
+    fk._ref_table.set_selected(0)  # customers
+    fk._ref_cols.set_columns(["id"])
+    fk._on_delete.set_selected(3)  # CASCADE
+
+    model = tab.model()
+    assert model.primary_key == ("id", "code")
+    kinds = [c.kind for c in model.constraints]
+    assert set(kinds) == {"PRIMARY KEY", "UNIQUE", "CHECK", "FOREIGN KEY"}
+    sql = tab._build_sql()
+    assert 'PRIMARY KEY ("id", "code")' in sql
+    assert 'CONSTRAINT "orders_code" UNIQUE ("code")' in sql
+    assert "CHECK (id > 0)" in sql
+    assert 'FOREIGN KEY ("customer") REFERENCES "customers" ("id")' in sql
+    assert "ON DELETE CASCADE" in sql
+
+
+def test_indexes_are_part_of_the_script_the_dialog_lists(
+    monkeypatch, connector
+):
+    tab = _tab(monkeypatch, connector, schemas=False)
+    _fill(tab)
+    index = tab._add_index()
+    index.name.set_text("invoices_id")
+    index.columns.set_columns(["id"])
+    index.unique.set_active(True)
+    statements = tab._statements()
+    assert len(statements) == 2
+    assert statements[0].startswith("CREATE TABLE")
+    assert statements[1] == 'CREATE UNIQUE INDEX "invoices_id" ON "invoices" ("id")'
+    # And the preview shows the whole script, not only the CREATE TABLE.
+    assert "CREATE UNIQUE INDEX" in tab._preview.get_text()
+
+
+def test_the_pk_checkbox_and_the_constraints_view_mirror_each_other(
+    monkeypatch, connector
+):
+    tab = _tab(monkeypatch, connector, schemas=False)
+    _fill(tab)
+    # Ticking the checkbox creates the PRIMARY KEY row.
+    tab._rows[0].pk.set_active(True)
+    row = tab._pk_row()
+    assert row is not None and row.columns.columns() == ("id",)
+    # Clearing it takes the row away again.
+    tab._rows[0].pk.set_active(False)
+    assert tab._pk_row() is None
+    # And editing the constraints view ticks the checkbox back.
+    row = tab._add_constraint()
+    row.set_kind("PRIMARY KEY")
+    row.columns.set_columns(["id"])
+    tab._constraint_changed()
+    assert tab._rows[0].pk.get_active()
+
+
+def test_unfinished_constraint_rows_block_create_with_a_reason(
+    monkeypatch, connector
+):
+    tab = _tab(monkeypatch, connector, schemas=False)
+    _fill(tab)
+    assert tab._problem() == ""
+    row = tab._add_constraint()
+    row.set_kind("CHECK")
+    row.name.set_text("positive")
+    assert "CHECK" in tab._problem()
+    assert not tab._create.get_sensitive()
+    row._expression.set_text("id > 0")
+    tab._refresh()
+    assert tab._problem() == ""
+
+
+def test_index_fields_follow_the_dialects_flags(monkeypatch, connector):
+    # SQLite has partial indexes and no access method; the row shows
+    # exactly that, and nothing in the tab names an engine.
+    tab = _tab(monkeypatch, connector, schemas=False)
+    row = tab._add_index()
+    assert not row._method.get_visible()
+    assert row._where.get_visible()

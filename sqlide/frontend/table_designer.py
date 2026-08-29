@@ -19,12 +19,28 @@ goes into `TableModel.schema` so the renderer qualifies the name. Where
 it is off — MySQL, SQLite — no chooser appears and the name stays
 bare. There is no engine name anywhere in this file.
 
-Below the columns, a live read-only preview of the generated statement,
+Columns are one of three views of the same TableModel, switched in the
+top bar (CORE-25): **Constraints** is a list of rows — a kind, an
+optional name, the columns it covers, and the fields that kind needs:
+a CHECK expression, or a referenced table (offered from the provider's
+own sources, with its columns read from the catalog) plus ON DELETE and
+ON UPDATE actions. **Indexes** is name, columns with a direction each,
+unique, and the method and partial predicate where the engine has them.
+Which constraint kinds are offered and which index fields appear come
+from the backend `Dialect`'s flags, never from an engine name. The
+per-column primary-key checkbox stays and mirrors both ways: ticking it
+shows up as a PRIMARY KEY row in the Constraints view, and editing that
+row ticks the boxes.
+
+Below the views, a live read-only preview of the generated statements,
 rebuilt on every keystroke from the tab's TableModel through
-`backend/db/table_model.render_create`, so the model, the quoting and
-the dialect quirks all stay in the backend. While the form is incomplete
+`backend/db/table_model.plan`, so the model, the quoting and the
+dialect quirks all stay in the backend. Indexes are objects of their
+own on every engine we speak to, so what the preview shows — and what
+the confirmation dialog lists — is a script: the CREATE TABLE and a
+CREATE INDEX for each index. While the form is incomplete
 the preview says *what* is missing and Create is insensitive with the
-same reason — never a generic "something is wrong". Create shows the
+same reason — never a generic "something is wrong". Create shows every
 statement in an UpdatePreviewDialog before anything runs; on success
 the window reloads the sidebar and opens the new table's data tab.
 
@@ -42,9 +58,15 @@ from sqlide.backend.db import registry
 from sqlide.backend.db.base import Connector, TypeSpec
 from sqlide.backend.db.metadata import Capabilities, NodeRef
 from sqlide.backend.db.table_model import (
+    CASCADE_ACTIONS,
     ColumnDefault,
     ColumnModel,
+    ConstraintModel,
+    GENERIC,
+    IndexModel,
     TableModel,
+    dialect_for,
+    plan,
     render_create,
 )
 from sqlide.frontend.data_grid import UpdatePreviewDialog
@@ -66,9 +88,13 @@ class _ColumnRow(Gtk.ListBoxRow):
         on_changed: Callable[[], None],
         on_remove: Callable[["_ColumnRow"], None],
         on_move: Callable[["_ColumnRow", int], None],
+        on_pk: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(activatable=False, selectable=False)
         self._on_changed = on_changed
+        # The primary-key checkbox reports separately, because it also
+        # has to reach the constraints view (CORE-25).
+        self._on_pk = on_pk or on_changed
         self._specs: list[TypeSpec] = []
 
         outer = Gtk.Box(
@@ -206,7 +232,7 @@ class _ColumnRow(Gtk.ListBoxRow):
         if self.pk.get_active():
             self.not_null.set_active(True)
         self.not_null.set_sensitive(not self.pk.get_active())
-        self._on_changed()
+        self._on_pk()
 
     # Values
 
@@ -247,6 +273,406 @@ class _ColumnRow(Gtk.ListBoxRow):
         )
 
 
+class _ColumnChooser(Gtk.MenuButton):
+    """Pick some of the table's columns, in the order they are ticked.
+
+    A constraint covers columns and an index orders them, so both need
+    the same thing: a live list of the columns the designer currently
+    has, a tick per column, and — for an index — a direction beside
+    each tick. The order is the order the boxes were ticked in, which
+    is what a composite key and a multi-column index both care about.
+    """
+
+    def __init__(
+        self,
+        on_changed: Callable[[], None],
+        *,
+        directions: bool = False,
+        placeholder: str = "",
+    ) -> None:
+        super().__init__()
+        self._on_changed = on_changed
+        self._directions = directions
+        self._placeholder = placeholder or _("Columns")
+        self._chosen: list[str] = []
+        self._desc: set[str] = set()
+        self._available: list[str] = []
+        self._box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=4,
+            margin_top=8,
+            margin_bottom=8,
+            margin_start=8,
+            margin_end=8,
+        )
+        self._empty = Gtk.Label(label=_("Name a column first"))
+        self._empty.add_css_class("dim-label")
+        self._box.append(self._empty)
+        self.set_popover(Gtk.Popover(child=self._box))
+        describe(self, _("Columns this covers"))
+        self._relabel()
+
+    # State
+
+    def columns(self) -> tuple[str, ...]:
+        return tuple(self._chosen)
+
+    def directions(self) -> tuple[str, ...]:
+        return tuple(
+            "DESC" if name in self._desc else "" for name in self._chosen
+        )
+
+    def set_columns(self, names: list[str]) -> None:
+        """Choose exactly `names` (used to mirror the per-column
+        primary-key checkboxes into the constraints view)."""
+        self._chosen = [n for n in names]
+        self._rebuild()
+        self._relabel()
+
+    def set_available(self, names: list[str]) -> None:
+        """The columns the designer currently has. Anything chosen and
+        then renamed away drops out, so a constraint can never name a
+        column the table does not have."""
+        self._available = list(names)
+        lowered = {n.lower() for n in names}
+        kept = [n for n in self._chosen if n.lower() in lowered]
+        # Follow a rename through: same position, new name.
+        self._chosen = kept
+        self._rebuild()
+        self._relabel()
+
+    # Widgets
+
+    def _rebuild(self) -> None:
+        child = self._box.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self._box.remove(child)
+            child = nxt
+        if not self._available:
+            self._box.append(self._empty)
+            return
+        for name in self._available:
+            line = Gtk.Box(spacing=6)
+            check = Gtk.CheckButton(label=name, hexpand=True)
+            check.set_active(any(c == name for c in self._chosen))
+            check.connect("toggled", self._on_toggled, name)
+            line.append(check)
+            if self._directions:
+                order = Gtk.ToggleButton(
+                    label=_("DESC"), active=name in self._desc
+                )
+                order.add_css_class("flat")
+                describe(order, _("Sort this column descending"))
+                order.connect("toggled", self._on_direction, name)
+                line.append(order)
+            self._box.append(line)
+
+    def _on_toggled(self, button: Gtk.CheckButton, name: str) -> None:
+        if button.get_active():
+            if name not in self._chosen:
+                self._chosen.append(name)
+        elif name in self._chosen:
+            self._chosen.remove(name)
+        self._relabel()
+        self._on_changed()
+
+    def _on_direction(self, button: Gtk.ToggleButton, name: str) -> None:
+        if button.get_active():
+            self._desc.add(name)
+        else:
+            self._desc.discard(name)
+        self._relabel()
+        self._on_changed()
+
+    def _relabel(self) -> None:
+        if not self._chosen:
+            self.set_label(self._placeholder)
+            return
+        parts = [
+            f"{name} DESC" if self._directions and name in self._desc else name
+            for name in self._chosen
+        ]
+        self.set_label(", ".join(parts))
+
+
+class _ConstraintRow(Gtk.ListBoxRow):
+    """One constraint: its kind, an optional name, the columns it
+    covers, and the fields that kind needs — a CHECK expression, or a
+    referenced table, its columns and the referential actions."""
+
+    def __init__(
+        self,
+        kinds: tuple[str, ...],
+        on_changed: Callable[[], None],
+        on_remove: Callable[["_ConstraintRow"], None],
+        ref_tables: Callable[[], list[str]],
+        ref_columns: Callable[[str, Callable[[list[str]], None]], None],
+    ) -> None:
+        super().__init__(activatable=False, selectable=False)
+        self._on_changed = on_changed
+        self._ref_columns = ref_columns
+        self._ref_tables_of = ref_tables
+        self._kinds = list(kinds)
+
+        outer = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=6,
+            margin_top=8,
+            margin_bottom=8,
+            margin_start=8,
+            margin_end=8,
+        )
+        top = Gtk.Box(spacing=6)
+        self._kind = Gtk.DropDown(model=Gtk.StringList.new(self._kinds))
+        describe(self._kind, _("Constraint kind"))
+        self._kind.connect("notify::selected", self._on_kind_changed)
+        self.name = Gtk.Entry(
+            placeholder_text=_("constraint name (optional)"), hexpand=True
+        )
+        self.name.connect("changed", lambda *_a: on_changed())
+        self.columns = _ColumnChooser(on_changed)
+        remove = Gtk.Button(icon_name="user-trash-symbolic")
+        remove.add_css_class("flat")
+        describe(remove, _("Remove this constraint"))
+        remove.connect("clicked", lambda *_a: on_remove(self))
+        for child in (self._kind, self.name, self.columns, remove):
+            top.append(child)
+        outer.append(top)
+
+        # CHECK
+        self._check_box = Gtk.Box(spacing=6, visible=False)
+        check_label = Gtk.Label(label=_("Check"))
+        check_label.add_css_class("dim-label")
+        self._expression = Gtk.Entry(
+            placeholder_text=_("SQL expression"), hexpand=True
+        )
+        self._expression.connect("changed", lambda *_a: on_changed())
+        self._check_box.append(check_label)
+        self._check_box.append(self._expression)
+        outer.append(self._check_box)
+
+        # FOREIGN KEY
+        self._fk_box = Gtk.Box(spacing=6, visible=False)
+        references = Gtk.Label(label=_("References"))
+        references.add_css_class("dim-label")
+        self._ref_table = Gtk.DropDown(model=Gtk.StringList.new([]))
+        self._ref_table.set_expression(
+            Gtk.PropertyExpression.new(Gtk.StringObject, None, "string")
+        )
+        self._ref_table.set_enable_search(True)
+        describe(self._ref_table, _("Referenced table"))
+        self._ref_table.connect("notify::selected", self._on_ref_table)
+        self._ref_cols = _ColumnChooser(
+            on_changed, placeholder=_("Referenced columns")
+        )
+        on_delete = Gtk.Label(label=_("On delete"))
+        on_delete.add_css_class("dim-label")
+        self._on_delete = self._action_dropdown(on_changed)
+        on_update = Gtk.Label(label=_("On update"))
+        on_update.add_css_class("dim-label")
+        self._on_update = self._action_dropdown(on_changed)
+        for child in (
+            references, self._ref_table, self._ref_cols,
+            on_delete, self._on_delete, on_update, self._on_update,
+        ):
+            self._fk_box.append(child)
+        outer.append(self._fk_box)
+
+        self.set_child(outer)
+        self._sync_kind_fields()
+
+    def _action_dropdown(self, on_changed) -> Gtk.DropDown:
+        # The engine's own default is the first entry, so a foreign key
+        # that says nothing renders without an ON … clause.
+        names = [_("Default"), *CASCADE_ACTIONS]
+        drop = Gtk.DropDown(model=Gtk.StringList.new(names))
+        describe(drop, _("Referential action"))
+        drop.connect("notify::selected", lambda *_a: on_changed())
+        return drop
+
+    @staticmethod
+    def _action_of(drop: Gtk.DropDown) -> str:
+        index = drop.get_selected()
+        return CASCADE_ACTIONS[index - 1] if index >= 1 else ""
+
+    def kind(self) -> str:
+        index = self._kind.get_selected()
+        if 0 <= index < len(self._kinds):
+            return self._kinds[index]
+        return self._kinds[0] if self._kinds else "UNIQUE"
+
+    def set_kind(self, kind: str) -> None:
+        if kind in self._kinds:
+            self._kind.set_selected(self._kinds.index(kind))
+
+    def set_kinds(self, kinds: tuple[str, ...]) -> None:
+        """Swap in the kinds this engine enforces (they arrive with the
+        connector). Never a branch on an engine name — the dialect
+        declares them."""
+        previous = self.kind()
+        self._kinds = list(kinds)
+        self._kind.set_model(Gtk.StringList.new(self._kinds))
+        self.set_kind(previous if previous in self._kinds else self.kind())
+        self._sync_kind_fields()
+
+    def _on_kind_changed(self, *_args) -> None:
+        self._sync_kind_fields()
+        self._on_changed()
+
+    def _sync_kind_fields(self) -> None:
+        kind = self.kind()
+        self._check_box.set_visible(kind == "CHECK")
+        self._fk_box.set_visible(kind == "FOREIGN KEY")
+        # A CHECK constrains an expression, not a column list.
+        self.columns.set_visible(kind != "CHECK")
+        if kind == "FOREIGN KEY":
+            names = self._ref_tables_of()
+            model = self._ref_table.get_model()
+            listed = [model.get_string(i) for i in range(model.get_n_items())]
+            if listed != names:
+                self._ref_table.set_model(Gtk.StringList.new(names))
+
+    def _on_ref_table(self, *_args) -> None:
+        table = self.ref_table()
+        if table:
+            self._ref_columns(table, self._ref_cols.set_available)
+        else:
+            self._ref_cols.set_available([])
+        self._on_changed()
+
+    def ref_table(self) -> str:
+        item = self._ref_table.get_selected_item()
+        return item.get_string() if item is not None else ""
+
+    def set_available(self, names: list[str]) -> None:
+        self.columns.set_available(names)
+
+    def is_empty(self) -> bool:
+        return (
+            not self.columns.columns()
+            and not self._expression.get_text().strip()
+            and not self.name.get_text().strip()
+        )
+
+    def problem(self) -> str:
+        """Why this row cannot be rendered yet, or ""."""
+        kind = self.kind()
+        if kind == "CHECK":
+            if not self._expression.get_text().strip():
+                return "A CHECK constraint needs an expression."
+            return ""
+        if not self.columns.columns():
+            return f"A {kind} constraint needs columns."
+        if kind == "FOREIGN KEY" and not self.ref_table():
+            return "A foreign key needs a referenced table."
+        return ""
+
+    def constraint(self) -> ConstraintModel:
+        qualified = self.ref_table()
+        schema, _sep, table = qualified.rpartition(".")
+        return ConstraintModel(
+            kind=self.kind(),
+            name=self.name.get_text().strip(),
+            columns=self.columns.columns(),
+            ref_schema=schema,
+            ref_table=table,
+            ref_columns=self._ref_cols.columns(),
+            on_delete=self._action_of(self._on_delete),
+            on_update=self._action_of(self._on_update),
+            expression=self._expression.get_text().strip(),
+        )
+
+
+class _IndexRow(Gtk.ListBoxRow):
+    """One index: a name, the columns it orders, whether it is unique,
+    and — where the engine has them — an access method and a partial
+    predicate."""
+
+    def __init__(
+        self,
+        on_changed: Callable[[], None],
+        on_remove: Callable[["_IndexRow"], None],
+    ) -> None:
+        super().__init__(activatable=False, selectable=False)
+        self._on_changed = on_changed
+        outer = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=6,
+            margin_top=8,
+            margin_bottom=8,
+            margin_start=8,
+            margin_end=8,
+        )
+        top = Gtk.Box(spacing=6)
+        self.name = Gtk.Entry(placeholder_text=_("index name"), hexpand=True)
+        self.name.connect("changed", lambda *_a: on_changed())
+        self.columns = _ColumnChooser(on_changed, directions=True)
+        self.unique = Gtk.CheckButton(label=_("Unique"))
+        self.unique.connect("toggled", lambda *_a: on_changed())
+        remove = Gtk.Button(icon_name="user-trash-symbolic")
+        remove.add_css_class("flat")
+        describe(remove, _("Remove this index"))
+        remove.connect("clicked", lambda *_a: on_remove(self))
+        for child in (self.name, self.columns, self.unique, remove):
+            top.append(child)
+        outer.append(top)
+
+        below = Gtk.Box(spacing=6)
+        self._method_label = Gtk.Label(label=_("Method"))
+        self._method_label.add_css_class("dim-label")
+        self._method = Gtk.Entry(placeholder_text=_("btree"), width_chars=10)
+        self._method.connect("changed", lambda *_a: on_changed())
+        self._where_label = Gtk.Label(label=_("Where"))
+        self._where_label.add_css_class("dim-label")
+        self._where = Gtk.Entry(
+            placeholder_text=_("SQL predicate"), hexpand=True
+        )
+        self._where.connect("changed", lambda *_a: on_changed())
+        for child in (
+            self._method_label, self._method,
+            self._where_label, self._where,
+        ):
+            below.append(child)
+        outer.append(below)
+        self.set_child(outer)
+        self.set_features(method=False, partial=False)
+
+    def set_features(self, *, method: bool, partial: bool) -> None:
+        """Show only what this engine's CREATE INDEX accepts — the
+        dialect's flags, not an engine name."""
+        self._method_label.set_visible(method)
+        self._method.set_visible(method)
+        self._where_label.set_visible(partial)
+        self._where.set_visible(partial)
+
+    def set_available(self, names: list[str]) -> None:
+        self.columns.set_available(names)
+
+    def is_empty(self) -> bool:
+        return not self.columns.columns() and not self.name.get_text().strip()
+
+    def problem(self) -> str:
+        if not self.columns.columns():
+            name = self.name.get_text().strip()
+            return (
+                f"Index “{name}” has no columns."
+                if name
+                else "An index needs columns."
+            )
+        return ""
+
+    def index(self) -> IndexModel:
+        return IndexModel(
+            name=self.name.get_text().strip(),
+            columns=self.columns.columns(),
+            directions=self.columns.directions(),
+            unique=self.unique.get_active(),
+            method=self._method.get_text().strip(),
+            where=self._where.get_text().strip(),
+        )
+
+
 class TableDesignerTab(Gtk.Box):
     def __init__(
         self,
@@ -265,6 +691,14 @@ class TableDesignerTab(Gtk.Box):
         self._connector: Connector | None = None
         self._specs: list[TypeSpec] = []
         self._rows: list[_ColumnRow] = []
+        self._constraint_rows: list[_ConstraintRow] = []
+        self._index_rows: list[_IndexRow] = []
+        # Guards the two-way primary-key mirroring below: the checkbox
+        # writes the constraint row and the constraint row writes the
+        # checkbox, and neither may set the other off again.
+        self._syncing = False
+        self._dialect = GENERIC
+        self._sources: list[NodeRef] = []
         # The node the designer was launched from, so a table created
         # off a schema row lands in that schema (CORE-24). Capabilities
         # and the schema list arrive with the catalog load below; until
@@ -302,8 +736,13 @@ class TableDesignerTab(Gtk.Box):
             placeholder_text="table_name", hexpand=True
         )
         self._table_name.connect("changed", lambda *_: self._refresh())
-        add = Gtk.Button(label=_("Add Column"))
-        add.connect("clicked", lambda *_: self._add_row(focus=True))
+        # One switcher over three views of the same TableModel; the
+        # preview below stays visible in all of them.
+        self._stack = Gtk.Stack()
+        self._stack.connect("notify::visible-child-name", self._on_view)
+        switcher = Gtk.StackSwitcher(stack=self._stack)
+        self._add = Gtk.Button(label=_("Add Column"))
+        self._add.connect("clicked", lambda *_: self._add_current())
         self._create = Gtk.Button(label=_("Create"))
         self._create.add_css_class("suggested-action")
         self._create.connect("clicked", self._on_create_clicked)
@@ -311,13 +750,29 @@ class TableDesignerTab(Gtk.Box):
         bar.append(self._schema)
         bar.append(name_label)
         bar.append(self._table_name)
-        bar.append(add)
+        bar.append(switcher)
+        bar.append(self._add)
         bar.append(self._create)
         self.append(bar)
 
         self._list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
         self._list.add_css_class("boxed-list-separate")
-        columns = Gtk.ScrolledWindow(child=self._list, vexpand=True)
+        self._constraint_list = Gtk.ListBox(
+            selection_mode=Gtk.SelectionMode.NONE
+        )
+        self._constraint_list.add_css_class("boxed-list-separate")
+        self._index_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        self._index_list.add_css_class("boxed-list-separate")
+        for name, title, child in (
+            ("columns", _("Columns"), self._list),
+            ("constraints", _("Constraints"), self._constraint_list),
+            ("indexes", _("Indexes"), self._index_list),
+        ):
+            page = self._stack.add_titled(
+                Gtk.ScrolledWindow(child=child, vexpand=True), name, title
+            )
+            page.set_name(name)
+        columns = self._stack
 
         preview_bar = Gtk.Box(
             spacing=6, margin_start=6, margin_end=6, margin_top=6
@@ -370,12 +825,24 @@ class TableDesignerTab(Gtk.Box):
                 provider.column_type_specs(),
                 provider.capabilities(),
                 provider.schemas(),
+                # Foreign keys point at a table the provider knows
+                # about, so the target list is the provider's, not a
+                # free-text entry (CORE-24).
+                provider.list_sources(),
             )
 
         def ready(loaded) -> None:
-            self._connector, self._specs, self._caps, self._schemas = loaded
+            (
+                self._connector,
+                self._specs,
+                self._caps,
+                self._schemas,
+                self._sources,
+            ) = loaded
+            self._dialect = dialect_for(self._connector)
             for row in self._rows:
                 row.set_specs(self._specs)
+            self._sync_dialect()
             self._sync_schema_chooser()
             self._refresh()
 
@@ -416,11 +883,170 @@ class TableDesignerTab(Gtk.Box):
         item = self._schema.get_selected_item()
         return item.get_string() if item is not None else ""
 
+    # Views
+
+    def _view(self) -> str:
+        return self._stack.get_visible_child_name() or "columns"
+
+    def _on_view(self, *_args) -> None:
+        """The Add button adds to whatever view is showing — one
+        button, three meanings, so the bar does not grow three."""
+        view = self._view()
+        self._add.set_label(
+            {
+                "columns": _("Add Column"),
+                "constraints": _("Add Constraint"),
+                "indexes": _("Add Index"),
+            }[view]
+        )
+
+    def _add_current(self) -> None:
+        view = self._view()
+        if view == "constraints":
+            self._add_constraint(focus=True)
+        elif view == "indexes":
+            self._add_index(focus=True)
+        else:
+            self._add_row(focus=True)
+
+    def _sync_dialect(self) -> None:
+        """Push the dialect's capability flags into the rows: the
+        constraint kinds the engine enforces, and whether CREATE INDEX
+        here takes a method or a partial predicate. No engine name is
+        ever tested in this file — the dialect declares all of it."""
+        for row in self._constraint_rows:
+            row.set_kinds(self._dialect.constraint_kinds)
+        for row in self._index_rows:
+            row.set_features(
+                method=self._dialect.index_method,
+                partial=self._dialect.partial_indexes,
+            )
+
+    # Constraints and indexes
+
+    def _column_names(self) -> list[str]:
+        return [row.name_text() for row in self._rows if row.name_text()]
+
+    def _ref_tables(self) -> list[str]:
+        """The tables a foreign key may point at, qualified where the
+        engine has schemas."""
+        names = []
+        for ref in self._sources:
+            names.append(
+                f"{ref.schema}.{ref.name}"
+                if self._dialect.schemas and ref.schema
+                else ref.name
+            )
+        return sorted(dict.fromkeys(names))
+
+    def _ref_columns(
+        self, qualified: str, deliver: Callable[[list[str]], None]
+    ) -> None:
+        """The referenced table's columns, from the provider, off the
+        main thread — the FK column chooser fills itself from the same
+        catalog the sidebar reads."""
+        schema, _sep, table = qualified.rpartition(".")
+
+        def work():
+            connector = self._ensure(self.profile)
+            provider = registry.create_provider(self.profile.kind, connector)
+            ref = NodeRef(kind="table", name=table, schema=schema)
+            return [column.name for column in provider.columns_of(ref)]
+
+        run_async(work, deliver, lambda exc: self._show_error(str(exc)))
+
+    def _add_constraint(self, focus: bool = False) -> _ConstraintRow:
+        row = _ConstraintRow(
+            self._dialect.constraint_kinds,
+            self._constraint_changed,
+            self._remove_constraint,
+            self._ref_tables,
+            self._ref_columns,
+        )
+        row.set_available(self._column_names())
+        self._constraint_rows.append(row)
+        self._constraint_list.append(row)
+        if focus:
+            row.name.grab_focus()
+        self._refresh()
+        return row
+
+    def _remove_constraint(self, row: _ConstraintRow) -> None:
+        self._constraint_rows.remove(row)
+        self._constraint_list.remove(row)
+        if row.kind() == "PRIMARY KEY":
+            self._pk_to_columns(())
+        self._refresh()
+
+    def _add_index(self, focus: bool = False) -> _IndexRow:
+        row = _IndexRow(self._refresh, self._remove_index)
+        row.set_features(
+            method=self._dialect.index_method,
+            partial=self._dialect.partial_indexes,
+        )
+        row.set_available(self._column_names())
+        self._index_rows.append(row)
+        self._index_list.append(row)
+        if focus:
+            row.name.grab_focus()
+        self._refresh()
+        return row
+
+    def _remove_index(self, row: _IndexRow) -> None:
+        self._index_rows.remove(row)
+        self._index_list.remove(row)
+        self._refresh()
+
+    # The primary key, from both ends
+
+    def _pk_row(self) -> _ConstraintRow | None:
+        for row in self._constraint_rows:
+            if row.kind() == "PRIMARY KEY":
+                return row
+        return None
+
+    def _pk_to_columns(self, names: tuple[str, ...]) -> None:
+        """Mirror the constraints view's primary key onto the column
+        checkboxes."""
+        wanted = {n.lower() for n in names}
+        self._syncing = True
+        try:
+            for row in self._rows:
+                row.pk.set_active(row.name_text().lower() in wanted)
+        finally:
+            self._syncing = False
+
+    def _columns_to_pk(self) -> None:
+        """Mirror the column checkboxes into the constraints view: the
+        checkbox is the fast path, not a second source of truth, so
+        ticking it shows up as a PRIMARY KEY row and clearing the last
+        one takes the row away again."""
+        flagged = [row.name_text() for row in self._rows if row.pk.get_active()]
+        row = self._pk_row()
+        self._syncing = True
+        try:
+            if flagged and row is None:
+                row = self._add_constraint()
+                row.set_kind("PRIMARY KEY")
+            if row is None:
+                return
+            if flagged:
+                row.columns.set_columns(flagged)
+            else:
+                self._constraint_rows.remove(row)
+                self._constraint_list.remove(row)
+        finally:
+            self._syncing = False
+
     # Columns
 
     def _add_row(self, focus: bool = False) -> None:
         row = _ColumnRow(
-            self._specs, self._refresh, self._remove_row, self._move_row
+            self._specs,
+            self._refresh,
+            self._remove_row,
+            self._move_row,
+            self._pk_toggled,
         )
         self._rows.append(row)
         self._list.append(row)
@@ -452,6 +1078,19 @@ class TableDesignerTab(Gtk.Box):
         self._list.insert(row, target)
         self._refresh()
 
+    def _pk_toggled(self) -> None:
+        if self._syncing:
+            return
+        self._columns_to_pk()
+        self._refresh()
+
+    def _constraint_changed(self) -> None:
+        if not self._syncing:
+            row = self._pk_row()
+            if row is not None:
+                self._pk_to_columns(row.columns.columns())
+        self._refresh()
+
     # Validation, preview, create
 
     def _problem(self) -> str:
@@ -474,6 +1113,18 @@ class TableDesignerTab(Gtk.Box):
             if name.lower() in seen:
                 return f"Two columns are named “{name}”."
             seen.add(name.lower())
+        for row in self._constraint_rows:
+            if row.is_empty():
+                continue  # an untouched row is not an error
+            problem = row.problem()
+            if problem:
+                return problem
+        for row in self._index_rows:
+            if row.is_empty():
+                continue
+            problem = row.problem()
+            if problem:
+                return problem
         return ""
 
     def model(self) -> TableModel:
@@ -484,6 +1135,16 @@ class TableDesignerTab(Gtk.Box):
             name=self._table_name.get_text().strip(),
             schema=self.schema(),
             columns=tuple(c for c in (row.column() for row in self._rows) if c),
+            constraints=tuple(
+                row.constraint()
+                for row in self._constraint_rows
+                if not row.is_empty() and not row.problem()
+            ),
+            indexes=tuple(
+                row.index()
+                for row in self._index_rows
+                if not row.is_empty() and not row.problem()
+            ),
         )
 
     def _build_sql(self) -> str:
@@ -494,17 +1155,39 @@ class TableDesignerTab(Gtk.Box):
             return ""
         return render_create(self.model(), self._connector)
 
+    def _statements(self) -> list[str]:
+        """Everything the designer will run, in order: the CREATE, then
+        the CREATE INDEX for each index and whatever else the engine
+        needs beside it. `plan()` decides — indexes are objects of
+        their own on every engine we speak to, so the preview is a
+        script, not one statement."""
+        if self._problem():
+            return []
+        return [
+            statement.sql
+            for statement in plan(None, self.model(), self._connector)
+        ]
+
     def _refresh(self) -> None:
+        # Constraints and indexes cover columns, so every view follows
+        # the column names as they are typed.
+        names = self._column_names()
+        for row in self._constraint_rows:
+            row.set_available(names)
+        for row in self._index_rows:
+            row.set_available(names)
         problem = self._problem()
         self._create.set_sensitive(not problem)
         self._create.set_tooltip_text(
             problem
-            or "Show the generated CREATE TABLE for review, then run it"
+            or "Show the generated statements for review, then run them"
         )
         if problem:
             self._preview.set_text(f"-- {problem}")
         else:
-            self._preview.set_text(self._build_sql() + ";")
+            self._preview.set_text(
+                ";\n\n".join(self._statements()) + ";"
+            )
 
     def _copy_sql(self) -> None:
         display = Gdk.Display.get_default()
@@ -516,31 +1199,41 @@ class TableDesignerTab(Gtk.Box):
         if problem:
             self._show_error(problem)
             return
-        sql = self._build_sql()
+        statements = self._statements()
+        count = len(statements)
         UpdatePreviewDialog(
-            [sql + ";"],
-            lambda: self._execute(sql),
-            caption="Runs one CREATE TABLE statement on "
-            f"“{self.profile.name}”.",
+            [sql + ";" for sql in statements],
+            lambda: self._execute(statements),
+            caption=(
+                "Runs one CREATE TABLE statement on "
+                f"“{self.profile.name}”."
+                if count == 1
+                else f"Runs {count} statements on “{self.profile.name}” — "
+                "the table and its indexes."
+            ),
             width=720,
             height=520,
         ).present(self)
 
-    def _execute(self, sql: str) -> None:
+    def _execute(self, statements: list[str]) -> None:
         table = self._table_name.get_text().strip()
-
         schema = self.schema()
+        script = ";\n".join(statements) + ";"
+
+        def work():
+            connector = self._ensure(self.profile)
+            for sql in statements:
+                connector.execute(sql)
+            return None
 
         def done(_result) -> None:
             if self.on_ran is not None:
-                self.on_ran(sql, True)
+                self.on_ran(script, True)
             self._on_created(table, schema)
 
         def failed(exc: Exception) -> None:
             self._show_error(str(exc))
             if self.on_ran is not None:
-                self.on_ran(sql, False)
+                self.on_ran(script, False)
 
-        run_async(
-            lambda: self._ensure(self.profile).execute(sql), done, failed
-        )
+        run_async(work, done, failed)

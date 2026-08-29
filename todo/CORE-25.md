@@ -1,6 +1,6 @@
 ## CORE-25 — Constraints and indexes in the designer
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-23
 - **From:** RS-02 (see `docs/table-creator-research.md`)
 
@@ -43,11 +43,11 @@ and see them in the same generated statement.
 
 ### Acceptance criteria
 
-- [ ] A table with a composite primary key, a unique constraint, a
+- [x] A table with a composite primary key, a unique constraint, a
       check and a foreign key can be created entirely in the designer.
-- [ ] Indexes declared in the designer are created with the table, and
+- [x] Indexes declared in the designer are created with the table, and
       the preview dialog lists every statement it will run.
-- [ ] Ticking the PK checkbox on a column shows up in the Constraints
+- [x] Ticking the PK checkbox on a column shows up in the Constraints
       view and vice versa.
-- [ ] Rendering of each constraint kind per dialect is covered by
+- [x] Rendering of each constraint kind per dialect is covered by
       tests over the model, with no database connection.

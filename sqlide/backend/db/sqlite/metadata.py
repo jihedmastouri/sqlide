@@ -31,6 +31,10 @@ ALTER TABLE … RENAME COLUMN, which the definition tab already relies on.
 from __future__ import annotations
 
 from sqlide.backend.db.base import ConnectorError, ResultSet
+from sqlide.backend.db.table_model import (
+    SQLITE_COLUMN_OPTIONS,
+    SQLITE_TABLE_OPTIONS,
+)
 from sqlide.backend.db.metadata import (
     CATALOG_CATEGORIES,
     Capabilities,
@@ -43,6 +47,10 @@ from sqlide.backend.db.sqlite import pragmas
 class SqliteMetadata(MetadataProvider):
     HIERARCHY = ("connection", "object")
     CAPABILITIES = Capabilities(pragmas=True, constraints=True, keys=True)
+    #: WITHOUT ROWID and STRICT, and the one auto-numbered column
+    #: SQLite has (CORE-27).
+    TABLE_OPTIONS = SQLITE_TABLE_OPTIONS
+    COLUMN_OPTIONS = SQLITE_COLUMN_OPTIONS
 
     #: The folders the connection shows. There is no database or
     #: schema level to hang them off — one file is one database — so

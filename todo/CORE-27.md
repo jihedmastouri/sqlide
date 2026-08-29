@@ -1,6 +1,6 @@
 ## CORE-27 — Engine-specific table and column options
 
-- **Status:** todo
+- **Status:** Done
 - **Depends on:** CORE-23, CORE-24
 - **From:** RS-02 (see `docs/table-creator-research.md`)
 
@@ -44,12 +44,12 @@ rather than hard-coded in the frontend.
 
 ### Acceptance criteria
 
-- [ ] Creating a table on MySQL can set engine, charset, collation and
+- [x] Creating a table on MySQL can set engine, charset, collation and
       an `AUTO_INCREMENT` seed, and the preview shows them.
-- [ ] Creating a table on PostgreSQL can declare an identity column
+- [x] Creating a table on PostgreSQL can declare an identity column
       and a generated column.
-- [ ] Creating a table on SQLite can set `WITHOUT ROWID` and `STRICT`.
-- [ ] No option name appears in `frontend/`; adding one to a provider
+- [x] Creating a table on SQLite can set `WITHOUT ROWID` and `STRICT`.
+- [x] No option name appears in `frontend/`; adding one to a provider
       is enough to make it appear in the designer.
-- [ ] Rendering of each engine's options is covered by tests over the
+- [x] Rendering of each engine's options is covered by tests over the
       model, with no database connection.

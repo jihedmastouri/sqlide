@@ -19,13 +19,26 @@ goes into `TableModel.schema` so the renderer qualifies the name. Where
 it is off — MySQL, SQLite — no chooser appears and the name stays
 bare. There is no engine name anywhere in this file.
 
-Columns are one of three views of the same TableModel, switched in the
-top bar (CORE-25): **Constraints** is a list of rows — a kind, an
+Columns are one of four views of the same TableModel, switched in the
+top bar (CORE-25, CORE-27): **Constraints** is a list of rows — a kind, an
 optional name, the columns it covers, and the fields that kind needs:
 a CHECK expression, or a referenced table (offered from the provider's
 own sources, with its columns read from the catalog) plus ON DELETE and
 ON UPDATE actions. **Indexes** is name, columns with a direction each,
 unique, and the method and partial predicate where the engine has them.
+**Options** is the engine's own table options — a storage engine, a
+character set and a row format on one engine, an unlogged table,
+partitioning and storage parameters on another, a couple of bare
+keywords on a third — built entirely from the `OptionSpec`s the
+MetadataProvider hands over (CORE-27): a check button
+for a boolean, a chooser for a choice, an entry for text or a number,
+each labelled and explained by its spec. Columns get the same treatment
+for the options an engine writes into a column definition, identity and
+generated expressions among them. No option name is written down in
+this file — adding one to a provider is all it takes to make it appear,
+and an option whose kind this version has never heard of is not shown
+rather than guessed at. Labels and notes come from the backend in
+English and go through gettext here like everything else.
 Which constraint kinds are offered and which index fields appear come
 from the backend `Dialect`'s flags, never from an engine name. The
 per-column primary-key checkbox stays and mirrors both ways: ticking it
@@ -61,6 +74,7 @@ Session-only: tab_state() returns None, the tab is not restored.
 
 from __future__ import annotations
 
+from dataclasses import fields as dataclass_fields, replace
 from typing import Callable
 
 from gi.repository import Adw, Gdk, Gtk
@@ -77,9 +91,13 @@ from sqlide.backend.db.table_model import (
     ConstraintModel,
     GENERIC,
     IndexModel,
+    OptionSpec,
     Statement,
     TableModel,
     dialect_for,
+    option_on,
+    option_set,
+    option_value,
     plan,
     preflight,
     render_create,
@@ -244,6 +262,174 @@ class PlanPreviewDialog(Adw.Dialog):
         self.close()
         self._on_execute()
 
+#: A choice option's first entry: the engine's own default, which is
+#: what "no value" means and what an option starts on.
+_UNSET = "Default"
+
+
+class _OptionField:
+    """One engine option, as the widget its kind asks for.
+
+    The designer never names an option: it is handed `OptionSpec`s by
+    the provider and builds a check button for a boolean, a dropdown
+    for a choice and an entry for text or a number, labelled and
+    explained from the spec. A kind this version has never heard of
+    builds nothing and is simply not shown — the promise CORE-27 makes
+    about a provider growing an option the frontend has not been
+    taught.
+    """
+
+    def __init__(self, spec: OptionSpec, on_changed: Callable[[], None]) -> None:
+        self.spec = spec
+        self.widget: Gtk.Widget | None = None
+        self._entry: Gtk.Entry | None = None
+        self._check: Gtk.CheckButton | None = None
+        self._drop: Gtk.DropDown | None = None
+        self._choices: list[str] = []
+        label = _(spec.title)
+        if spec.kind == "boolean":
+            self._check = Gtk.CheckButton(label=label)
+            self._check.connect("toggled", lambda *_: on_changed())
+            self.widget = self._check
+        elif spec.kind == "choice" and spec.choices:
+            self._choices = [_UNSET, *spec.choices]
+            self._drop = Gtk.DropDown(
+                model=Gtk.StringList.new([_(_UNSET), *spec.choices])
+            )
+            self._drop.connect("notify::selected", lambda *_: on_changed())
+            self.widget = self._labelled(label, self._drop)
+        elif spec.kind in ("text", "integer"):
+            self._entry = Gtk.Entry(
+                width_chars=12, placeholder_text=spec.default or ""
+            )
+            self._entry.connect("changed", lambda *_: on_changed())
+            self.widget = self._labelled(label, self._entry)
+        if self.widget is not None and spec.note:
+            self.widget.set_tooltip_text(_(spec.note))
+            describe(self.widget, _(spec.note))
+
+    @staticmethod
+    def _labelled(label: str, child: Gtk.Widget) -> Gtk.Widget:
+        box = Gtk.Box(spacing=6)
+        caption = Gtk.Label(label=label)
+        caption.add_css_class("dim-label")
+        box.append(caption)
+        box.append(child)
+        return box
+
+    @property
+    def supported(self) -> bool:
+        return self.widget is not None
+
+    def value(self) -> str:
+        """What the widget says, in the model's own vocabulary: "true"
+        for a set boolean, "" for anything left alone."""
+        if self._check is not None:
+            return "true" if self._check.get_active() else ""
+        if self._drop is not None:
+            index = self._drop.get_selected()
+            if 0 < index < len(self._choices):
+                return self._choices[index]
+            return ""
+        if self._entry is not None:
+            return self._entry.get_text().strip()
+        return ""
+
+    def set_value(self, value: str) -> None:
+        if self._check is not None:
+            self._check.set_active(option_set(self.spec, value))
+        elif self._drop is not None:
+            self._drop.set_selected(
+                self._choices.index(value) if value in self._choices else 0
+            )
+        elif self._entry is not None:
+            self._entry.set_text(value or "")
+
+
+class _OptionBox(Gtk.Box):
+    """The fields for one holder's options — a table's or a column's.
+
+    It is the same widget both times because an option is the same
+    thing both times: a spec, a value, and a place in the model. Given
+    a holder it fills the fields; asked for its values it hands back a
+    map of the ones that are set, plus the fields that map onto model
+    fields of their own (identity, generated) separately, because those
+    have been model fields since CORE-23 and stay that way.
+    """
+
+    def __init__(
+        self,
+        on_changed: Callable[[], None],
+        orientation=Gtk.Orientation.HORIZONTAL,
+        spacing: int = 12,
+    ) -> None:
+        super().__init__(orientation=orientation, spacing=spacing)
+        self._on_changed = on_changed
+        self._fields: list[_OptionField] = []
+
+    def set_specs(self, specs: list[OptionSpec]) -> None:
+        """Rebuild the fields for `specs`, keeping the values of the
+        options that survive the swap."""
+        kept = self.values()
+        for field in self._fields:
+            self.remove(field.widget)
+        self._fields = []
+        for spec in specs:
+            field = _OptionField(spec, self._on_changed)
+            if not field.supported:
+                continue
+            self._fields.append(field)
+            self.append(field.widget)
+            if spec.name in kept:
+                field.set_value(kept[spec.name])
+        self.set_visible(bool(self._fields))
+
+    def load(self, holder) -> None:
+        """Show what `holder` (a TableModel or a ColumnModel) has set."""
+        for field in self._fields:
+            field.set_value(option_value(holder, field.spec))
+
+    def values(self) -> dict[str, str]:
+        """The options that are set, keyed by name — the map that goes
+        into `TableModel.options` / `ColumnModel.options`."""
+        return {
+            field.spec.name: field.value()
+            for field in self._fields
+            if not field.spec.field and option_on(field.value())
+        }
+
+    def fields(self) -> dict[str, str]:
+        """The options that map onto a model field of their own, keyed
+        by the field's name — `identity`, `generated`."""
+        out: dict[str, str] = {}
+        for field in self._fields:
+            if field.spec.field:
+                out[field.spec.field] = field.value()
+        return out
+
+
+def _with_option_fields(model, values: dict[str, str]):
+    """`model` with the option fields that map onto model fields set.
+
+    An option's value is always a string (that is what a widget and a
+    saved design both carry); the model field it lands on may be a
+    bool, so the dataclass is asked what it wants rather than the
+    frontend knowing that `identity` is a flag and `generated` is
+    text.
+    """
+    if not values:
+        return model
+    kinds = {f.name: f.type for f in dataclass_fields(model)}
+    changes = {}
+    for name, value in values.items():
+        if name not in kinds:
+            continue
+        changes[name] = (
+            option_on(value) if "bool" in str(kinds[name]) else value.strip()
+        )
+    return replace(model, **changes)
+
+
 class _ColumnRow(Gtk.ListBoxRow):
     """One column of the future table."""
 
@@ -338,6 +524,13 @@ class _ColumnRow(Gtk.ListBoxRow):
             below.append(child)
         outer.append(below)
 
+        # The engine's own column options — identity, a generated
+        # expression, whatever else the provider declares. Empty (and
+        # invisible) until the catalog load says what this engine has.
+        self.options = _OptionBox(on_changed)
+        self.options.set_visible(False)
+        outer.append(self.options)
+
         self.set_child(outer)
         self.set_specs(specs)
 
@@ -358,6 +551,10 @@ class _ColumnRow(Gtk.ListBoxRow):
         if index == len(self._specs) and previous:
             self._custom.set_text(previous)
         self._sync_type_fields(reset_params=index != len(self._specs))
+
+    def set_option_specs(self, specs: list[OptionSpec]) -> None:
+        """The column options this engine offers, from the provider."""
+        self.options.set_specs(specs)
 
     def _selected_spec(self) -> TypeSpec | None:
         """The chosen TypeSpec, or None while "Custom…" is selected."""
@@ -439,6 +636,7 @@ class _ColumnRow(Gtk.ListBoxRow):
         self.default.set_text(
             column.default.value if column.default.present else ""
         )
+        self.options.load(column)
 
     def _select_type(self, type_text: str) -> None:
         index = next(
@@ -459,7 +657,7 @@ class _ColumnRow(Gtk.ListBoxRow):
         if not self.name_text():
             return None
         default = self.default_text()
-        return ColumnModel(
+        column = ColumnModel(
             name=self.name_text(),
             type=self.type_text(),
             primary_key=self.pk.get_active(),
@@ -480,7 +678,9 @@ class _ColumnRow(Gtk.ListBoxRow):
                 and self.loaded.name.lower() != self.name_text().lower()
                 else ""
             ),
+            options=self.options.values(),
         )
+        return _with_option_fields(column, self.options.fields())
 
 
 class _ColumnChooser(Gtk.MenuButton):
@@ -974,6 +1174,11 @@ class TableDesignerTab(Gtk.Box):
         self._ref = ref
         self._caps = Capabilities()
         self._schemas: list[str] = []
+        # What the provider says this engine offers on a table and on a
+        # column (CORE-27). Empty until the catalog load answers, and
+        # no option name is written down on this side of the line.
+        self._table_option_specs: list[OptionSpec] = []
+        self._column_option_specs: list[OptionSpec] = []
         source = table_ref or ref
         self._wanted_schema = (
             (source.name if source.kind == "schema" else source.schema)
@@ -1036,10 +1241,23 @@ class TableDesignerTab(Gtk.Box):
         self._constraint_list.add_css_class("boxed-list-separate")
         self._index_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
         self._index_list.add_css_class("boxed-list-separate")
+        # The engine's own table options, built from the provider's
+        # specs when they arrive. A vertical box: one option a line,
+        # each labelled and explained by its spec.
+        self._table_options = _OptionBox(
+            self._refresh,
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=6,
+        )
+        self._table_options.set_margin_top(8)
+        self._table_options.set_margin_bottom(8)
+        self._table_options.set_margin_start(8)
+        self._table_options.set_margin_end(8)
         for name, title, child in (
             ("columns", _("Columns"), self._list),
             ("constraints", _("Constraints"), self._constraint_list),
             ("indexes", _("Indexes"), self._index_list),
+            ("options", _("Options"), self._table_options),
         ):
             page = self._stack.add_titled(
                 Gtk.ScrolledWindow(child=child, vexpand=True), name, title
@@ -1102,6 +1320,11 @@ class TableDesignerTab(Gtk.Box):
                 # about, so the target list is the provider's, not a
                 # free-text entry (CORE-24).
                 provider.list_sources(),
+                # The engine's table and column options, as specs
+                # (CORE-27). An adapter that declares none gets a
+                # designer without an Options view.
+                list(getattr(provider, "table_options", list)()),
+                list(getattr(provider, "column_options", list)()),
                 # An existing table comes in through the provider, not
                 # through a catalog query of the designer's own: the
                 # same columns, indexes and keys the sidebar reads.
@@ -1119,11 +1342,15 @@ class TableDesignerTab(Gtk.Box):
                 self._caps,
                 self._schemas,
                 self._sources,
+                self._table_option_specs,
+                self._column_option_specs,
                 self._current,
             ) = loaded
             self._dialect = dialect_for(self._connector)
+            self._table_options.set_specs(self._table_option_specs)
             for row in self._rows:
                 row.set_specs(self._specs)
+                row.set_option_specs(self._column_option_specs)
             self._sync_dialect()
             self._sync_schema_chooser()
             if self._current is not None:
@@ -1155,6 +1382,7 @@ class TableDesignerTab(Gtk.Box):
         self._syncing = True
         try:
             self._table_name.set_text(model.name)
+            self._table_options.load(model)
             for row in list(self._rows):
                 self._rows.remove(row)
                 self._list.remove(row)
@@ -1222,15 +1450,17 @@ class TableDesignerTab(Gtk.Box):
 
     def _on_view(self, *_args) -> None:
         """The Add button adds to whatever view is showing — one
-        button, three meanings, so the bar does not grow three."""
+        button, three meanings, so the bar does not grow three. The
+        options view has nothing to add to: the engine decides what is
+        there, so the button goes away rather than lying."""
         view = self._view()
-        self._add.set_label(
-            {
-                "columns": _("Add Column"),
-                "constraints": _("Add Constraint"),
-                "indexes": _("Add Index"),
-            }[view]
-        )
+        labels = {
+            "columns": _("Add Column"),
+            "constraints": _("Add Constraint"),
+            "indexes": _("Add Index"),
+        }
+        self._add.set_visible(view in labels)
+        self._add.set_label(labels.get(view, _("Add Column")))
 
     def _add_current(self) -> None:
         view = self._view()
@@ -1373,13 +1603,15 @@ class TableDesignerTab(Gtk.Box):
     # Columns
 
     def _new_column_row(self) -> _ColumnRow:
-        return _ColumnRow(
+        row = _ColumnRow(
             self._specs,
             self._refresh,
             self._remove_row,
             self._move_row,
             self._pk_toggled,
         )
+        row.set_option_specs(self._column_option_specs)
+        return row
 
     def _add_row(self, focus: bool = False) -> None:
         row = self._new_column_row()
@@ -1485,6 +1717,10 @@ class TableDesignerTab(Gtk.Box):
                 for row in self._index_rows
                 if not row.is_empty() and not row.problem()
             ),
+            # Whatever the engine's own option fields say, keyed by the
+            # names the provider gave them — the frontend never spells
+            # one out (CORE-27).
+            options=self._table_options.values(),
         )
 
     def _build_sql(self) -> str:

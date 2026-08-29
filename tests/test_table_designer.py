@@ -16,6 +16,7 @@ time the tab is constructed and no main loop is needed.
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 from gi.repository import Gtk  # noqa: F401  (initialises GTK types)
@@ -24,6 +25,14 @@ from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import ColumnInfo, TypeSpec
 from sqlide.backend.db.metadata import Capabilities, NodeRef
 from sqlide.backend.db.sqlite.connector import SqliteConnector
+from sqlide.backend.db.table_model import (
+    MYSQL_COLUMN_OPTIONS,
+    MYSQL_TABLE_OPTIONS,
+    POSTGRES_TABLE_OPTIONS,
+    SQLITE_COLUMN_OPTIONS,
+    SQLITE_TABLE_OPTIONS,
+    OptionSpec,
+)
 from sqlide.frontend import table_designer as designer_module
 from sqlide.frontend.table_designer import TableDesignerTab
 
@@ -43,10 +52,20 @@ class _FakeProvider:
     """A provider with schemas, so the schema path is testable without
     a PostgreSQL server."""
 
-    def __init__(self, connector, *, schemas: bool, specs=()) -> None:
+    def __init__(
+        self, connector, *, schemas: bool, specs=(), options=(), column_options=()
+    ) -> None:
         self.connector = connector
         self._schemas = schemas
         self._specs = list(specs) or list(connector.column_type_specs())
+        self._options = list(options)
+        self._column_options = list(column_options)
+
+    def table_options(self):
+        return list(self._options)
+
+    def column_options(self):
+        return list(self._column_options)
 
     def column_type_specs(self):
         return list(self._specs)
@@ -80,7 +99,15 @@ def connector(tmp_path):
 
 
 def _tab(
-    monkeypatch, connector, *, schemas: bool, specs=(), ref=None, engine=""
+    monkeypatch,
+    connector,
+    *,
+    schemas: bool,
+    specs=(),
+    ref=None,
+    engine="",
+    options=(),
+    column_options=(),
 ):
     if engine:
         # Rendering asks the connector which dialect it is; an engine
@@ -89,7 +116,13 @@ def _tab(
     monkeypatch.setattr(
         designer_module.registry,
         "create_provider",
-        lambda _kind, con: _FakeProvider(con, schemas=schemas, specs=specs),
+        lambda _kind, con: _FakeProvider(
+            con,
+            schemas=schemas,
+            specs=specs,
+            options=options,
+            column_options=column_options,
+        ),
     )
     profile = ConnectionProfile(name="designer", kind="sqlite")
     return TableDesignerTab(
@@ -277,3 +310,96 @@ def test_index_fields_follow_the_dialects_flags(monkeypatch, connector):
     row = tab._add_index()
     assert not row._method.get_visible()
     assert row._where.get_visible()
+
+
+# Engine options (CORE-27)
+
+
+def test_table_options_come_from_the_provider_and_reach_the_preview(
+    monkeypatch, connector
+):
+    tab = _tab(
+        monkeypatch,
+        connector,
+        schemas=False,
+        options=SQLITE_TABLE_OPTIONS,
+    )
+    _fill(tab)
+    labels = [field.spec.name for field in tab._table_options._fields]
+    assert labels == ["WITHOUT ROWID", "STRICT"]
+    assert tab._table_options.values() == {}
+    tab._table_options._fields[0]._check.set_active(True)
+    assert tab.model().options == {"WITHOUT ROWID": "true"}
+    assert "WITHOUT ROWID" in tab._preview.get_text()
+
+
+def test_an_engines_own_options_appear_without_the_frontend_knowing_them(
+    monkeypatch, connector
+):
+    # The provider hands over MySQL's specs and the connector says it
+    # is MySQL; nothing in the tab was taught about ENGINE or
+    # AUTO_INCREMENT, and both land in the statement.
+    tab = _tab(
+        monkeypatch,
+        connector,
+        schemas=False,
+        engine="mysql",
+        options=MYSQL_TABLE_OPTIONS,
+        column_options=MYSQL_COLUMN_OPTIONS,
+    )
+    _fill(tab)
+    fields = {field.spec.name: field for field in tab._table_options._fields}
+    fields["ENGINE"]._drop.set_selected(1)  # first real choice
+    fields["AUTO_INCREMENT"]._entry.set_text("100")
+    sql = tab._preview.get_text()
+    assert "ENGINE=InnoDB" in sql
+    assert "AUTO_INCREMENT=100" in sql
+
+
+def test_column_options_write_the_models_own_fields(monkeypatch, connector):
+    tab = _tab(
+        monkeypatch,
+        connector,
+        schemas=False,
+        column_options=SQLITE_COLUMN_OPTIONS,
+    )
+    _fill(tab)
+    row = tab._rows[0]
+    row.pk.set_active(True)
+    identity = row.options._fields[0]
+    assert identity.spec.field == "identity"
+    identity._check.set_active(True)
+    assert tab.model().columns[0].identity is True
+    assert "AUTOINCREMENT" in tab._preview.get_text()
+
+
+def test_no_option_name_is_written_down_in_the_frontend():
+    """Adding an option to a provider is enough to make it appear."""
+    frontend = Path(designer_module.__file__).parent
+    source = "\n".join(
+        path.read_text() for path in sorted(frontend.glob("*.py"))
+    )
+    names = [
+        spec.name
+        for spec in (
+            *SQLITE_TABLE_OPTIONS,
+            *MYSQL_TABLE_OPTIONS,
+            *POSTGRES_TABLE_OPTIONS,
+        )
+    ]
+    assert [name for name in names if name in source] == []
+
+
+def test_an_unknown_option_kind_is_simply_not_shown(monkeypatch, connector):
+    tab = _tab(
+        monkeypatch,
+        connector,
+        schemas=False,
+        options=(
+            OptionSpec("weird", label="Weird", kind="colour-wheel"),
+            *SQLITE_TABLE_OPTIONS,
+        ),
+    )
+    shown = [field.spec.name for field in tab._table_options._fields]
+    assert "weird" not in shown
+    assert shown == ["WITHOUT ROWID", "STRICT"]

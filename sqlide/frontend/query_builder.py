@@ -748,6 +748,303 @@ class _GroupRow(Gtk.Box):
                 return
 
 
+class _ColumnGroup(Gtk.Box):
+    """The tick boxes of one source, under its alias.
+
+    A flat FlowBox of every column of every joined table is unusable
+    on a wide schema (RS-01): the checklist is therefore one of these
+    per source, each with its own select-all / select-none, and each
+    able to hide itself when a search matches nothing in it.
+    """
+
+    def __init__(
+        self,
+        alias: str,
+        on_set_all: Callable[["_ColumnGroup", bool], None],
+    ) -> None:
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.checks: list[Gtk.CheckButton] = []
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        label = Gtk.Label(label=alias, xalign=0)
+        label.add_css_class("heading")
+        header.append(label)
+        header.append(Gtk.Box(hexpand=True))
+        select_all = Gtk.Button(label=_("All"))
+        select_all.add_css_class("flat")
+        describe(select_all, _("Select every column of %s") % alias)
+        select_all.connect("clicked", lambda *_: on_set_all(self, True))
+        header.append(select_all)
+        select_none = Gtk.Button(label=_("None"))
+        select_none.add_css_class("flat")
+        describe(select_none, _("Deselect every column of %s") % alias)
+        select_none.connect("clicked", lambda *_: on_set_all(self, False))
+        header.append(select_none)
+        self.append(header)
+        self._flow = Gtk.FlowBox(
+            selection_mode=Gtk.SelectionMode.NONE,
+            max_children_per_line=6,
+            column_spacing=12,
+            row_spacing=2,
+        )
+        self.append(self._flow)
+
+    def add(self, check: Gtk.CheckButton) -> None:
+        self.checks.append(check)
+        self._flow.append(check)
+
+    def filter_to(self, needle: str) -> bool:
+        """Show only the columns matching `needle`; True if any did."""
+        shown = 0
+        for check in self.checks:
+            match = needle in check.get_label().lower()
+            # A FlowBox wraps every child, and it is the wrapper that
+            # takes up the room, so hide that rather than the button.
+            child = check.get_parent()
+            (child or check).set_visible(match)
+            shown += int(match)
+        self.set_visible(bool(shown))
+        return bool(shown)
+
+
+class _FilterGroupBox(Gtk.Box):
+    """One AND/OR group of the filter editor, with its conditions and
+    its nested groups.
+
+    The old panel was a flat list folded strictly left to right, so
+    `a AND (b OR c)` could not be said at all (RS-01). Here the
+    conjunction belongs to the *group* — every condition in it is
+    joined the same way — and a group can hold another group, which is
+    exactly the `FilterGroup` tree CORE-17 already renders with the
+    right parentheses.
+
+    Nothing here knows any SQL: a row contributes whatever
+    `term(label)` says its column means, which is a plain column for
+    WHERE and an aggregate for HAVING, so one widget serves both.
+    """
+
+    def __init__(
+        self,
+        columns: Sequence[str],
+        term: Callable[[str], dict],
+        on_change: Callable[[], None],
+        on_activate: Callable[[], None],
+        on_remove: Callable[["_FilterGroupBox"], None] | None = None,
+        depth: int = 0,
+    ) -> None:
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self._columns = list(columns)
+        self._term = term
+        self._on_change = on_change
+        self._on_activate = on_activate
+        self._depth = depth
+        self._items: list[_FilterRow | _FilterGroupBox] = []
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        header.append(Gtk.Label(label=_("Match")))
+        self._conjunction = Gtk.DropDown(
+            model=Gtk.StringList.new(list(CONJUNCTIONS))
+        )
+        describe(self._conjunction, _("How this group joins its conditions"))
+        self._conjunction.connect("notify::selected", lambda *_: on_change())
+        header.append(self._conjunction)
+        self._negated = Gtk.CheckButton(label=_("Not"))
+        describe(self._negated, _("Negate the whole group"))
+        self._negated.connect("toggled", lambda *_: on_change())
+        header.append(self._negated)
+        add_condition = Gtk.Button(label=_("Add condition"))
+        add_condition.add_css_class("flat")
+        add_condition.connect("clicked", lambda *_: self.add_row())
+        header.append(add_condition)
+        self._add_group = Gtk.Button(label=_("Add group"))
+        self._add_group.add_css_class("flat")
+        self._add_group.set_tooltip_text(
+            _("A nested group, so a AND (b OR c) can be expressed")
+        )
+        self._add_group.connect("clicked", lambda *_: self.add_group())
+        self._add_group.set_visible(depth < MAX_FILTER_DEPTH)
+        header.append(self._add_group)
+        header.append(Gtk.Box(hexpand=True))
+        if on_remove is not None:
+            remove = Gtk.Button(icon_name="list-remove-symbolic")
+            remove.add_css_class("flat")
+            describe(remove, _("Remove this group"))
+            remove.connect("clicked", lambda *_: on_remove(self))
+            header.append(remove)
+        self.append(header)
+
+        self._body = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_start=12
+        )
+        self.append(self._body)
+        if depth:
+            # Indent and outline a nested group, so the shape of the
+            # tree is visible without reading the SQL.
+            self.set_margin_start(6)
+            self.add_css_class("card")
+            for side in ("top", "bottom", "start", "end"):
+                getattr(self, f"set_margin_{side}")(6)
+
+    # Editing
+
+    def add_row(self, *, notify: bool = True) -> _FilterRow:
+        row = _FilterRow(
+            list(self._columns),
+            self._remove_item,
+            self._on_activate,
+            on_change=self._on_change,
+        )
+        # The conjunction is the group's, not the line's.
+        row.set_conjunction_visible(False)
+        self._items.append(row)
+        self._body.append(row)
+        if notify:
+            self._on_change()
+        return row
+
+    def add_group(self, *, notify: bool = True) -> "_FilterGroupBox":
+        group = _FilterGroupBox(
+            self._columns,
+            self._term,
+            self._on_change,
+            self._on_activate,
+            on_remove=self._remove_item,
+            depth=self._depth + 1,
+        )
+        self._items.append(group)
+        self._body.append(group)
+        if notify:
+            self._on_change()
+        return group
+
+    def _remove_item(self, item) -> None:
+        self._items.remove(item)
+        self._body.remove(item)
+        self._on_change()
+
+    def clear(self) -> None:
+        for item in list(self._items):
+            self._body.remove(item)
+        self._items = []
+
+    def rows(self) -> list[_FilterRow]:
+        """Every condition row of the whole subtree, in reading order."""
+        found: list[_FilterRow] = []
+        for item in self._items:
+            if isinstance(item, _FilterGroupBox):
+                found.extend(item.rows())
+            else:
+                found.append(item)
+        return found
+
+    def groups(self) -> list["_FilterGroupBox"]:
+        """Every nested group, this one excluded."""
+        found: list[_FilterGroupBox] = []
+        for item in self._items:
+            if isinstance(item, _FilterGroupBox):
+                found.append(item)
+                found.extend(item.groups())
+        return found
+
+    def set_conjunction(self, conjunction: str) -> None:
+        _select_value(self._conjunction, conjunction)
+
+    def set_columns(
+        self,
+        names: Sequence[str],
+        rename: Callable[[str], str] | None = None,
+    ) -> None:
+        """Re-offer `names` everywhere in the subtree, carrying each
+        row's own choice over — through an alias rename where one
+        happened."""
+        self._columns = list(names)
+        for item in self._items:
+            if isinstance(item, _FilterGroupBox):
+                item.set_columns(names, rename)
+                continue
+            condition = item.condition()
+            item.set_columns(list(names))
+            if rename is not None:
+                item.set_condition(
+                    FilterCondition(
+                        column=rename(condition.column),
+                        op=condition.op,
+                        value=condition.value,
+                        conjunction=condition.conjunction,
+                    )
+                )
+
+    # Model
+
+    def model(self) -> FilterGroup | None:
+        """This subtree as a `FilterGroup`, or None when nothing in it
+        says anything yet."""
+        items: list[Condition | FilterGroup] = []
+        for item in self._items:
+            if isinstance(item, _FilterGroupBox):
+                nested = item.model()
+                if nested is not None:
+                    items.append(nested)
+                continue
+            condition = item.condition()
+            if not condition.column:
+                continue
+            term = self._term(condition.column)
+            if not term:
+                # A condition on something the query no longer selects.
+                continue
+            items.append(
+                Condition(
+                    op=condition.op,
+                    value=(
+                        None
+                        if condition.op in NO_VALUE_OPERATORS
+                        else condition.value
+                    ),
+                    **term,
+                )
+            )
+        if not items:
+            return None
+        return FilterGroup(
+            items=tuple(items),
+            conjunction=_selected_string(self._conjunction),
+            negated=self._negated.get_active(),
+        )
+
+    def restore(
+        self,
+        group: FilterGroup,
+        label: Callable[[Condition], str | None],
+    ) -> int:
+        """Rebuild this group from a saved one; returns how many parts
+        of it no longer resolve and were left out.
+
+        A saved tree deeper than the editor lets you *build* is still
+        restored in full — refusing to show a query it can render would
+        be the worse failure.
+        """
+        dropped = 0
+        self.set_conjunction(group.conjunction)
+        self._negated.set_active(group.negated)
+        for item in group.items:
+            if isinstance(item, FilterGroup):
+                dropped += self.add_group(notify=False).restore(item, label)
+                continue
+            name = label(item)
+            if name is None:
+                dropped += 1
+                continue
+            self.add_row(notify=False).set_condition(
+                FilterCondition(
+                    column=name,
+                    op=item.op,
+                    value="" if item.value is None else str(item.value),
+                    conjunction="AND",
+                )
+            )
+        return dropped
+
+
 class QueryBuilderTab(Gtk.Box):
     """Content of one query-builder tab."""
 

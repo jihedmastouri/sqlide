@@ -69,7 +69,7 @@
 | CORE-26 | Alter mode: one designer for create and alter, over a diff (done) | CORE-23, CORE-24 |
 | CORE-27 | Engine-specific table and column options (done) | CORE-23, CORE-24 |
 | CORE-28 | Persist the designer's table model in the workspace (done) | CORE-23 |
-| CORE-29 | Copy structure from an existing table, and saved templates | CORE-23, CORE-28 |
+| CORE-29 | Copy structure from an existing table, and saved templates (done) | CORE-23, CORE-28 |
 
 ### Charting (from RS-03)
 

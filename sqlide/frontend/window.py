@@ -86,6 +86,12 @@ from sqlide.frontend.util import (
 )
 
 from sqlide.backend import identity, schemas
+from sqlide.backend.table_templates import store as template_store
+from sqlide.backend.db.table_model import (
+    TableModel,
+    copy_structure,
+    dump_state,
+)
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import metrics, objects, registry
 from sqlide.backend.db.base import Connector, ConnectorError, FilterCondition
@@ -472,6 +478,8 @@ class MainWindow(Adw.ApplicationWindow):
             on_import_data=self._import_data,
             on_extension_action=self._extension_action,
             on_new_object=self._new_object,
+            on_duplicate_table=self._duplicate_table,
+            on_new_from_template=self._new_from_template,
             on_mcp_server=self.open_mcp_server,
             on_open_schema=self._open_schema,
             on_edit_connection=self._edit_connection,
@@ -2857,11 +2865,118 @@ class MainWindow(Adw.ApplicationWindow):
             lambda exc: self.show_error(str(exc)),
         )
 
+    def _duplicate_table(
+        self, profile: ConnectionProfile, ref: NodeRef
+    ) -> None:
+        """"Duplicate Structure…" on a table (CORE-29).
+
+        The table is loaded through the MetadataProvider — the same
+        model the designer would load to alter it — renamed, and handed
+        to a *create*-mode designer, so what opens is a new table whose
+        statement differs from the source's only in the name. Whether
+        the indexes and the foreign keys come along is asked first:
+        copying a table's shape and copying its keys are different
+        wants. Data is never copied; that is what Transfer is for.
+        """
+        dialog = Adw.AlertDialog(
+            heading=_("Duplicate Structure"),
+            body=_(
+                "A new table with %s's columns, in a designer. No rows"
+                " are copied."
+            )
+            % ref.name,
+        )
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        indexes = Gtk.CheckButton(label=_("Carry the indexes"), active=True)
+        keys = Gtk.CheckButton(label=_("Carry the foreign keys"), active=True)
+        box.append(indexes)
+        box.append(keys)
+        dialog.set_extra_child(box)
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("open", _("Open Designer"))
+        dialog.set_response_appearance("open", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("open")
+        dialog.set_close_response("cancel")
+
+        def respond(_dialog, response: str) -> None:
+            if response != "open":
+                return
+            self._open_duplicate(
+                profile,
+                ref,
+                with_indexes=indexes.get_active(),
+                with_keys=keys.get_active(),
+            )
+
+        dialog.connect("response", respond)
+        dialog.present(self)
+
+    def _open_duplicate(
+        self,
+        profile: ConnectionProfile,
+        ref: NodeRef,
+        *,
+        with_indexes: bool,
+        with_keys: bool,
+    ) -> None:
+        def work() -> str:
+            connector = self.ensure_connector(profile)
+            provider = registry.create_provider(profile.kind, connector)
+            model = TableModel.from_provider(provider, ref)
+            # The rename, and what comes with it, is the model's own
+            # business (CORE-29): index and constraint names belong to
+            # the schema, so they are rewritten for the new table
+            # rather than clashing with the ones they were copied from.
+            model = copy_structure(
+                model,
+                f"{ref.name}_copy",
+                indexes=with_indexes,
+                foreign_keys=with_keys,
+            )
+            return dump_state(model)
+
+        run_async(
+            work,
+            lambda designer: self.open_table_designer(
+                profile,
+                ref,
+                designer=designer,
+                designer_engine=profile.kind,
+                designer_source="copy",
+            ),
+            lambda exc: self.show_error(str(exc)),
+        )
+
+    def _new_from_template(
+        self, profile: ConnectionProfile, name: str, ref: NodeRef | None = None
+    ) -> None:
+        """New ▸ Table ▸ From Template ▸ … (CORE-29).
+
+        A template is a saved model, so opening one is the restore path
+        CORE-28 already has, with the engine it was saved on passed
+        along: the designer prunes the options this engine does not
+        offer and marks the types it cannot translate rather than
+        refusing to open the template at all.
+        """
+        template = template_store.find(name)
+        if template is None:
+            self.show_error(_("That template is no longer there."))
+            return
+        self.open_table_designer(
+            profile,
+            ref,
+            designer=dump_state(template.model),
+            designer_engine=template.engine,
+            designer_source="template",
+        )
+
     def open_table_designer(
         self,
         profile: ConnectionProfile,
         ref: NodeRef | None = None,
         designer: str = "",
+        designer_engine: str = "",
+        designer_source: str = "",
     ) -> None:
         # Not deduplicated by tab_key: several designers on the same
         # connection are fine, like query consoles.
@@ -2877,6 +2992,8 @@ class MainWindow(Adw.ApplicationWindow):
             ),
             ref=ref,
             designer=designer,
+            designer_engine=designer_engine,
+            designer_source=designer_source,
         )
         page = self._append_tab(
             tab,

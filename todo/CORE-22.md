@@ -1,6 +1,6 @@
 ## CORE-22 — Builder layout: grouped filters, column search, room to grow
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-17
 - **From:** RS-01 (see `docs/query-builder-research.md`)
 
@@ -39,10 +39,10 @@ express grouping.
 
 ### Acceptance criteria
 
-- [ ] Five joins and eight filters are all reachable without the SQL
+- [x] Five joins and eight filters are all reachable without the SQL
       preview leaving the viewport.
-- [ ] The column list can be searched and toggled per source table.
-- [ ] `a AND (b OR c)` is expressible and renders with the right
+- [x] The column list can be searched and toggled per source table.
+- [x] `a AND (b OR c)` is expressible and renders with the right
       parentheses.
-- [ ] The preview text can be selected and copied; the console handoff
+- [x] The preview text can be selected and copied; the console handoff
       carries a tooltip or label saying edits there do not come back.

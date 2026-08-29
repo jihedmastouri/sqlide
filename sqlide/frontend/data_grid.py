@@ -1808,6 +1808,17 @@ class _FilterRow(Gtk.Box):
     def set_first(self, is_first: bool) -> None:
         self._conjunction.set_sensitive(not is_first)
 
+    def set_conjunction_visible(self, visible: bool) -> None:
+        """Hide the per-row AND/OR.
+
+        A flat panel folds its lines left to right, so every line
+        carries its own conjunction. Inside a grouped filter editor
+        (the query builder's, CORE-22) the conjunction belongs to the
+        group, not the line, and a second one per row would only
+        contradict it.
+        """
+        self._conjunction.set_visible(visible)
+
     def set_columns(self, names: list[str]) -> None:
         selected = self.selected_column()
         self._column.set_model(Gtk.StringList.new(names))

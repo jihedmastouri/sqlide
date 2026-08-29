@@ -365,7 +365,7 @@ def test_alter_path_adds_and_drops_the_columns_the_edit_changed() -> None:
         'ALTER TABLE "notes" ADD COLUMN "extra" text NOT NULL DEFAULT \'x\'',
         'ALTER TABLE "notes" DROP COLUMN "gone"',
     ]
-    assert "Table mode" in caption
+    assert "table designer" in caption
 
 
 def test_alter_path_refuses_an_edit_it_cannot_express() -> None:
@@ -377,7 +377,7 @@ def test_alter_path_refuses_an_edit_it_cannot_express() -> None:
         _alter_statements(
             _mysql(), "notes", ["id"], "CREATE TABLE `notes` (`id` bigint)"
         )
-    assert "Table mode" in str(excinfo.value)
+    assert "table designer" in str(excinfo.value)
 
 
 def test_alter_path_ignores_table_constraints() -> None:

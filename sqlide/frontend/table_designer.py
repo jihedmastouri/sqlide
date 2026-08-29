@@ -87,7 +87,7 @@ from sqlide.backend.db.table_model import (
 )
 from sqlide.frontend.sql_editor import SqlEditor
 from sqlide.frontend.util import describe, run_async
-from sqlide.i18n import _
+from sqlide.i18n import _, ngettext
 
 # Last entry of every type dropdown: free text, for the types no list
 # can enumerate (domains, extensions, arrays).
@@ -1568,10 +1568,11 @@ class TableDesignerTab(Gtk.Box):
         PlanPreviewDialog(
             statements,
             lambda: self._execute([s.sql for s in statements]),
-            caption=(
-                f"Runs {count} statement{'' if count == 1 else 's'} on "
-                f"“{self.profile.name}”, in order."
-            ),
+            caption=ngettext(
+                "Runs %d statement on “{name}”, in order.",
+                "Runs %d statements on “{name}”, in order.",
+                count,
+            ).format(name=self.profile.name) % count,
             run_checks=checks,
         ).present(self)
 

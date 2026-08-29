@@ -22,6 +22,7 @@ from sqlide.backend.db.table_model import (
     from_dict,
     load_state,
     plan,
+    preflight,
     render_comments,
     render_create,
     render_indexes,
@@ -518,3 +519,213 @@ def test_index_directions_round_trip():
         ),
     )
     assert from_dict(to_dict(model)).indexes[0].directions == ("DESC",)
+
+
+# Alter mode (CORE-26)
+
+
+def _loaded() -> TableModel:
+    return TableModel(
+        name="people",
+        columns=(
+            ColumnModel("id", "INTEGER", nullable=False, primary_key=True),
+            ColumnModel("email", "TEXT"),
+        ),
+    )
+
+
+def test_plan_renames_a_column_rather_than_dropping_it():
+    """A renamed column carries the name it was loaded under, so the
+    plan renames instead of dropping and adding an empty one."""
+    current = _loaded()
+    target = replace(
+        current,
+        columns=(
+            current.columns[0],
+            replace(current.columns[1], name="mail", renamed_from="email"),
+        ),
+    )
+    (statement,) = plan(current, target, POSTGRES)
+    assert statement.sql == (
+        'ALTER TABLE "people" RENAME COLUMN "email" TO "mail"'
+    )
+    assert statement.classification == "safe"
+
+
+def test_mysql_renames_with_change_column():
+    """MySQL 5.7 is the floor and has no RENAME COLUMN: CHANGE COLUMN
+    restates the definition and does the rename with it."""
+    current = _loaded()
+    target = replace(
+        current,
+        columns=(
+            current.columns[0],
+            replace(current.columns[1], name="mail", renamed_from="email"),
+        ),
+    )
+    (statement,) = plan(current, target, MYSQL)
+    assert statement.sql == (
+        "ALTER TABLE `people` CHANGE COLUMN `email` `mail` TEXT"
+    )
+
+
+def test_a_rebuild_copies_a_renamed_column_across():
+    current = _loaded()
+    target = replace(
+        current,
+        columns=(
+            replace(current.columns[0], type="BIGINT"),
+            replace(current.columns[1], name="mail", renamed_from="email"),
+        ),
+    )
+    sqls = [s.sql for s in plan(current, target, SQLITE)]
+    assert (
+        'INSERT INTO "people" ("id", "mail") '
+        'SELECT "id", "email" FROM "people__sqlide_old"'
+    ) in sqls
+
+
+def test_dropping_a_constraint_is_destructive():
+    """CORE-26: the preview must not show a dropped guarantee as safe."""
+    current = replace(
+        _loaded(),
+        constraints=(ConstraintModel("UNIQUE", name="u", columns=("email",)),),
+    )
+    target = _loaded()
+    (statement,) = plan(current, target, POSTGRES)
+    assert statement.classification == "destructive"
+
+
+def test_the_worst_of_a_drop_and_an_add_is_destructive():
+    current = _loaded()
+    target = TableModel(
+        name="people", columns=(current.columns[0], ColumnModel("age", "INT"))
+    )
+    statements = plan(current, target, POSTGRES)
+    assert worst(statements) == "destructive"
+    assert [s.classification for s in statements] == ["safe", "destructive"]
+
+
+def test_preflight_counts_the_rows_a_not_null_would_reject():
+    current = _loaded()
+    target = replace(
+        current,
+        columns=(
+            current.columns[0],
+            replace(current.columns[1], nullable=False),
+        ),
+    )
+    (check,) = preflight(current, target, POSTGRES)
+    assert check.sql == (
+        'SELECT count(*) FROM "people" WHERE "email" IS NULL'
+    )
+    assert "null" in check.label
+
+
+def test_preflight_counts_the_duplicates_a_unique_would_reject():
+    current = _loaded()
+    target = replace(
+        current,
+        indexes=(IndexModel(name="u", columns=("email",), unique=True),),
+    )
+    (check,) = preflight(current, target, POSTGRES)
+    assert "GROUP BY" in check.sql and "HAVING count(*) > 1" in check.sql
+
+
+def test_preflight_has_nothing_to_ask_about_a_create():
+    assert preflight(None, _loaded(), POSTGRES) == []
+
+
+class _Provider:
+    """Enough of a MetadataProvider to load a table from."""
+
+    def __init__(self, columns, indexes=(), relations=()):
+        self._columns = columns
+        self._indexes = indexes
+        self._relations = relations
+
+    def columns_of(self, _ref):
+        return list(self._columns)
+
+    def indexes_of(self, _ref):
+        return list(self._indexes)
+
+    def relations(self):
+        return list(self._relations)
+
+    def schema_of(self, ref):
+        return ref.schema
+
+
+class _Ref:
+    kind = "table"
+
+    def __init__(self, name, schema=""):
+        self.name = name
+        self.schema = schema
+
+
+class _Column:
+    def __init__(self, name, type_, nullable=True, is_pk=False):
+        self.name = name
+        self.type = type_
+        self.nullable = nullable
+        self.is_pk = is_pk
+
+
+class _Index:
+    def __init__(self, name, ddl=""):
+        self.name = name
+        self.table = "people"
+        self.ddl = ddl
+
+
+class _Relation:
+    def __init__(self, column, ref_table, ref_column):
+        self.table = "people"
+        self.schema = ""
+        self.column = column
+        self.ref_table = ref_table
+        self.ref_column = ref_column
+        self.ref_schema = ""
+
+
+def test_from_provider_loads_a_table_and_plans_nothing_for_it():
+    """CORE-26's first acceptance criterion: a table loaded from the
+    catalog and applied untouched is an empty plan."""
+    provider = _Provider(
+        columns=[
+            _Column("id", "INTEGER", nullable=False, is_pk=True),
+            _Column("email", "TEXT"),
+        ],
+        indexes=[
+            _Index("by_email", 'CREATE INDEX "by_email" ON "people" ("email")')
+        ],
+        relations=[_Relation("id", "accounts", "id")],
+    )
+    model = TableModel.from_provider(provider, _Ref("people"))
+    assert [c.name for c in model.columns] == ["id", "email"]
+    assert model.primary_key == ("id",)
+    assert model.indexes[0].columns == ("email",)
+    assert model.constraints[0].kind == "FOREIGN KEY"
+    assert model.constraints[0].ref_table == "accounts"
+    assert plan(model, model, POSTGRES) == []
+
+
+def test_from_provider_survives_a_catalog_that_answers_nothing():
+    class _Bare:
+        def columns_of(self, _ref):
+            return [_Column("id", "INTEGER")]
+
+        def indexes_of(self, _ref):
+            raise RuntimeError("no index catalog here")
+
+        def relations(self):
+            raise RuntimeError("nor a relation one")
+
+        def schema_of(self, _ref):
+            return ""
+
+    model = TableModel.from_provider(_Bare(), _Ref("people"))
+    assert [c.name for c in model.columns] == ["id"]
+    assert model.indexes == () and model.constraints == ()

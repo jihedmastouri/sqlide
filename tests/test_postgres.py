@@ -517,7 +517,7 @@ def test_postgres_alter_path_applies_a_definition_edit(postgres):
         assert [c.name for c in db.list_columns("rebuild_probe")] == ["id", "extra"]
         # The rows stay put: nothing was copied through a backup table.
         assert db.execute("SELECT COUNT(*) FROM rebuild_probe").rows[0][0] == 1
-        assert "Table mode" in caption
+        assert "table designer" in caption
     finally:
         db.execute("DROP TABLE IF EXISTS rebuild_probe")
 

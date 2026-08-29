@@ -10,8 +10,9 @@ entries for exactly those arguments, prefilled with a sane default.
 "Custom…" keeps free text available for anything the list misses.
 
 Below the columns, a live read-only preview of the generated statement,
-rebuilt on every keystroke by the adapter's create_table_sql so quoting
-and dialect quirks stay in the backend. While the form is incomplete
+rebuilt on every keystroke from the tab's TableModel through
+`backend/db/table_model.render_create`, so the model, the quoting and
+the dialect quirks all stay in the backend. While the form is incomplete
 the preview says *what* is missing and Create is insensitive with the
 same reason — never a generic "something is wrong". Create shows the
 statement in an UpdatePreviewDialog before anything runs; on success
@@ -27,7 +28,13 @@ from typing import Callable
 from gi.repository import Gdk, Gtk
 
 from sqlide.backend.connections import ConnectionProfile
-from sqlide.backend.db.base import ColumnInfo, Connector, TypeSpec
+from sqlide.backend.db.base import Connector, TypeSpec
+from sqlide.backend.db.table_model import (
+    ColumnDefault,
+    ColumnModel,
+    TableModel,
+    render_create,
+)
 from sqlide.frontend.data_grid import UpdatePreviewDialog
 from sqlide.frontend.sql_editor import SqlEditor
 from sqlide.frontend.util import describe, run_async
@@ -206,15 +213,23 @@ class _ColumnRow(Gtk.ListBoxRow):
         blank row at the bottom is not an error."""
         return not self.name_text() and not self.default_text()
 
-    def column(self) -> ColumnInfo | None:
-        """The row as a ColumnInfo, or None while the name is empty."""
+    def column(self) -> ColumnModel | None:
+        """The row as a ColumnModel, or None while the name is empty."""
         if not self.name_text():
             return None
-        return ColumnInfo(
+        default = self.default_text()
+        return ColumnModel(
             name=self.name_text(),
             type=self.type_text(),
-            is_pk=self.pk.get_active(),
+            primary_key=self.pk.get_active(),
             nullable=not self.not_null.get_active(),
+            # The entry is free-text SQL the user vouches for, exactly
+            # as it always was; a typed default picker is CORE-24's.
+            default=(
+                ColumnDefault("expression", default)
+                if default
+                else ColumnDefault()
+            ),
         )
 
 
@@ -377,20 +392,22 @@ class TableDesignerTab(Gtk.Box):
             seen.add(name.lower())
         return ""
 
+    def model(self) -> TableModel:
+        """The form as a TableModel. The one thing the widget produces;
+        everything downstream — the preview, the statement that runs,
+        and later a saved design (CORE-28) — is a function of it."""
+        return TableModel(
+            name=self._table_name.get_text().strip(),
+            columns=tuple(c for c in (row.column() for row in self._rows) if c),
+        )
+
     def _build_sql(self) -> str:
         """The CREATE statement for the current form, or "" while the
-        form is incomplete (see _problem)."""
+        form is incomplete (see _problem). No SQL is assembled here —
+        the renderer in backend/db/table_model.py does all of it."""
         if self._problem():
             return ""
-        columns = [c for c in (row.column() for row in self._rows) if c]
-        defaults = {
-            row.name_text(): row.default_text()
-            for row in self._rows
-            if row.name_text() and row.default_text()
-        }
-        return self._connector.create_table_sql(
-            self._table_name.get_text().strip(), columns, defaults
-        )
+        return render_create(self.model(), self._connector)
 
     def _refresh(self) -> None:
         problem = self._problem()

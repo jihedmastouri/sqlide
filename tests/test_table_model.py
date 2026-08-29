@@ -385,7 +385,9 @@ def test_plan_diffs_constraints_and_indexes():
         indexes=(IndexModel(name="i", columns=("a",), unique=True),),
     )
     kinds = {s.sql: s.classification for s in plan(current, target, POSTGRES)}
-    assert kinds['ALTER TABLE "t" DROP CONSTRAINT "old"'] == "safe"
+    # Dropping a constraint takes a guarantee away, so it is called
+    # destructive rather than safe (CORE-26).
+    assert kinds['ALTER TABLE "t" DROP CONSTRAINT "old"'] == "destructive"
     assert (
         kinds['ALTER TABLE "t" ADD CONSTRAINT "new" CHECK (a > 0)'] == "may_fail"
     )
@@ -407,12 +409,16 @@ def test_plan_falls_back_to_a_rebuild_on_sqlite():
     target = TableModel(name="t", columns=(ColumnModel("a", "BIGINT"),))
     statements = plan(current, target, SQLITE)
     sqls = [s.sql for s in statements]
-    assert sqls[0] == 'ALTER TABLE "t" RENAME TO "t__sqlide_old"'
-    assert sqls[1].startswith("CREATE TABLE")
-    assert sqls[2] == (
+    # The rebuild comes wrapped the way wrap_rebuild wraps it (CORE-26).
+    assert sqls[0] == "PRAGMA foreign_keys = OFF"
+    assert sqls[1] == "BEGIN"
+    assert sqls[-2:] == ["COMMIT", "PRAGMA foreign_keys = ON"]
+    assert sqls[2] == 'ALTER TABLE "t" RENAME TO "t__sqlide_old"'
+    assert sqls[3].startswith("CREATE TABLE")
+    assert sqls[4] == (
         'INSERT INTO "t" ("a") SELECT "a" FROM "t__sqlide_old"'
     )
-    assert sqls[3] == 'DROP TABLE "t__sqlide_old"'
+    assert sqls[5] == 'DROP TABLE "t__sqlide_old"'
     assert worst(statements) == "destructive"  # column b goes away
 
 

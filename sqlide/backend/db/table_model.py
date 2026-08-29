@@ -44,6 +44,7 @@ seed a template or a copy of an existing table (CORE-29).
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
@@ -58,6 +59,7 @@ __all__ = [
     "GENERIC",
     "IndexModel",
     "MODEL_VERSION",
+    "Preflight",
     "MYSQL",
     "POSTGRES",
     "SQLITE",
@@ -68,6 +70,7 @@ __all__ = [
     "from_dict",
     "load_state",
     "plan",
+    "preflight",
     "render_create",
     "to_dict",
 ]
@@ -173,6 +176,13 @@ class ColumnModel:
     generated: str = ""
     #: Whether a generated column is STORED rather than VIRTUAL.
     generated_stored: bool = True
+    #: The name this column had when the model was loaded from the
+    #: catalog, where the designer has since renamed it. Empty for a
+    #: column that was not renamed, which is every column of a table
+    #: being created. It is what lets the planner tell a rename from a
+    #: drop plus an add: without it, `id` -> `person_id` reads as
+    #: losing a column and gaining an empty one (CORE-26).
+    renamed_from: str = ""
     options: dict[str, str] = field(default_factory=dict)
 
 
@@ -293,6 +303,147 @@ class TableModel:
         return ()
 
 
+    @classmethod
+    def from_provider(cls, provider: Any, ref: Any) -> "TableModel":
+        """The table `ref` names, as a model, read through the
+        MetadataProvider (CORE-26).
+
+        Everything comes from the provider — its columns, its indexes,
+        its foreign keys and the schema it should be qualified by — so
+        the designer opens an existing table on the same catalog the
+        sidebar reads, with the same capability flags, and no query of
+        its own. What the catalog cannot tell us (a column's default
+        expression, its comment) stays unset rather than guessed: an
+        unset field is one the diff will not touch, so loading a table
+        and applying it back unchanged plans nothing.
+        """
+        columns = tuple(
+            ColumnModel(
+                name=info.name,
+                type=info.type,
+                nullable=bool(info.nullable),
+                primary_key=bool(info.is_pk),
+            )
+            for info in provider.columns_of(ref)
+        )
+        indexes = tuple(
+            index
+            for index in (
+                _index_from_ddl(info)
+                for info in _quiet(lambda: provider.indexes_of(ref), [])
+            )
+            if index is not None
+        )
+        return cls(
+            name=ref.name,
+            schema=_quiet(lambda: provider.schema_of(ref), "") or "",
+            columns=columns,
+            constraints=_foreign_keys(provider, ref),
+            indexes=indexes,
+        )
+
+
+def _quiet(call: Callable[[], Any], default: Any) -> Any:
+    """`call()`, or `default` when the adapter has nothing to say.
+
+    Loading a table for editing must not fail because one optional
+    catalog listing is missing — a model without its indexes is still
+    a model, and the diff simply will not mention them.
+    """
+    try:
+        return call()
+    except Exception:
+        return default
+
+
+def _foreign_keys(provider: Any, ref: Any) -> tuple[ConstraintModel, ...]:
+    """The table's foreign keys, from the provider's relation listing.
+
+    The listing is one entry per *column pair*, with no constraint
+    name, so pairs pointing at the same table are collected into one
+    composite key in the order the catalog reported them — which is
+    what a two-column key looks like in the designer.
+    """
+    schema = (getattr(ref, "schema", "") or "").lower()
+    name = ref.name.lower()
+    grouped: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for rel in _quiet(provider.relations, []):
+        if rel.table.lower() != name:
+            continue
+        if schema and rel.schema and rel.schema.lower() != schema:
+            continue
+        grouped.setdefault(
+            (rel.ref_schema or "", rel.ref_table), []
+        ).append((rel.column, rel.ref_column))
+    return tuple(
+        ConstraintModel(
+            kind="FOREIGN KEY",
+            columns=tuple(c for c, _r in pairs),
+            ref_schema=ref_schema,
+            ref_table=ref_table,
+            ref_columns=tuple(r for _c, r in pairs),
+        )
+        for (ref_schema, ref_table), pairs in grouped.items()
+    )
+
+
+#: CREATE [UNIQUE] INDEX name ON table [USING method] (columns) [WHERE …]
+_INDEX_RE = re.compile(
+    r"create\s+(?P<unique>unique\s+)?index\s+(?:if\s+not\s+exists\s+)?"
+    r"(?P<name>[\"`\[]?[^\s\"`\[\]()]+[\"`\]]?)\s+on\s+"
+    r"(?P<table>[^\s(]+)\s*(?:using\s+(?P<method>\w+)\s*)?"
+    r"\((?P<columns>.+?)\)\s*(?:where\s+(?P<where>.+))?$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _index_from_ddl(info: Any) -> "IndexModel | None":
+    """One catalog index as an `IndexModel`.
+
+    The adapters hand back a name and, where the engine records one,
+    the CREATE INDEX text; the columns are only in the text, so it is
+    parsed. A definition that will not parse still yields an index
+    carrying its name — enough for the diff to leave it alone, which is
+    the one thing that must not go wrong — and it is simply not
+    rendered again.
+    """
+    name = getattr(info, "name", "") or ""
+    ddl = (getattr(info, "ddl", "") or "").strip().rstrip(";")
+    match = _INDEX_RE.search(ddl) if ddl else None
+    if match is None:
+        return IndexModel(name=name) if name else None
+    columns: list[str] = []
+    directions: list[str] = []
+    for entry in match.group("columns").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        direction = ""
+        if entry.lower().endswith(" desc"):
+            direction = "DESC"
+            entry = entry[: -len(" desc")].strip()
+        elif entry.lower().endswith(" asc"):
+            entry = entry[: -len(" asc")].strip()
+        columns.append(_unquote(entry))
+        directions.append(direction)
+    return IndexModel(
+        name=name or _unquote(match.group("name")),
+        columns=tuple(columns),
+        unique=bool(match.group("unique")),
+        method=(match.group("method") or "").strip(),
+        where=(match.group("where") or "").strip(),
+        directions=tuple(directions),
+    )
+
+
+def _unquote(name: str) -> str:
+    name = name.strip()
+    for opener, closer in (('"', '"'), ("`", "`"), ("[", "]")):
+        if name.startswith(opener) and name.endswith(closer) and len(name) > 1:
+            return name[1:-1].replace(opener * 2, opener)
+    return name
+
+
 # Dialects
 
 
@@ -340,6 +491,17 @@ class Dialect:
     #: COLUMN … TYPE / SET NOT NULL) or "mysql" (MODIFY COLUMN, which
     #: restates the whole definition).
     modify_style: str = "postgres"
+    #: How a column is renamed: "rename" (ALTER TABLE … RENAME COLUMN
+    #: a TO b, which PostgreSQL and SQLite 3.25+ have) or "change"
+    #: (MySQL's CHANGE COLUMN, which restates the whole definition —
+    #: 5.7 is our floor and RENAME COLUMN only arrived in 8.0).
+    rename_column_style: str = "rename"
+    #: What a table rebuild has to be wrapped in for this engine to
+    #: apply it atomically — SQLite's PRAGMA/BEGIN … COMMIT/PRAGMA
+    #: sandwich (`Connector.wrap_rebuild`). Empty where a rebuild is
+    #: never planned, so nothing else grows a wrapper it does not need.
+    rebuild_prologue: tuple[str, ...] = ()
+    rebuild_epilogue: tuple[str, ...] = ()
     #: How table-level options are written: "mysql" (trailing
     #: `ENGINE=InnoDB`), "sqlite" (trailing `WITHOUT ROWID`) or
     #: "postgres" (`WITH (…)`).
@@ -387,6 +549,7 @@ MYSQL = Dialect(
     quote=_backtick_quote,
     identity_style="auto_increment",
     inline_comments=True,
+    rename_column_style="change",
     # 5.7 is the floor and has had generated columns since 5.7.6.
     generated_columns=True,
     modify_style="mysql",
@@ -406,6 +569,10 @@ SQLITE = Dialect(
     can_modify_column=False,
     can_alter_constraint=False,
     option_style="sqlite",
+    # Mirrors SqliteConnector.wrap_rebuild; `dialect_for` re-reads it
+    # off the live connector so the two cannot drift apart.
+    rebuild_prologue=("PRAGMA foreign_keys = OFF", "BEGIN"),
+    rebuild_epilogue=("COMMIT", "PRAGMA foreign_keys = ON"),
 )
 
 _BY_NAME = {d.name: d for d in (POSTGRES, MYSQL, SQLITE)}
@@ -428,7 +595,36 @@ def dialect_for(connector: Any) -> Dialect:
     quote = getattr(connector, "quote_ident", None)
     if callable(quote):
         base = replace(base, quote=quote)
-    return base
+    return replace(base, **_rebuild_wrapper(connector, base))
+
+
+#: Stands in for the rebuild body while `wrap_rebuild` is asked what it
+#: puts around one. Never rendered: it is split back out immediately.
+_BODY = "\x00sqlide-rebuild-body\x00"
+
+
+def _rebuild_wrapper(connector: Any, base: Dialect) -> dict:
+    """What this connector wraps a rebuild in, asked of the connector
+    rather than restated here.
+
+    `wrap_rebuild` is the authority (`Connector.wrap_rebuild`, SQLite's
+    override), so the planner emits exactly the sandwich the rebuild
+    path has always used instead of a copy that can drift. An adapter
+    that wraps nothing — every engine with a real ALTER TABLE — leaves
+    the dialect's own (empty) wrapper alone.
+    """
+    wrap = getattr(connector, "wrap_rebuild", None)
+    if not callable(wrap):
+        return {}
+    try:
+        wrapped = list(wrap([_BODY]))
+        position = wrapped.index(_BODY)
+    except Exception:
+        return {}
+    return {
+        "rebuild_prologue": tuple(wrapped[:position]),
+        "rebuild_epilogue": tuple(wrapped[position + 1:]),
+    }
 
 
 # Rendering
@@ -593,7 +789,15 @@ def render_indexes(model: TableModel, connector: Any) -> list[str]:
     `render_create` because every engine we speak to keeps indexes as
     objects of their own."""
     dialect = _as_dialect(connector)
-    return [_index_sql(model, index, dialect) for index in model.indexes]
+    # An index loaded from a catalog that would not give up its columns
+    # (`from_provider`) cannot be written out again; it is skipped
+    # rather than turned into broken SQL. Everything the designer
+    # builds has columns.
+    return [
+        _index_sql(model, index, dialect)
+        for index in model.indexes
+        if index.columns
+    ]
 
 
 def _index_sql(model: TableModel, index: IndexModel, dialect: Dialect) -> str:
@@ -698,8 +902,51 @@ def plan(current: TableModel | None, target: TableModel, connector: Any) -> list
         ]
         return out
     if _needs_rebuild(current, target, dialect):
-        return _rebuild_plan(current, target, dialect)
+        return _wrapped(_rebuild_plan(current, target, dialect), dialect)
     return _alter_plan(current, target, dialect)
+
+
+def _wrapped(statements: list[Statement], dialect: Dialect) -> list[Statement]:
+    """A rebuild inside whatever makes it atomic here (SQLite's
+    PRAGMA/BEGIN … COMMIT/PRAGMA). The wrapper's own statements are
+    `safe`: they are bookkeeping, and classifying them would put a
+    PRAGMA in a dialog's list of dangerous changes."""
+    if not statements or not (
+        dialect.rebuild_prologue or dialect.rebuild_epilogue
+    ):
+        return statements
+    return [
+        *(Statement(sql, "safe", "Makes the rebuild atomic")
+          for sql in dialect.rebuild_prologue),
+        *statements,
+        *(Statement(sql, "safe", "Closes the rebuild")
+          for sql in dialect.rebuild_epilogue),
+    ]
+
+
+def _matched(current: TableModel, column: ColumnModel) -> ColumnModel | None:
+    """The column of `current` that `column` is a changed version of.
+
+    Normally that is the column of the same name; a column the designer
+    renamed carries the name it was loaded under in `renamed_from`,
+    which is what keeps a rename from reading as a drop plus an add.
+    """
+    if column.renamed_from:
+        old = current.column(column.renamed_from)
+        if old is not None:
+            return old
+    return current.column(column.name)
+
+
+def _kept(current: TableModel, target: TableModel) -> set[str]:
+    """The lower-cased names, in `current`, of the columns that survive
+    into `target` — under that name or a new one."""
+    kept = set()
+    for column in target.columns:
+        old = _matched(current, column)
+        if old is not None:
+            kept.add(old.name.lower())
+    return kept
 
 
 def _needs_rebuild(
@@ -708,12 +955,11 @@ def _needs_rebuild(
     """Whether the change asks for something this engine's ALTER TABLE
     cannot do in place, so the table has to be rebuilt (SQLite)."""
     names = {c.name.lower() for c in current.columns}
-    target_names = {c.name.lower() for c in target.columns}
-    if not dialect.can_drop_column and names - target_names:
+    if not dialect.can_drop_column and names - _kept(current, target):
         return True
     if not dialect.can_modify_column:
         for column in target.columns:
-            old = current.column(column.name)
+            old = _matched(current, column)
             if old is not None and _column_changed(old, column):
                 return True
     if not dialect.can_alter_constraint:
@@ -744,15 +990,20 @@ def _rebuild_plan(
     ALTER TABLE cannot express the change (SQLite)."""
     table = dialect.table_name(current)
     backup = dialect.quoted(current.name + "__sqlide_old")
+    # (new name, old name) for every column that survives: a renamed
+    # column is copied out of the column it used to be, so the rebuild
+    # carries its rows instead of leaving it empty.
     carried = [
-        c.name
+        (c.name, _matched(current, c).name)
         for c in target.columns
-        if current.column(c.name) is not None
+        if _matched(current, c) is not None
     ]
+    kept = _kept(current, target)
     dropped = [
-        c.name for c in current.columns if target.column(c.name) is None
+        c.name for c in current.columns if c.name.lower() not in kept
     ]
-    cols = ", ".join(dialect.quoted(c) for c in carried)
+    cols = ", ".join(dialect.quoted(new) for new, _old in carried)
+    old_cols = ", ".join(dialect.quoted(old) for _new, old in carried)
     out = [
         Statement(
             f"ALTER TABLE {table} RENAME TO {backup}",
@@ -765,7 +1016,7 @@ def _rebuild_plan(
         out.append(
             Statement(
                 f"INSERT INTO {dialect.table_name(target)} ({cols}) "
-                f"SELECT {cols} FROM {backup}",
+                f"SELECT {old_cols} FROM {backup}",
                 "rewrite",
                 "Copies the existing rows across",
             )
@@ -806,13 +1057,31 @@ def _alter_plan(
             )
         )
     for column in target.columns:
-        old = current.column(column.name)
+        old = _matched(current, column)
         if old is None:
             out.append(_add_column(table, column, dialect, target))
-        elif _column_changed(old, column):
-            out.extend(_modify_column(table, old, column, dialect, target))
+            continue
+        renamed = old.name.lower() != column.name.lower()
+        if renamed and dialect.rename_column_style != "change":
+            out.append(
+                Statement(
+                    f"ALTER TABLE {table} RENAME COLUMN "
+                    f"{dialect.quoted(old.name)} TO "
+                    f"{dialect.quoted(column.name)}",
+                    "safe",
+                    f"Renames {old.name} to {column.name}",
+                )
+            )
+            renamed = False
+        if renamed or _column_changed(old, column):
+            # MySQL has no RENAME COLUMN at our floor: CHANGE COLUMN
+            # restates the definition and does both at once.
+            out.extend(
+                _modify_column(table, old, column, dialect, target)
+            )
+    kept = _kept(current, target)
     for column in current.columns:
-        if target.column(column.name) is None:
+        if column.name.lower() not in kept:
             out.append(
                 Statement(
                     f"ALTER TABLE {table} DROP COLUMN "
@@ -852,9 +1121,14 @@ def _modify_column(
     tightened = old.nullable and not new.nullable
     if dialect.modify_style == "mysql":
         definition = _column_sql(new, dialect, model.primary_key)
+        verb = "MODIFY COLUMN"
+        if old.name.lower() != new.name.lower():
+            # CHANGE COLUMN takes the old name and the whole new
+            # definition; MODIFY cannot rename.
+            verb = f"CHANGE COLUMN {dialect.quoted(old.name)}"
         return [
             Statement(
-                f"ALTER TABLE {table} MODIFY COLUMN {definition}",
+                f"ALTER TABLE {table} {verb} {definition}",
                 "may_fail" if tightened else "rewrite",
                 (
                     f"Adds NOT NULL to {new.name}: this fails if any row has "
@@ -929,8 +1203,9 @@ def _constraint_statements(
             Statement(
                 f"ALTER TABLE {table} DROP CONSTRAINT "
                 f"{dialect.quoted(con.name)}",
-                "safe",
-                f"Drops constraint {con.name}",
+                "destructive",
+                f"Drops constraint {con.name}: what it guaranteed stops "
+                "being guaranteed",
             )
         )
     for key, con in after.items():
@@ -994,6 +1269,96 @@ def worst(statements: list[Statement]) -> str:
     return CLASSIFICATIONS[worst_index] if worst_index >= 0 else ""
 
 
+@dataclass(frozen=True)
+class Preflight:
+    """A cheap question to ask the server before running a plan.
+
+    A `may_fail` statement fails on the *data*, not on the SQL, and the
+    server's answer is one line with no row count in it. These are the
+    checks that turn "ERROR: column contains null values" into "412
+    rows have no email" *before* anything runs: `sql` counts the rows
+    that would block the change, `blocking` is the count above which it
+    will, and `label` is the untranslated line the dialog shows (the
+    frontend puts it through gettext, like `Statement.note`).
+    """
+
+    sql: str
+    label: str
+    #: The statement this check guards, so the dialog can put the
+    #: answer beside it.
+    statement: str = ""
+
+
+def preflight(
+    current: TableModel | None, target: TableModel, connector: Any
+) -> list[Preflight]:
+    """The pre-flight checks for `plan(current, target, …)`.
+
+    Only the cheap ones, and only where the answer is actionable: a
+    NOT NULL added to a column that has nulls, and a UNIQUE constraint
+    or index added over columns that have duplicates. A create has
+    none — there are no rows yet — and neither has anything the
+    planner classified as safe.
+    """
+    if current is None:
+        return []
+    dialect = _as_dialect(connector)
+    table = dialect.table_name(current)
+    out: list[Preflight] = []
+    for column in target.columns:
+        old = _matched(current, column)
+        tightened = (
+            old is not None
+            and old.nullable
+            and not column.nullable
+            and not column.default.present
+        )
+        if not tightened or old is None:
+            continue
+        name = dialect.quoted(old.name)
+        out.append(
+            Preflight(
+                f"SELECT count(*) FROM {table} WHERE {name} IS NULL",
+                f"rows where {old.name} is null, which NOT NULL would "
+                "reject",
+                statement=column.name,
+            )
+        )
+    before_constraints = _keys(current.constraints)
+    for con in target.constraints:
+        if con.key in before_constraints:
+            continue
+        if con.kind.upper() not in ("UNIQUE", "PRIMARY KEY") or not con.columns:
+            continue
+        out.append(_duplicate_check(current, con.columns, dialect, table))
+    before_indexes = _keys(current.indexes)
+    for index in target.indexes:
+        if index.key in before_indexes or not index.unique or not index.columns:
+            continue
+        out.append(_duplicate_check(current, index.columns, dialect, table))
+    return out
+
+
+def _duplicate_check(
+    current: TableModel,
+    columns: tuple[str, ...],
+    dialect: Dialect,
+    table: str,
+) -> Preflight:
+    """How many rows sit in a duplicated group over `columns` — the
+    rows a UNIQUE would refuse, not the number of duplicate groups,
+    because the first is the number the user has to go and fix."""
+    listed = ", ".join(dialect.quoted(c) for c in columns)
+    return Preflight(
+        f"SELECT count(*) FROM (SELECT {listed} FROM {table} "
+        f"GROUP BY {listed} HAVING count(*) > 1) AS d",
+        "duplicate groups over "
+        + ", ".join(columns)
+        + ", which UNIQUE would reject",
+        statement=", ".join(columns),
+    )
+
+
 # Serialisation
 
 
@@ -1028,6 +1393,7 @@ def to_dict(model: TableModel) -> dict:
                 "identity": c.identity,
                 "generated": c.generated,
                 "generated_stored": c.generated_stored,
+                "renamed_from": c.renamed_from,
                 "options": dict(c.options),
             }
             for c in model.columns
@@ -1081,6 +1447,7 @@ def from_dict(data: dict) -> TableModel:
                 identity=bool(c.get("identity", False)),
                 generated=str(c.get("generated", "")),
                 generated_stored=bool(c.get("generated_stored", True)),
+                renamed_from=str(c.get("renamed_from", "")),
                 options=dict(c.get("options") or {}),
             )
             for c in data.get("columns", [])

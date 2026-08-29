@@ -32,6 +32,13 @@ press lists what that adapter can really create.
   cannot express most of it, the plan is the rename/create/copy/drop
   rebuild inside the pragmas that make it atomic. **Table Definition**
   is still there for hand-writing the `CREATE` itself.
+  A designer tab is saved with the workspace: close it, or restart, and
+  the table you were designing comes back as you left it, alter
+  sessions included. An alter session reloads the table from the
+  catalog on restore, so the plan is made against today's schema; a
+  saved edit the table can no longer support — a rename of a column
+  that has since been dropped, an index over one — is left out and
+  said so beside the preview.
 - **Everything else** opens a query console prefilled with a commented,
   dialect-correct skeleton to fill in and run.
 

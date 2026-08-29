@@ -1,6 +1,6 @@
 ## CORE-28 — Persist the designer's table model in the workspace
 
-- **Status:** todo
+- **Status:** Done
 - **Depends on:** CORE-23
 - **From:** RS-02 (see `docs/table-creator-research.md`)
 
@@ -33,11 +33,11 @@ you were designing back exactly as it was.
 
 ### Acceptance criteria
 
-- [ ] A designer with several columns, constraints and options
+- [x] A designer with several columns, constraints and options
       restores identically after a restart.
-- [ ] A workspace file written by an older build still opens.
-- [ ] A restored alter-mode designer whose table has changed
+- [x] A workspace file written by an older build still opens.
+- [x] A restored alter-mode designer whose table has changed
       underneath opens with the stale parts removed and an
       explanation shown, not an error dialog.
-- [ ] Covered by a test that round-trips a `TabState` through the
+- [x] Covered by a test that round-trips a `TabState` through the
       workspace layer.

@@ -15,6 +15,7 @@ time the tab is constructed and no main loop is needed.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -25,7 +26,10 @@ from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import ColumnInfo, TypeSpec
 from sqlide.backend.db.metadata import Capabilities, NodeRef
 from sqlide.backend.db.sqlite.connector import SqliteConnector
+from sqlide.backend.workspaces import Workspace
 from sqlide.backend.db.table_model import (
+    ConstraintModel,
+    IndexModel,
     MYSQL_COLUMN_OPTIONS,
     MYSQL_TABLE_OPTIONS,
     POSTGRES_TABLE_OPTIONS,
@@ -403,3 +407,147 @@ def test_an_unknown_option_kind_is_simply_not_shown(monkeypatch, connector):
     shown = [field.spec.name for field in tab._table_options._fields]
     assert "weird" not in shown
     assert shown == ["WITHOUT ROWID", "STRICT"]
+
+
+# Persistence (CORE-28)
+
+
+def _designer(monkeypatch, connector, *, designer: str = "", ref=None):
+    """A create-mode designer restored from `designer`, as the window
+    does."""
+    monkeypatch.setattr(
+        designer_module.registry,
+        "create_provider",
+        lambda _kind, con: _FakeProvider(con, schemas=False),
+    )
+    profile = ConnectionProfile(name="designer", kind="sqlite")
+    return TableDesignerTab(
+        profile,
+        lambda _p: connector,
+        lambda _message: None,
+        on_created=lambda _table, _schema: None,
+        ref=ref,
+        designer=designer,
+    )
+
+
+def _editor(connector, ref, designer: str = ""):
+    """An alter-mode designer on `ref`, over the real provider."""
+    profile = ConnectionProfile(name="designer", kind="sqlite")
+    return TableDesignerTab(
+        profile,
+        lambda _p: connector,
+        lambda _message: None,
+        on_created=lambda _table, _schema: None,
+        table_ref=ref,
+        designer=designer,
+    )
+
+
+def _designed(monkeypatch, connector):
+    """A design with two columns, a unique constraint and an index."""
+    tab = _tab(monkeypatch, connector, schemas=False)
+    tab._table_name.set_text("invoices")
+    tab._rows[0].name.set_text("id")
+    tab._rows[0]._type.set_selected(0)
+    tab._rows[0].pk.set_active(True)
+    tab._add_row()
+    tab._rows[1].name.set_text("code")
+    tab._rows[1]._type.set_selected(1)
+    row = tab._add_constraint()
+    row.set_available(tab._column_names())
+    row.set_constraint(ConstraintModel(kind="UNIQUE", columns=("code",)))
+    index = tab._add_index()
+    index.set_available(tab._column_names())
+    index.set_index(IndexModel(name="invoices_code", columns=("code",)))
+    tab._refresh()
+    return tab
+
+
+def test_tab_state_round_trips_the_whole_design(monkeypatch, connector):
+    tab = _designed(monkeypatch, connector)
+    state = tab.tab_state()
+    assert state.kind == "designer" and state.table == ""
+
+    back = _designer(monkeypatch, connector, designer=state.designer)
+    assert back.model() == tab.model()
+    assert back._build_sql() == tab._build_sql()
+    assert back._status.get_text() == ""
+
+
+def test_design_survives_the_workspace_file(monkeypatch, connector):
+    tab = _designed(monkeypatch, connector)
+    workspace = Workspace(name="w")
+    workspace.tabs = [tab.tab_state()]
+    reread = Workspace.from_dict(json.loads(json.dumps(workspace.to_dict())))
+    back = _designer(monkeypatch, connector, designer=reread.tabs[0].designer)
+    assert back.model() == tab.model()
+
+
+def test_an_older_workspace_without_a_design_still_opens(monkeypatch, connector):
+    old = Workspace.from_dict(
+        {
+            "name": "w",
+            "tabs": [
+                {
+                    "kind": "designer",
+                    "connection": "designer",
+                    "something_from_the_future": {"nested": 1},
+                }
+            ],
+        }
+    )
+    state = old.tabs[0]
+    assert state.designer == "" and state.table == ""
+    # An empty design is simply an empty designer, not an error.
+    back = _designer(monkeypatch, connector, designer=state.designer)
+    assert back.model().name == ""
+
+
+def test_unreadable_design_opens_an_empty_designer(monkeypatch, connector):
+    back = _designer(monkeypatch, connector, designer="{not json")
+    assert back.model().name == ""
+    assert back._status.get_text() == ""
+
+
+def test_alter_mode_reloads_the_table_and_keeps_the_edits(connector):
+    connector.execute("CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT)")
+    ref = NodeRef(kind="table", name="people")
+    tab = _editor(connector, ref)
+    # Rename a column and add one, then save the session.
+    tab._rows[1].name.set_text("full_name")
+    tab._add_row()
+    tab._rows[2].name.set_text("email")
+    tab._rows[2]._type.set_selected(0)
+    state = tab.tab_state()
+    assert state.table == "people"
+
+    back = _editor(connector, ref, designer=state.designer)
+    assert [c.name for c in back.model().columns] == ["id", "full_name", "email"]
+    # The rename still diffs against the table as it is now, not against
+    # the saved copy of it.
+    assert back.model().columns[1].renamed_from == "name"
+    assert back._status.get_text() == ""
+    assert [s.sql for s in back.statements()] == [
+        s.sql for s in tab.statements()
+    ]
+
+
+def test_alter_mode_drops_edits_the_table_no_longer_supports(connector):
+    connector.execute("CREATE TABLE stock (id INTEGER PRIMARY KEY, note TEXT)")
+    ref = NodeRef(kind="table", name="stock")
+    tab = _editor(connector, ref)
+    tab._rows[1].name.set_text("remark")  # rename note -> remark
+    index = tab._add_index()
+    index.set_available(tab._column_names())
+    index.set_index(IndexModel(name="stock_remark", columns=("remark",)))
+    state = tab.tab_state()
+
+    # The column the rename and the index stand on is dropped underneath.
+    connector.execute("ALTER TABLE stock DROP COLUMN note")
+    back = _editor(connector, ref, designer=state.designer)
+    # No dialog: the rename is gone (the column reads as a new one) and
+    # the status label says how much was left behind.
+    assert back.model().columns[1].renamed_from == ""
+    assert "no longer" in back._status.get_text()
+    assert back.statements()  # still usable, not an error state

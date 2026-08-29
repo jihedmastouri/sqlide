@@ -71,6 +71,7 @@ from sqlide.backend.db.base import (
     ColumnInfo,
     Connector,
     ConnectorError,
+    IndexInfo,
     PrivilegeInfo,
     RelationInfo,
     ResultSet,
@@ -775,6 +776,24 @@ class MetadataProvider:
                 lambda: self.connector.catalog_columns_in(schema, ref.name), []
             )
         return _safe(lambda: self.connector.catalog_columns(ref.name), [])
+
+    def indexes_of(self, ref: NodeRef) -> list[IndexInfo]:
+        """The indexes on one table, as the catalog holds them.
+
+        The listing is database-wide on every adapter, so the owning
+        table is what narrows it — and an adapter that leaves `table`
+        empty (nothing we ship does) contributes nothing rather than
+        every index in the database. Indexes backing a PRIMARY KEY or a
+        UNIQUE constraint are not here: the adapters leave them out
+        because they cannot be dropped with DROP INDEX, and the
+        designer reads them as constraints instead (CORE-26).
+        """
+        name = ref.name.lower()
+        return [
+            index
+            for index in _safe(self.connector.list_indexes, [])
+            if index.table and index.table.lower() == name
+        ]
 
     def relations(self) -> list[RelationInfo]:
         """The database's foreign keys, for anything that infers a

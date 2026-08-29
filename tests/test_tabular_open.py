@@ -149,6 +149,7 @@ def sidebar(sqlite_db):
         on_new_query=unused,
         on_open_cli=unused,
         on_open_definition=unused,
+        on_edit_table=unused,
         on_open_function=unused,
         on_relation_graph=unused,
         on_view_indexes=unused,

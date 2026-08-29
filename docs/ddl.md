@@ -20,6 +20,18 @@ press lists what that adapter can really create.
   — over a live preview of the statements they generate: the
   `CREATE TABLE` and a `CREATE INDEX` for each index. Which constraint
   kinds and index fields appear depends on the engine.
+  The same designer changes a table that already exists: **Edit
+  Table…** on a table's right-click menu loads it into the form, the
+  button becomes **Apply**, and what runs is the difference between the
+  table as it is and the table as you left it — an added column, a
+  rename, a type change, a dropped index. The review dialog groups the
+  plan by what it costs, dangerous first: what loses data, what the
+  existing rows can refuse (a `NOT NULL` over nulls, a `UNIQUE` over
+  duplicates — the dialog counts the offending rows for you before you
+  apply), and what rewrites the table. On SQLite, where `ALTER TABLE`
+  cannot express most of it, the plan is the rename/create/copy/drop
+  rebuild inside the pragmas that make it atomic. **Table Definition**
+  is still there for hand-writing the `CREATE` itself.
 - **Everything else** opens a query console prefilled with a commented,
   dialect-correct skeleton to fill in and run.
 

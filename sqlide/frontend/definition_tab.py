@@ -1,27 +1,23 @@
 """Definition tabs: editable table/view DDL and function definitions.
 
 DefinitionTab is opened from the sidebar's context menu (Table
-Definition). A switcher in the top bar flips between two modes, and
-both are editable — every save path only ever produces SQL that is
-shown to the user in an UpdatePreviewDialog before anything runs:
+Definition), and it is the escape hatch: the CREATE statement
+(Connector.get_ddl, with SQL highlighting) in an editable buffer.
+Editing it and pressing Save generates the rename-old / create-new /
+copy-columns / drop-old rebuild sequence (views: DROP VIEW + the
+edited CREATE); columns are matched by name between the old catalog
+and the edited statement. That rebuild is a SQLite workaround: the
+engines with a real ALTER TABLE (supports_table_rebuild = False) get
+ADD/DROP COLUMN for the columns the edit added or removed instead.
+Whatever the path, the SQL is shown in an UpdatePreviewDialog before
+anything runs, and Refresh reloads the definition, discarding edits.
 
-- Text shows the CREATE statement (Connector.get_ddl, with SQL
-  highlighting). Editing it and pressing Save generates the
-  rename-old / create-new / copy-columns / drop-old rebuild sequence
-  (views: DROP VIEW + the edited CREATE). Columns are matched by name
-  between the old catalog and the edited statement. That rebuild is a
-  SQLite workaround: the engines with a real ALTER TABLE
-  (supports_table_rebuild = False) get ADD/DROP COLUMN for the columns
-  the edit added or removed instead, and are told that changes to a
-  surviving column belong in the Table mode.
-- Table shows the column catalog (name, type, nullable, primary key)
-  in an editable ResultGrid. Edited names become RENAME COLUMN
-  statements; type/nullability edits become the dialect's in-place
-  ALTER when it has one (MySQL) and fall back to a table rebuild when
-  it doesn't (SQLite). Primary-key changes must go through the text.
-
-Both modes are loaded together on open and by Refresh, which also
-discards unsaved edits.
+The column-grid mode this tab used to carry is gone (CORE-26): editing
+a table column by column is what the table designer does, over a model
+that knows the engine's types, its constraints and its indexes, and it
+classifies what each change costs instead of leaving it to a caption.
+Sidebar ▸ Edit Table opens it. What stays here is the one thing the
+designer deliberately does not do — hand-writing the definition.
 
 FunctionTab is opened by activating a function in the sidebar: the
 object's DDL in an editable, highlighted SQL editor. Save replaces
@@ -37,11 +33,11 @@ from typing import Callable
 from gi.repository import Gtk
 
 from sqlide.backend.connections import ConnectionProfile
-from sqlide.backend.db.base import ColumnInfo, Connector, ConnectorError
+from sqlide.backend.db.base import Connector, ConnectorError
 from sqlide.backend.sql_split import split_statements
 from sqlide.backend.sql_format import format_sql, options_from_settings
 from sqlide.backend.workspaces import TabState
-from sqlide.frontend.data_grid import ResultGrid, RowItem, UpdatePreviewDialog
+from sqlide.frontend.data_grid import UpdatePreviewDialog
 from sqlide.frontend.sql_editor import SqlEditor
 from sqlide.frontend.util import describe, run_async
 from sqlide.i18n import _
@@ -55,11 +51,9 @@ _REBUILD_CAPTION = (
 _ALTER_CAPTION = (
     "This engine edits tables in place, so only the columns you added "
     "or removed are applied. Changes to an existing column's type, "
-    "nullability or position must go through the Table mode."
+    "nullability or position belong in the table designer "
+    "(Edit Table…), which applies them as a diff."
 )
-
-# Grid column positions in the Table mode.
-_COL_NAME, _COL_TYPE, _COL_NULLABLE, _COL_PK = range(4)
 
 
 class DefinitionTab(Gtk.Box):
@@ -76,21 +70,12 @@ class DefinitionTab(Gtk.Box):
         self._ensure = ensure_connector
         self._show_error = show_error
         self._original_ddl = ""
-        # Grid rows with unsaved edits: row -> the column as loaded.
-        self._pending: dict[RowItem, ColumnInfo] = {}
 
         # Editable, highlighted CREATE statement (SqlEditor scrolls
         # itself).
         self._text = SqlEditor()
-        text_page = self._text
-        text_page.set_vexpand(True)
-        text_page.set_hexpand(True)
-
-        self._grid = ResultGrid(on_edit=self._on_grid_edit)
-
-        self._stack = Gtk.Stack(vexpand=True)
-        self._stack.add_titled(text_page, "text", "Text")
-        self._stack.add_titled(self._grid, "table", "Table")
+        self._text.set_vexpand(True)
+        self._text.set_hexpand(True)
 
         bar = Gtk.Box(
             spacing=6,
@@ -99,24 +84,22 @@ class DefinitionTab(Gtk.Box):
             margin_start=6,
             margin_end=6,
         )
-        switcher = Gtk.StackSwitcher(stack=self._stack)
         save = Gtk.Button(label=_("Save"))
         save.add_css_class("suggested-action")
         save.set_tooltip_text(
-            "Turn the edits of the visible mode into SQL and show it "
-            "for review before running"
+            "Turn the edited definition into SQL and show it for review "
+            "before running"
         )
         save.connect("clicked", self._on_save_clicked)
         refresh = Gtk.Button(icon_name="view-refresh-symbolic")
         refresh.add_css_class("flat")
         describe(refresh, _("Reload the definition (discards edits)"))
         refresh.connect("clicked", lambda *_: self.reload())
-        bar.append(switcher)
         bar.append(Gtk.Box(hexpand=True))
         bar.append(save)
         bar.append(refresh)
         self.append(bar)
-        self.append(self._stack)
+        self.append(self._text)
 
         self.reload()
 
@@ -128,12 +111,9 @@ class DefinitionTab(Gtk.Box):
     def reload(self) -> None:
         def work():
             connector = self._ensure(self.profile)
-            return connector.get_ddl(self.table), connector.list_columns(
-                self.table
-            )
+            return connector.get_ddl(self.table)
 
-        def done(loaded):
-            ddl, columns = loaded
+        def done(ddl):
             # One definition of how our SQL looks (CORE-44): what the
             # server hands back is laid out the same way the editor's
             # Format lays a statement out. The formatted text is what
@@ -145,69 +125,13 @@ class DefinitionTab(Gtk.Box):
             self._text.set_text(
                 self._original_ddl or f"-- No DDL available for {self.table}"
             )
-            self._pending.clear()
-            self._grid.set_result(
-                ["Column", "Type", "Nullable", "Primary Key"],
-                [
-                    (
-                        c.name,
-                        c.type,
-                        "yes" if c.nullable else "no",
-                        "PK" if c.is_pk else "",
-                    )
-                    for c in columns
-                ],
-                editable=True,
-            )
-            self._grid.set_unlocked(True)
 
         run_async(work, done, lambda exc: self._show_error(str(exc)))
-
-    # Table-mode editing
-
-    def _on_grid_edit(self, row: RowItem, index: int, new_text: str) -> None:
-        if index == _COL_PK:
-            self._show_error(
-                "Change the primary key by editing the DDL text"
-            )
-            return
-        if index == _COL_NULLABLE:
-            new_text = new_text.strip().lower()
-            if new_text not in ("yes", "no"):
-                self._show_error("Nullable must be “yes” or “no”")
-                return
-        if row not in self._pending:
-            # Snapshot the loaded state before the first edit applies.
-            self._pending[row] = ColumnInfo(
-                name=str(row.values[_COL_NAME]),
-                type=str(row.values[_COL_TYPE]),
-                is_pk=row.values[_COL_PK] == "PK",
-                nullable=row.values[_COL_NULLABLE] == "yes",
-            )
-        row.values[index] = new_text
-        self._grid.mark_modified(row, index)
-
-    def _edited_columns(self) -> list[tuple[ColumnInfo, ColumnInfo]]:
-        """(as loaded, as edited) for every actually-changed grid row."""
-        edits = []
-        for row, original in self._pending.items():
-            edited = ColumnInfo(
-                name=str(row.values[_COL_NAME]).strip(),
-                type=str(row.values[_COL_TYPE]).strip(),
-                is_pk=original.is_pk,
-                nullable=row.values[_COL_NULLABLE] == "yes",
-            )
-            if edited != original and edited.name:
-                edits.append((original, edited))
-        return edits
 
     # Saving
 
     def _on_save_clicked(self, *_args) -> None:
-        if self._stack.get_visible_child_name() == "text":
-            self._save_text()
-        else:
-            self._save_table()
+        self._save_text()
 
     def _save_text(self) -> None:
         new_ddl = self._text.get_text().strip().rstrip(";")
@@ -241,51 +165,6 @@ class DefinitionTab(Gtk.Box):
                 for name in _columns_from_ddl(new_ddl)
                 if name in old_names
             ]
-            return connector.wrap_rebuild(
-                connector.rebuild_table_statements(self.table, new_ddl, pairs)
-            ), _REBUILD_CAPTION
-
-        def done(previewable) -> None:
-            self._preview(*previewable)
-
-        run_async(work, done, lambda exc: self._show_error(str(exc)))
-
-    def _save_table(self) -> None:
-        edits = self._edited_columns()
-        if not edits:
-            self._show_error("No changes to save")
-            return
-
-        def work():
-            connector = self._ensure(self.profile)
-            statements = []
-            rebuild = False
-            for original, edited in edits:
-                if edited.name != original.name:
-                    statements.append(connector.rename_column_sql(
-                        self.table, original.name, edited.name
-                    ))
-                if (
-                    edited.type != original.type
-                    or edited.nullable != original.nullable
-                ):
-                    sql = connector.modify_column_sql(self.table, edited)
-                    if sql:
-                        statements.append(sql)
-                    else:
-                        rebuild = True
-            if not rebuild:
-                return statements, ""
-            # No in-place column change in this dialect (SQLite): one
-            # rebuild covers every edit, renames included.
-            changed = {original.name: edited for original, edited in edits}
-            current = connector.list_columns(self.table)
-            target = [changed.get(c.name, c) for c in current]
-            pairs = [
-                (changed[c.name].name if c.name in changed else c.name, c.name)
-                for c in current
-            ]
-            new_ddl = _synthesize_ddl(connector.quote_ident, self.table, target)
             return connector.wrap_rebuild(
                 connector.rebuild_table_statements(self.table, new_ddl, pairs)
             ), _REBUILD_CAPTION
@@ -338,25 +217,6 @@ class DefinitionTab(Gtk.Box):
         run_async(work, done, failed)
 
 
-def _synthesize_ddl(
-    quote: Callable[[str], str], table: str, columns: list[ColumnInfo]
-) -> str:
-    """A CREATE TABLE carrying exactly what the catalog grid shows:
-    column names, types, NOT NULL and the primary key."""
-    defs = []
-    for column in columns:
-        line = f"  {quote(column.name)} {column.type}".rstrip()
-        if not column.nullable:
-            line += " NOT NULL"
-        defs.append(line)
-    pks = [c.name for c in columns if c.is_pk]
-    if pks:
-        defs.append(
-            "  PRIMARY KEY (" + ", ".join(quote(p) for p in pks) + ")"
-        )
-    return f"CREATE TABLE {quote(table)} (\n" + ",\n".join(defs) + "\n)"
-
-
 def _alter_statements(
     connector: Connector, table: str, old_names: list[str], new_ddl: str
 ) -> tuple[list[str], str]:
@@ -367,9 +227,9 @@ def _alter_statements(
     cannot be compared honestly — the catalog spells types its own way
     (`varchar(40)` against Postgres' `character varying(40)`), so
     guessing at a difference would either miss real edits or invent
-    ones. Those edits belong to the Table mode, which reads the same
-    catalog it writes back; the caption says so rather than leaving the
-    user to notice.
+    ones. Those edits belong to the table designer, which reads the
+    model it writes back and diffs it (CORE-26); the caption says so
+    rather than leaving the user to notice.
     """
     entries = _column_defs_from_ddl(new_ddl)
     new_names = [name for name, _definition in entries]
@@ -386,8 +246,8 @@ def _alter_statements(
     if not statements:
         raise ConnectorError(
             "No column was added or removed. This engine applies "
-            "definition changes in place — edit the column in the "
-            "Table mode, which can change its type and nullability."
+            "definition changes in place — change a column's type or "
+            "nullability in the table designer (Edit Table…)."
         )
     return statements, _ALTER_CAPTION
 

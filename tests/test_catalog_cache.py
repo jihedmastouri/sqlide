@@ -244,7 +244,7 @@ def sidebar(db):
     profile = ConnectionProfile("shop", "sqlite", file_path=db.file_path)
     names = (
         "on_open_table on_open_object on_open_section on_new_query "
-        "on_open_cli on_open_definition on_open_function on_relation_graph "
+        "on_open_cli on_open_definition on_edit_table on_open_function on_relation_graph "
         "on_view_indexes on_query_builder on_drop_object on_new_object "
         "on_mcp_server on_manage_users on_monitor on_open_schema "
         "on_edit_connection on_disconnect on_close_tabs on_remove_connection "

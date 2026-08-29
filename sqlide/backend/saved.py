@@ -17,7 +17,7 @@ connection names, so they live in the workspace file
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Callable
 
@@ -28,6 +28,11 @@ from sqlide.backend import config
 class SavedItem:
     name: str
     sql: str
+    # Optional: the chart this query is meant to be seen as, as the
+    # versioned JSON of a backend/charts.ChartSpec (charts.dump_state).
+    # Empty for a snippet, for a query saved without its chart, and for
+    # every file written before CORE-33 — those load unchanged.
+    chart: str = ""
 
 
 class SavedStore:
@@ -43,15 +48,16 @@ class SavedStore:
             self._loaded = True
             if self.path.exists():
                 try:
+                    known = {f.name for f in fields(SavedItem)}
                     self.items = [
-                        SavedItem(**item)
+                        SavedItem(**{k: v for k, v in item.items() if k in known})
                         for item in json.loads(self.path.read_text(encoding="utf-8"))
                     ]
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, AttributeError):
                     self.items = []  # unreadable file: start empty, keep it
         return self.items
 
-    def add(self, name: str, sql: str) -> SavedItem:
+    def add(self, name: str, sql: str, chart: str = "") -> SavedItem:
         """Save under a unique name (an existing name gets " (2)" …)."""
         self.load()
         names = {item.name for item in self.items}
@@ -60,7 +66,7 @@ class SavedStore:
             while f"{name} ({n})" in names:
                 n += 1
             name = f"{name} ({n})"
-        item = SavedItem(name=name, sql=sql)
+        item = SavedItem(name=name, sql=sql, chart=chart)
         self.items.append(item)
         self._save()
         return item

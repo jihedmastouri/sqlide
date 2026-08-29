@@ -76,11 +76,11 @@
 | ID | Title | Depends on |
 |---|---|---|
 | CORE-30 | Chart model and data mapping in the backend (done) | CORE-02 |
-| CORE-31 | Cairo chart canvas, shared with the monitoring sparkline | CORE-30 |
-| CORE-32 | Chart view in the result tab, beside Data and Properties | CORE-30, CORE-31 |
-| CORE-33 | Persist chart specs: with the tab, and on saved queries | CORE-30, CORE-32 |
-| CORE-34 | Export a chart as PNG or SVG, and copy it | CORE-31, CORE-32 |
-| CORE-35 | Dashboard tab: several saved charts, refreshed together | CORE-33 |
+| CORE-31 | Cairo chart canvas, shared with the monitoring sparkline (done) | CORE-30 |
+| CORE-32 | Chart view in the result tab, beside Data and Properties (done) | CORE-30, CORE-31 |
+| CORE-33 | Persist chart specs: with the tab, and on saved queries (done) | CORE-30, CORE-32 |
+| CORE-34 | Export a chart as PNG or SVG, and copy it (done) | CORE-31, CORE-32 |
+| CORE-35 | Dashboard tab: several saved charts, refreshed together (done) | CORE-33 |
 
 ### Data grid and SQL (from RS-04)
 

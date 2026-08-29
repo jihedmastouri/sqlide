@@ -2178,6 +2178,9 @@ class TableTab(Gtk.Box):
         self._base_offset = 0
         self._loaded_rows = 0
         self._loading_more = False
+        # Guards "Load all for chart" against a second click while the
+        # first is still fetching pages.
+        self._loading_all = False
         # Where the loaded window stopped, when the connector paged by
         # key rather than by offset (CORE-40). Handed back on the next
         # scroll so the following page starts exactly after the last row
@@ -2254,6 +2257,9 @@ class TableTab(Gtk.Box):
         # geometries, so a table tab on a server without PostGIS never
         # pays for one (PG-04).
         self._map = None
+        # The chart side (CORE-32), built on first use like the map:
+        # a tab nobody charts never pays for one.
+        self._chart = None
         # None = not asked yet, "" = this server has no spatial
         # extension, otherwise its name.
         self._spatial = None
@@ -2325,6 +2331,10 @@ class TableTab(Gtk.Box):
         )
         self._record_toggle.set_group(self._data_toggle)
         self._record_toggle.connect("toggled", self._on_view_toggled)
+        self._chart_toggle = Gtk.ToggleButton(label=_("Chart"))
+        describe(self._chart_toggle, _("The loaded rows, drawn"))
+        self._chart_toggle.set_group(self._data_toggle)
+        self._chart_toggle.connect("toggled", self._on_view_toggled)
         self._map_toggle = Gtk.ToggleButton(label=_("Map"), visible=False)
         describe(
             self._map_toggle,
@@ -2335,6 +2345,7 @@ class TableTab(Gtk.Box):
         self._map_toggle.connect("toggled", self._on_view_toggled)
         linked.append(self._data_toggle)
         linked.append(self._record_toggle)
+        linked.append(self._chart_toggle)
         linked.append(self._map_toggle)
         row.set_center_widget(linked)
         return row
@@ -2347,6 +2358,10 @@ class TableTab(Gtk.Box):
         if button is self._map_toggle:
             self._stack.set_visible_child_name("map")
             self._refresh_map()
+            return
+        if button is self._chart_toggle:
+            self._refresh_chart()
+            self._stack.set_visible_child_name("chart")
             return
         if button is self._record_toggle:
             self._record.show_row(self._grid.focused_row())
@@ -2390,6 +2405,109 @@ class TableTab(Gtk.Box):
             )
         )
 
+    def _ensure_chart(self):
+        """The chart widget, built on first use — the same rule the map
+        follows, for the same reason."""
+        if self._chart is None:
+            from sqlide.frontend.chart_view import ChartView
+
+            self._chart = ChartView(
+                on_select=self._on_chart_row_selected,
+                on_load_all=self._load_all_for_chart,
+            )
+            # What an exported picture is called by default (CORE-34).
+            self._chart.export_name = (self.table or "chart").replace(".", "_")
+            self._stack.add_named(self._chart, "chart")
+        return self._chart
+
+    def _refresh_chart(self) -> None:
+        """Redraw from the rows the grid holds. The mapping survives:
+        the spec names columns, so a scrolled-in page or a refresh
+        redraws the same chart with more rows in it."""
+        view = self._ensure_chart()
+        view.set_result(
+            self._result_names,
+            self._loaded_result_rows,
+            more=self._next.get_sensitive(),
+        )
+
+    def _on_chart_row_selected(self, row: int) -> None:
+        """A click on a mark selects the row it was drawn from."""
+        self._grid.select_row(row + self._base_offset)
+
+    def _load_all_for_chart(self, cap: int) -> None:
+        """Fetch the rest of this query for the chart, up to `cap`
+        (`chart_max_rows`).
+
+        Past the cap it refuses and says so with the count and the
+        advice: aggregate in SQL. Fetching millions of rows to draw a
+        few hundred pixels is the thing this action exists to stop, not
+        to do (RS-03).
+        """
+        if self._loading_all:
+            return
+        self._loading_all = True
+        chart = self._ensure_chart()
+        chart.report(_("Loading…"))
+        filters = self._filters
+        order_by = self._order_by
+        start = self._base_offset + self._loaded_rows
+        cursor = self._cursor
+
+        def work():
+            connector = self._ensure(self.profile)
+            fetched: list[tuple] = []
+            offset = start
+            page_cursor = cursor
+            stable = True
+            while len(fetched) <= cap:
+                result = connector.fetch_rows(
+                    self.table,
+                    offset,
+                    PAGE_SIZE,
+                    filters=filters,
+                    order_by=order_by,
+                    cursor=page_cursor,
+                )
+                fetched.extend(result.rows)
+                page_cursor = result.cursor
+                stable = result.stable
+                if len(result) < PAGE_SIZE:
+                    return fetched, page_cursor, stable, False
+                offset += len(result)
+            return fetched, page_cursor, stable, True
+
+        def done(loaded) -> None:
+            self._loading_all = False
+            rows, page_cursor, stable, over = loaded
+            total = self._loaded_rows + len(rows)
+            if over or total > cap:
+                chart.report(
+                    _(
+                        "This result has more than %(cap)d rows, which is "
+                        "the chart_max_rows limit. Aggregate in SQL — add "
+                        "a GROUP BY — and chart the summary instead."
+                    )
+                    % {"cap": cap}
+                )
+                return
+            self._grid.append_rows(rows)
+            self._loaded_result_rows.extend(rows)
+            self._loaded_rows = total
+            self._cursor = page_cursor
+            self._stable_order = stable
+            self._next.set_sensitive(False)
+            page = f"{self._base_offset + 1}–{self._base_offset + total}"
+            self._page_label.set_text(page)
+            self._row_range = page
+            self._refresh_chart()
+
+        def failed(exc: Exception) -> None:
+            self._loading_all = False
+            chart.report(str(exc))
+
+        run_async(work, done, failed)
+
     def _on_show_map_requested(self, row: int, column: str) -> None:
         self.show_map(column=column, row=row - self._base_offset)
 
@@ -2400,6 +2518,8 @@ class TableTab(Gtk.Box):
     def _on_grid_row_selected(self, row: int | None) -> None:
         if self._map is not None:
             self._map.select_row(row)
+        if self._chart is not None:
+            self._chart.select_row(row)
 
     def _update_map_availability(self) -> None:
         """Offer the Map side when this result has geometry columns and
@@ -2654,6 +2774,8 @@ class TableTab(Gtk.Box):
             )
             self._row_range = page
             self._update_map_availability()
+            if self._chart is not None:
+                self._refresh_chart()
             if self.on_ran is not None:
                 # What the adapter actually ran, tiebreaker order and
                 # key comparison included, so the history and the
@@ -2943,6 +3065,8 @@ class TableTab(Gtk.Box):
             self._loaded_result_rows.extend(result.rows)
             if self._stack.get_visible_child_name() == "map":
                 self._refresh_map()
+            if self._stack.get_visible_child_name() == "chart":
+                self._refresh_chart()
             count = len(result)
             self._loaded_rows += count
             self._offset = offset

@@ -1,6 +1,6 @@
 ## CORE-33 — Persist chart specs: with the tab, and on saved queries
 
-- **Status:** todo
+- **Status:** done
 - **Depends on:** CORE-30, CORE-32
 - **From:** RS-03 (see `docs/charting-research.md`)
 
@@ -37,12 +37,12 @@ the chart it is meant to be seen as.
 
 ### Acceptance criteria
 
-- [ ] A configured chart restores identically after a restart.
-- [ ] A workspace or saved-query file written by an older build still
+- [x] A configured chart restores identically after a restart.
+- [x] A workspace or saved-query file written by an older build still
       opens, with no chart.
-- [ ] A saved query with a chart opens showing that chart, and
+- [x] A saved query with a chart opens showing that chart, and
       re-running it redraws from the new rows.
-- [ ] A restored spec whose columns have changed opens with the missing
+- [x] A restored spec whose columns have changed opens with the missing
       parts removed and an explanation shown.
-- [ ] Covered by a test that round-trips a `TabState` through the
+- [x] Covered by a test that round-trips a `TabState` through the
       workspace layer and a `SavedItem` through `SavedStore`.

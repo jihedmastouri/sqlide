@@ -34,6 +34,7 @@ The first of these that applies wins:
 ├── settings.toml            # app and UI preferences
 ├── notes.toml               # free-form notes (side panel -> Notes)
 ├── table_templates/         # saved table shapes (one .toml per template)
+├── dashboards/              # dashboards (one .toml per dashboard)
 ├── snippets.json            # saved SQL snippets (content, not config)
 ├── saved_queries.json       # saved queries      (content, not config)
 ├── backups.json             # backup jobs, destinations and run history
@@ -69,7 +70,9 @@ Two things are deliberately not TOML:
 ## Editing while the app runs
 
 `notes.toml` is watched too: a note added or edited on disk shows up in
-the side panel's Notes page without a restart.
+the side panel's Notes page without a restart. So is every file under
+`dashboards/`: edit a dashboard's layout by hand and the open tab lays
+itself out again.
 
 `settings.toml` is watched: save it and the running app re-reads it and
 applies the change — theme, font size, row cap, shortcuts and all.
@@ -137,6 +140,7 @@ key with a value outside its set is reported and falls back.
 | `map_tile_url` | string | `"https://tile.openstreetmap.org/{z}/{x}/{y}.png"` | Slippy-map tile template for the geo viewer. Point it at your own tile server and nothing in the app talks to openstreetmap.org. Must be an `http(s)` URL containing `{z}`, `{x}` and `{y}`. |
 | `map_attribution` | string | `"© OpenStreetMap contributors"` | The credit line drawn over the map. It belongs to whichever server the tiles come from; blank turns tiles off rather than dropping the credit. |
 | `map_max_features` | integer ≥ 1 | `2000` | How many geometries one map draws before it stops and says "showing N of M". |
+| `chart_max_rows` | integer ≥ 1 | `50000` | The ceiling on **Load all for chart** in a result's Chart view. The chart draws the rows the grid holds; loading everything stops here and says so, because past this point the answer is a `GROUP BY` rather than more rows on the wire. |
 | `last_workspace` | string | `""` | Id of the workspace to reopen on startup. Empty, or a workspace that no longer exists, opens the first on file. |
 
 Three tables of string-to-string:
@@ -296,6 +300,51 @@ name = "created_at"
 type = "timestamptz"
 nullable = false
 default = {kind = "expression", value = "now()"}
+```
+
+## `dashboards/*.toml`
+
+One dashboard per file (**New ▸ Dashboard…**): a grid of cells, each a
+saved query drawn as the chart that query carries. The definition is
+configuration rather than churn, so it is here and not in a workspace's
+`state.json` — a dashboard is worth reading in a diff and worth
+committing. The open *tab* is only a reference to the file's `id`.
+
+The queries themselves are not copied in: a cell names one by its entry
+in `saved_queries.json`, so editing the query changes every dashboard
+that shows it, and a name nothing matches is reported inside that cell
+rather than dropping it.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `version` | integer | The file's shape. `1` today. |
+| `id` | string | Stable id, generated once. What an open tab is restored by. |
+| `name` | string | What the tab and the Dashboards dialog call it. |
+| `connection` | string | The one connection every cell runs on, by its name in the workspace. A dashboard opened in a workspace that has no such connection says so instead of querying. |
+| `columns` | integer | Cells per row, 1–4. |
+| `interval` | integer | Seconds between automatic refreshes; `0` means refresh on demand only. Non-zero values are clamped to the monitoring dashboard's range (1–60 s). |
+| `[[cell]]` | table array | One per cell, in layout order — they pack left to right and wrap. `query` (the saved query's name), `title` (optional override), `width` (columns spanned) and `height` (row units, 1–3). |
+
+```toml
+# ~/.config/sqlide/dashboards/ops.toml
+version = 1
+id = "6b1f…"
+name = "Ops"
+connection = "prod"
+columns = 2
+interval = 30
+
+[[cell]]
+query = "Signups this week"
+title = ""
+width = 2
+height = 1
+
+[[cell]]
+query = "Errors by service"
+title = ""
+width = 1
+height = 1
 ```
 
 ## `workspaces/<id>/workspace.toml`

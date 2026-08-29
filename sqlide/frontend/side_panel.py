@@ -106,10 +106,20 @@ def ask_name(
     heading: str,
     initial: str,
     on_done: Callable[[str], None],
+    extra: Gtk.Widget | None = None,
 ) -> None:
-    """Small name prompt used when saving snippets/queries/filters."""
+    """Small name prompt used when saving snippets/queries/filters.
+
+    `extra` is an optional widget shown under the entry — the "save the
+    chart too" check when the console has one (CORE-33)."""
     entry = Gtk.Entry(text=initial, activates_default=True)
-    dialog = Adw.AlertDialog(heading=heading, extra_child=entry)
+    child: Gtk.Widget = entry
+    if extra is not None:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.append(entry)
+        box.append(extra)
+        child = box
+    dialog = Adw.AlertDialog(heading=heading, extra_child=child)
     dialog.add_response("cancel", _("Cancel"))
     dialog.add_response("save", _("Save"))
     dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
@@ -140,15 +150,19 @@ class _SavedSqlList(Gtk.Box):
         store: SavedStore,
         save_tooltip: str,
         empty_text: str,
-        on_use: Callable[[str], None],
+        on_use: Callable[[SavedItem], None],
         get_sql: Callable[[], str],
         on_error: Callable[[str], None],
+        get_chart: Callable[[], str] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self._store = store
         self._on_use = on_use
         self._get_sql = get_sql
         self._on_error = on_error
+        # Queries only: the chart the console is showing, offered
+        # alongside the SQL when there is one (CORE-33).
+        self._get_chart = get_chart
         self._items: list[SavedItem] = []
 
         controls = Gtk.Box(
@@ -203,18 +217,29 @@ class _SavedSqlList(Gtk.Box):
             self._list.append(row)
 
     def _row_activated(self, _list, row) -> None:
-        self._on_use(self._items[row.get_index()].sql)
+        self._on_use(self._items[row.get_index()])
 
     def _save_current(self, *_args) -> None:
         sql = self._get_sql().strip()
         if not sql:
             self._on_error("Nothing to save — the console is empty")
             return
+        chart = self._get_chart() if self._get_chart is not None else ""
+        check: Gtk.CheckButton | None = None
+        if chart:
+            check = Gtk.CheckButton(
+                label=_("Save the chart with it"), active=True
+            )
         ask_name(
             self,
             "Save As",
             _first_line(sql)[:40],
-            lambda name: self._store.add(name, sql),
+            lambda name: self._store.add(
+                name,
+                sql,
+                chart if check is not None and check.get_active() else "",
+            ),
+            extra=check,
         )
 
 
@@ -313,13 +338,14 @@ class SidePanel(Gtk.Box):
         on_activate: Callable[[HistoryEntry], None],
         on_clear: Callable[[], None],
         on_insert_snippet: Callable[[str], None],
-        on_open_query: Callable[[str], None],
+        on_open_query: Callable[[SavedItem], None],
         get_console_sql: Callable[[], str],
         on_error: Callable[[str], None],
         on_apply_filter: Callable[[dict], None],
         on_save_filter: Callable[[str], None],
         on_delete_filter: Callable[[dict], None],
         properties: Gtk.Widget | None = None,
+        get_console_chart: Callable[[], str] | None = None,
     ) -> None:
         super().__init__()
 
@@ -375,7 +401,7 @@ class SidePanel(Gtk.Box):
             "Save the console's selection (or whole editor) as a snippet",
             "No saved snippets yet — the + button saves the console's "
             "selection",
-            on_use=on_insert_snippet,
+            on_use=lambda item: on_insert_snippet(item.sql),
             get_sql=get_console_sql,
             on_error=on_error,
         )
@@ -386,6 +412,7 @@ class SidePanel(Gtk.Box):
             "selection",
             on_use=on_open_query,
             get_sql=get_console_sql,
+            get_chart=get_console_chart,
             on_error=on_error,
         )
         self._notes = NotesPage()

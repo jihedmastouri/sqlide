@@ -1435,8 +1435,13 @@ class QueryBuilderTab(Gtk.Box):
         self._grid = ResultGrid(
             on_aggregate=self._on_aggregate, on_value=self._on_value
         )
+        # The built rows are a grid and a chart over the same result
+        # (CORE-32); the pane holds both and wires the selection.
+        from sqlide.frontend.chart_view import ChartPane
+
+        self._chart_pane = ChartPane(self._grid)
         self._results_panel = ResultsPanel(
-            self._grid, paned, on_export=self._export_result
+            self._chart_pane, paned, on_export=self._export_result
         )
         return self._results_panel
 
@@ -2536,6 +2541,9 @@ class QueryBuilderTab(Gtk.Box):
             if isinstance(result, ResultSet):
                 self._results_panel.reveal()
                 self._grid.set_result(result.columns, result.rows)
+                self._chart_pane.set_result(
+                    result.columns, result.rows, more=result.truncated
+                )
                 self._status.set_text(
                     _("first %s of a larger result") % row_count(len(result))
                     if result.truncated

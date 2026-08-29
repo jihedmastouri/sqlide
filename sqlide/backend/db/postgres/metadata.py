@@ -26,6 +26,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from sqlide.backend.db.table_model import (
+    POSTGRES_COLUMN_OPTIONS,
+    POSTGRES_TABLE_OPTIONS,
+)
 from sqlide.backend.db.metadata import (
     CATALOG_CATEGORIES,
     RELATION_FOLDERS,
@@ -71,6 +75,12 @@ class PostgresMetadata(MetadataProvider):
         # statements either all land or none of them do.
         transactional_grants=True,
     )
+
+    #: The table and column options this engine offers the designer
+    #: (CORE-27), declared as data so the frontend renders them
+    #: without knowing which engine it is talking to.
+    TABLE_OPTIONS = POSTGRES_TABLE_OPTIONS
+    COLUMN_OPTIONS = POSTGRES_COLUMN_OPTIONS
 
     #: What PostgreSQL lets you grant, per object kind. A database
     #: takes CONNECT/CREATE/TEMPORARY, a schema USAGE/CREATE, a

@@ -28,6 +28,10 @@ shorter list rather than an error (db/metadata.py `_safe`).
 
 from __future__ import annotations
 
+from sqlide.backend.db.table_model import (
+    MYSQL_COLUMN_OPTIONS,
+    MYSQL_TABLE_OPTIONS,
+)
 from sqlide.backend.db.metadata import (
     CATALOG_CATEGORIES,
     CATEGORY_LABELS,
@@ -68,6 +72,12 @@ class MysqlMetadata(MetadataProvider):
         # statement that failed and says which one it was.
         transactional_grants=False,
     )
+
+    #: The table and column options this engine offers the designer
+    #: (CORE-27), declared as data so the frontend renders them
+    #: without knowing which engine it is talking to.
+    TABLE_OPTIONS = MYSQL_TABLE_OPTIONS
+    COLUMN_OPTIONS = MYSQL_COLUMN_OPTIONS
 
     #: MySQL's own grant list, per level: the same privileges narrow as
     #: the target does. Global takes the administrative rights too

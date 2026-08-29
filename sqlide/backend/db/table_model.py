@@ -61,6 +61,8 @@ __all__ = [
     "MODEL_VERSION",
     "Preflight",
     "MYSQL",
+    "OPTION_KINDS",
+    "OptionSpec",
     "POSTGRES",
     "SQLITE",
     "Statement",
@@ -69,8 +71,10 @@ __all__ = [
     "dump_state",
     "from_dict",
     "load_state",
+    "option_on",
     "plan",
     "preflight",
+    "prune_options",
     "render_create",
     "to_dict",
 ]
@@ -91,6 +95,272 @@ CLASSIFICATIONS = ("safe", "rewrite", "may_fail", "destructive")
 #: carries them as a `literal` still renders as SQL rather than as a
 #: quoted string.
 _BARE_DEFAULTS = ("NULL", "TRUE", "FALSE", "CURRENT_TIMESTAMP", "CURRENT_DATE")
+
+
+#: The kinds of value an engine option can take. A kind the designer
+#: has never heard of is simply not shown, so an engine may add one
+#: here without the frontend growing a branch for it.
+OPTION_KINDS = ("boolean", "choice", "text", "integer")
+
+
+@dataclass(frozen=True)
+class OptionSpec:
+    """One option an engine offers on a table or a column.
+
+    This is the whole of CORE-27's answer to "MySQL has a storage
+    engine, PostgreSQL has a tablespace, SQLite has WITHOUT ROWID":
+    every one of them is *described* here as data — a name, a label, a
+    kind, the values it allows and how it is written — and both the
+    designer and the renderer read the description. Neither has an `if
+    engine == …` in it, and an engine that grows an option grows it in
+    one place.
+
+    - `name` is the key in `TableModel.options` / `ColumnModel.options`
+      *and*, unless `template` says otherwise, the word that goes into
+      the SQL.
+    - `kind` is one of `OPTION_KINDS`; `choices` fills a chooser for a
+      "choice" and `default` is what the designer starts it on.
+    - `capability` gates the option on a `Capabilities` flag, so
+      partitioning is offered only where the provider says the server
+      partitions.
+    - `field` maps the option onto a field of the model instead of the
+      free options map — identity and generated columns are columns'
+      options in the UI but have had model fields (and dialect-aware
+      rendering) since CORE-23, and this is what keeps them one thing.
+    - `placement` says where the rendered option goes: "prefix"
+      (between CREATE and TABLE, PostgreSQL's UNLOGGED), "tail" (after
+      the closing parenthesis, MySQL's ENGINE= and SQLite's WITHOUT
+      ROWID), "with" (inside PostgreSQL's `WITH (…)` storage
+      parameters) or "column" (inside a column's own definition).
+    - `alterable` is whether an existing table's option can be changed
+      by an ALTER rather than only set at creation.
+    """
+
+    name: str
+    label: str = ""
+    scope: str = "table"
+    kind: str = "text"
+    choices: tuple[str, ...] = ()
+    default: str = ""
+    note: str = ""
+    capability: str = ""
+    field: str = ""
+    placement: str = "tail"
+    template: str = ""
+    alterable: bool = False
+
+    @property
+    def title(self) -> str:
+        return self.label or self.name
+
+    def render(self, value: str) -> str:
+        """The option, as SQL, for a value that is present.
+
+        A template wins; otherwise a boolean is its own name (`STRICT`)
+        and everything else is `NAME=value`, spaced out inside a
+        `WITH (…)` list the way PostgreSQL writes it.
+        """
+        if self.template:
+            return self.template.format(value=value)
+        if self.kind == "boolean":
+            return self.name
+        if self.placement == "with":
+            return f"{self.name} = {value}"
+        return f"{self.name}={value}"
+
+
+def option_on(value: Any) -> bool:
+    """Whether an option's stored value means "set".
+
+    Values are strings — that is what survives JSON and a text entry —
+    so a boolean is "true"/"" and anything non-blank is a value. A
+    real `True` is accepted too, because a caller building a model in
+    Python will write one.
+    """
+    if value is True:
+        return True
+    if value is False or value is None:
+        return False
+    return bool(str(value).strip()) and str(value).strip().lower() != "false"
+
+
+#: PostgreSQL's table options. UNLOGGED and the storage parameters are
+#: the ones with an everyday use; TABLESPACE and INHERITS are here
+#: because the alternative is leaving the designer for a console.
+POSTGRES_TABLE_OPTIONS = (
+    OptionSpec(
+        "UNLOGGED",
+        label="Unlogged",
+        kind="boolean",
+        placement="prefix",
+        note="Faster writes, but the table is empty after a crash and "
+        "is not replicated.",
+    ),
+    OptionSpec(
+        "INHERITS",
+        label="Inherits",
+        kind="text",
+        placement="tail",
+        template="INHERITS ({value})",
+        note="Parent tables, comma separated.",
+    ),
+    OptionSpec(
+        "PARTITION BY",
+        label="Partition by",
+        kind="text",
+        placement="tail",
+        template="PARTITION BY {value}",
+        capability="partitions",
+        note="A strategy and its columns, e.g. RANGE (created_at).",
+    ),
+    OptionSpec(
+        "fillfactor",
+        label="Fill factor",
+        kind="integer",
+        placement="with",
+        default="100",
+        alterable=True,
+        note="Percentage of a page to fill; below 100 leaves room for "
+        "updates in place.",
+    ),
+    OptionSpec(
+        "autovacuum_enabled",
+        label="Autovacuum",
+        kind="choice",
+        choices=("true", "false"),
+        placement="with",
+        alterable=True,
+    ),
+    OptionSpec(
+        "TABLESPACE",
+        label="Tablespace",
+        kind="text",
+        placement="tail",
+        template="TABLESPACE {value}",
+        note="Where the table's files live; blank means the default.",
+    ),
+)
+
+POSTGRES_COLUMN_OPTIONS = (
+    OptionSpec(
+        "identity",
+        label="Identity",
+        scope="column",
+        kind="boolean",
+        field="identity",
+        note="GENERATED BY DEFAULT AS IDENTITY — the standard spelling, "
+        "preferred over the serial types for a new table.",
+    ),
+    OptionSpec(
+        "generated",
+        label="Generated as",
+        scope="column",
+        kind="text",
+        field="generated",
+        note="An expression computed from the other columns "
+        "(PostgreSQL 12 and later).",
+    ),
+)
+
+#: MySQL's table options, all of them trailing `NAME=value` pairs.
+MYSQL_TABLE_OPTIONS = (
+    OptionSpec(
+        "ENGINE",
+        label="Storage engine",
+        kind="choice",
+        choices=("InnoDB", "MyISAM", "MEMORY", "ARCHIVE", "CSV"),
+        default="InnoDB",
+        alterable=True,
+        note="InnoDB is the only one with transactions and foreign keys.",
+    ),
+    OptionSpec(
+        "DEFAULT CHARSET",
+        label="Character set",
+        kind="choice",
+        choices=("utf8mb4", "utf8", "latin1", "binary"),
+        alterable=True,
+        template="DEFAULT CHARSET={value}",
+        note="The default for the table's text columns.",
+    ),
+    OptionSpec(
+        "COLLATE",
+        label="Collation",
+        kind="choice",
+        choices=(
+            "utf8mb4_general_ci",
+            "utf8mb4_unicode_ci",
+            "utf8mb4_bin",
+            "latin1_swedish_ci",
+        ),
+        alterable=True,
+        note="How text in this table compares and sorts.",
+    ),
+    OptionSpec(
+        "AUTO_INCREMENT",
+        label="Auto increment start",
+        kind="integer",
+        alterable=True,
+        note="The next value the auto-numbered column takes.",
+    ),
+    OptionSpec(
+        "ROW_FORMAT",
+        label="Row format",
+        kind="choice",
+        choices=("DEFAULT", "DYNAMIC", "COMPACT", "REDUNDANT", "COMPRESSED"),
+        alterable=True,
+    ),
+)
+
+MYSQL_COLUMN_OPTIONS = (
+    OptionSpec(
+        "identity",
+        label="Auto increment",
+        scope="column",
+        kind="boolean",
+        field="identity",
+        note="AUTO_INCREMENT: the server numbers this column. One per "
+        "table, and it has to be a key.",
+    ),
+    OptionSpec(
+        "generated",
+        label="Generated as",
+        scope="column",
+        kind="text",
+        field="generated",
+        note="An expression computed from the other columns.",
+    ),
+)
+
+#: SQLite's two table options, both bare words after the closing
+#: parenthesis.
+SQLITE_TABLE_OPTIONS = (
+    OptionSpec(
+        "WITHOUT ROWID",
+        label="Without rowid",
+        kind="boolean",
+        note="Stores the rows in the primary key's own index. The table "
+        "must have a primary key.",
+    ),
+    OptionSpec(
+        "STRICT",
+        label="Strict types",
+        kind="boolean",
+        note="Refuses a value that does not fit the column's declared "
+        "type (SQLite 3.37 and later).",
+    ),
+)
+
+SQLITE_COLUMN_OPTIONS = (
+    OptionSpec(
+        "identity",
+        label="Auto increment",
+        scope="column",
+        kind="boolean",
+        field="identity",
+        note="AUTOINCREMENT, which SQLite only has on a single-column "
+        "INTEGER primary key.",
+    ),
+)
 
 
 class TableModelError(ValueError):
@@ -504,8 +774,23 @@ class Dialect:
     rebuild_epilogue: tuple[str, ...] = ()
     #: How table-level options are written: "mysql" (trailing
     #: `ENGINE=InnoDB`), "sqlite" (trailing `WITHOUT ROWID`) or
-    #: "postgres" (`WITH (…)`).
+    #: "postgres" (`WITH (…)`). It decides the punctuation between
+    #: trailing options and how an existing table's option is altered;
+    #: *which* options exist is `table_options` below.
     option_style: str = "postgres"
+    #: The engine's own table and column options, as specs (CORE-27).
+    #: The renderer emits exactly these and ignores anything else a
+    #: model carries, which is what lets a model designed against one
+    #: engine open against another and simply lose what does not apply.
+    table_options: tuple[OptionSpec, ...] = ()
+    column_options: tuple[OptionSpec, ...] = ()
+
+    def option_spec(self, name: str, scope: str = "table") -> "OptionSpec | None":
+        specs = self.table_options if scope == "table" else self.column_options
+        for spec in specs:
+            if spec.name.lower() == name.lower():
+                return spec
+        return None
 
     def quoted(self, name: str) -> str:
         if not name:
@@ -543,6 +828,11 @@ POSTGRES = Dialect(
     partial_indexes=True,
     modify_style="postgres",
     option_style="postgres",
+    table_options=POSTGRES_TABLE_OPTIONS,
+    column_options=POSTGRES_COLUMN_OPTIONS,
+    # Generated columns arrived in 12, above our 10 floor; the option's
+    # own note says so rather than the engine hiding the field.
+    generated_columns=True,
 )
 MYSQL = Dialect(
     name="mysql",
@@ -554,6 +844,8 @@ MYSQL = Dialect(
     generated_columns=True,
     modify_style="mysql",
     option_style="mysql",
+    table_options=MYSQL_TABLE_OPTIONS,
+    column_options=MYSQL_COLUMN_OPTIONS,
 )
 SQLITE = Dialect(
     name="sqlite",
@@ -569,6 +861,8 @@ SQLITE = Dialect(
     can_modify_column=False,
     can_alter_constraint=False,
     option_style="sqlite",
+    table_options=SQLITE_TABLE_OPTIONS,
+    column_options=SQLITE_COLUMN_OPTIONS,
     # Mirrors SqliteConnector.wrap_rebuild; `dialect_for` re-reads it
     # off the live connector so the two cannot drift apart.
     rebuild_prologue=("PRAGMA foreign_keys = OFF", "BEGIN"),
@@ -650,6 +944,7 @@ def _column_sql(column: ColumnModel, dialect: Dialect, pk: tuple[str, ...]) -> s
         line += " NOT NULL"
     if column.identity:
         line += _identity_sql(column, dialect, pk)
+    line += _column_options_sql(column, dialect)
     if column.comment.strip() and dialect.inline_comments:
         line += " COMMENT '" + column.comment.replace("'", "''") + "'"
     return line
@@ -704,21 +999,123 @@ def _constraint_sql(con: ConstraintModel, dialect: Dialect) -> str:
     return f"{head}{kind} ({cols})"
 
 
+def option_value(holder: Any, spec: OptionSpec) -> str:
+    """What `holder` (a table or a column) has set for `spec`.
+
+    A spec that names a model field reads the field; everything else
+    reads the free options map. Booleans come back as "true"/"" so one
+    kind of value travels through JSON, a text entry and a check box
+    alike.
+    """
+    if spec.field:
+        value = getattr(holder, spec.field, "")
+    else:
+        value = holder.options.get(spec.name, "")
+    if isinstance(value, bool):
+        return "true" if value else ""
+    return str(value or "")
+
+
+def _present_options(
+    holder: Any, specs: tuple[OptionSpec, ...]
+) -> list[tuple[OptionSpec, str]]:
+    """The specs this holder has a value for, in the order the engine
+    declared them — which is the order the engine's grammar wants."""
+    out = []
+    for spec in specs:
+        if spec.field:
+            continue  # rendered by the field's own code, not as an option
+        value = option_value(holder, spec)
+        if option_on(value):
+            out.append((spec, value.strip()))
+    return out
+
+
+#: Stands in for the `WITH (…)` group while the trailing options are
+#: assembled, so the group lands where the engine declared its first
+#: storage parameter rather than always last.
+_WITH_SLOT = "\x00sqlide-with\x00"
+
+
 def _options_sql(model: TableModel, dialect: Dialect) -> str:
-    """The tail after the closing parenthesis, per engine."""
-    entries = [
-        (k, v) for k, v in sorted(model.options.items()) if str(v).strip() or v is True
-    ]
-    if not entries:
+    """The tail after the closing parenthesis, from the dialect's own
+    option specs — never from a branch on the engine's name."""
+    entries = _present_options(model, dialect.table_options)
+    tail: list[str] = []
+    with_group: list[str] = []
+    for spec, value in entries:
+        if spec.placement == "prefix":
+            continue  # already written before TABLE
+        if spec.placement == "with":
+            if not with_group:
+                tail.append(_WITH_SLOT)
+            with_group.append(spec.render(value))
+            continue
+        tail.append(spec.render(value))
+    if not tail:
         return ""
-    if dialect.option_style == "mysql":
-        return " " + " ".join(f"{k}={v}" for k, v in entries)
-    if dialect.option_style == "sqlite":
-        # SQLite's table options are bare words (WITHOUT ROWID, STRICT).
-        words = [k if str(v).strip() in ("", "true", "True") else f"{k}={v}"
-                 for k, v in entries]
-        return " " + ", ".join(words)
-    return " WITH (" + ", ".join(f"{k} = {v}" for k, v in entries) + ")"
+    separator = ", " if dialect.option_style == "sqlite" else " "
+    rendered = separator.join(tail)
+    if with_group:
+        rendered = rendered.replace(
+            _WITH_SLOT, "WITH (" + ", ".join(with_group) + ")"
+        )
+    return " " + rendered
+
+
+def _create_prefix(model: TableModel, dialect: Dialect) -> str:
+    """The words between CREATE and TABLE — PostgreSQL's UNLOGGED, and
+    whatever else an engine puts there."""
+    words = [
+        spec.render(value)
+        for spec, value in _present_options(model, dialect.table_options)
+        if spec.placement == "prefix"
+    ]
+    return (" ".join(words) + " ") if words else ""
+
+
+def _column_options_sql(column: ColumnModel, dialect: Dialect) -> str:
+    """A column's engine options, for the ones written into the column
+    definition itself. Identity and generated columns are options in
+    the designer but fields in the model, and they are rendered by the
+    code that has always rendered them."""
+    parts = [
+        spec.render(value)
+        for spec, value in _present_options(column, dialect.column_options)
+        if spec.placement in ("column", "tail")
+    ]
+    return (" " + " ".join(parts)) if parts else ""
+
+
+def prune_options(model: TableModel, connector: Any) -> TableModel:
+    """`model` with every option this engine does not offer dropped.
+
+    A design saved against MySQL and opened against SQLite keeps its
+    columns and loses ENGINE=InnoDB, rather than rendering SQL the
+    server will refuse. The renderer ignores unknown options anyway;
+    this is for the paths that compare two models — the diff, and a
+    designer showing what it is about to apply.
+    """
+    dialect = _as_dialect(connector)
+    known = {spec.name.lower() for spec in dialect.table_options}
+    column_known = {spec.name.lower() for spec in dialect.column_options}
+    return replace(
+        model,
+        options={
+            k: v for k, v in model.options.items() if k.lower() in known
+        },
+        columns=tuple(
+            replace(
+                column,
+                options={
+                    k: v
+                    for k, v in column.options.items()
+                    if k.lower() in column_known
+                },
+            )
+            for column in model.columns
+        ),
+    )
 
 
 def render_create(model: TableModel, connector: Any) -> str:
@@ -762,7 +1159,8 @@ def render_create(model: TableModel, connector: Any) -> str:
         if rendered:
             defs.append("  " + rendered)
     sql = (
-        f"CREATE TABLE {dialect.table_name(model)} (\n"
+        f"CREATE {_create_prefix(model, dialect)}TABLE "
+        f"{dialect.table_name(model)} (\n"
         + ",\n".join(defs)
         + "\n)"
         + _options_sql(model, dialect)
@@ -890,6 +1288,12 @@ def plan(current: TableModel | None, target: TableModel, connector: Any) -> list
     the model existing.
     """
     dialect = _as_dialect(connector)
+    # Options this engine does not have are dropped before anything is
+    # compared, so a model carried over from another engine plans the
+    # table it can actually create (CORE-27).
+    target = prune_options(target, dialect)
+    if current is not None:
+        current = prune_options(current, dialect)
     if current is None:
         out = [Statement(render_create(target, dialect), "safe", "Creates the table")]
         out += [
@@ -1092,6 +1496,49 @@ def _alter_plan(
             )
     out.extend(_constraint_statements(current, target, dialect, table))
     out.extend(_index_statements(current, target, dialect))
+    out.extend(_option_statements(current, target, dialect, table))
+    return out
+
+
+def _option_statements(
+    current: TableModel, target: TableModel, dialect: Dialect, table: str
+) -> list[Statement]:
+    """The ALTERs for the engine options that changed.
+
+    Only the options the engine's spec marks `alterable` — a SQLite
+    table cannot stop being WITHOUT ROWID, and saying so by leaving the
+    flag off beats a branch here.
+    """
+    out: list[Statement] = []
+    for spec in dialect.table_options:
+        if not spec.alterable or spec.field:
+            continue
+        before = option_value(current, spec).strip()
+        after = option_value(target, spec).strip()
+        if before == after:
+            continue
+        if spec.placement == "with":
+            sql = (
+                f"ALTER TABLE {table} SET ({spec.render(after)})"
+                if option_on(after)
+                else f"ALTER TABLE {table} RESET ({spec.name})"
+            )
+            out.append(
+                Statement(sql, "safe", f"Sets {spec.title.lower()}")
+            )
+            continue
+        if not option_on(after):
+            # Nothing to set it back to: an engine or a charset has no
+            # "unset", and guessing the server's default would be worse
+            # than leaving it alone.
+            continue
+        out.append(
+            Statement(
+                f"ALTER TABLE {table} {spec.render(after)}",
+                "rewrite",
+                f"Sets {spec.title.lower()}, which rewrites the table",
+            )
+        )
     return out
 
 

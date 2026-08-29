@@ -67,6 +67,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, fields, replace
 
 from sqlide.backend.db import extensions as ext, objects
+from sqlide.backend.db.table_model import OptionSpec
 from sqlide.backend.db.base import (
     ColumnInfo,
     Connector,
@@ -458,6 +459,12 @@ class MetadataProvider:
     #: with no schema level at all.
     SYSTEM_SCHEMAS: tuple[str, ...] = ()
     SYSTEM_SCHEMA_PREFIXES: tuple[str, ...] = ()
+    #: The table and column options this engine offers, as specs
+    #: (CORE-27). The generic provider offers none: an engine that
+    #: says nothing gets a designer with no Options view, which is the
+    #: right answer for an adapter we know nothing about.
+    TABLE_OPTIONS: tuple[OptionSpec, ...] = ()
+    COLUMN_OPTIONS: tuple[OptionSpec, ...] = ()
 
     def __init__(self, connector: Connector) -> None:
         self.connector = connector
@@ -531,6 +538,33 @@ class MetadataProvider:
         menu (see Connector.column_type_specs), and the vocabulary
         column_kinds() classifies against."""
         return self.connector.column_types()
+
+    def table_options(self) -> list[OptionSpec]:
+        """The options this engine offers on a table (CORE-27).
+
+        The designer builds its Options view straight out of these —
+        a switch for a boolean, a chooser for a choice, an entry for
+        text or a number — so adding MySQL's ROW_FORMAT or
+        PostgreSQL's fillfactor is a line in a provider and nothing at
+        all in the frontend. An option gated on a capability is left
+        out where the flag is off, which is how partitioning stays
+        hidden on a server that does not partition.
+        """
+        return self._offered(self.TABLE_OPTIONS)
+
+    def column_options(self) -> list[OptionSpec]:
+        """The options this engine offers on a column — identity,
+        generated expressions, and whatever else the engine writes
+        into a column's own definition."""
+        return self._offered(self.COLUMN_OPTIONS)
+
+    def _offered(self, specs: tuple[OptionSpec, ...]) -> list[OptionSpec]:
+        caps = self.capabilities()
+        return [
+            spec
+            for spec in specs
+            if not spec.capability or caps.supports(spec.capability)
+        ]
 
     def column_type_specs(self) -> list[TypeSpec]:
         """The types this dialect offers, as specs — the designer's

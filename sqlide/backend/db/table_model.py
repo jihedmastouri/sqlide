@@ -226,12 +226,34 @@ class IndexModel:
     unique: bool = False
     method: str = ""
     where: str = ""
+    #: Per-column sort direction, positionally matched to `columns`:
+    #: "DESC" for a descending entry, "" (or "ASC") for the engine's
+    #: default. Shorter than `columns` is allowed and means "default
+    #: for the rest", so an index that never mentions direction keeps
+    #: rendering exactly as it did.
+    directions: tuple[str, ...] = ()
+
+    def direction(self, position: int) -> str:
+        """The direction of the column at `position`, normalised to
+        "DESC" or ""."""
+        if position < len(self.directions):
+            if self.directions[position].strip().upper() == "DESC":
+                return "DESC"
+        return ""
 
     @property
     def key(self) -> tuple:
         if self.name:
             return ("name", self.name)
-        return ("shape", tuple(self.columns), self.unique, self.method)
+        return (
+            "shape",
+            tuple(self.columns),
+            tuple(
+                self.direction(i) for i in range(len(self.columns))
+            ),
+            self.unique,
+            self.method,
+        )
 
 
 @dataclass(frozen=True)
@@ -520,8 +542,22 @@ def render_create(model: TableModel, connector: Any) -> str:
     inline_pk = _inline_pk_columns(columns, dialect, pk)
     defs = [f"  {_column_sql(c, dialect, pk)}" for c in columns]
     if pk and not inline_pk:
+        # A named PRIMARY KEY constraint keeps its name; the key
+        # itself still comes from `model.primary_key`, so the column
+        # flags and the constraint cannot disagree.
+        named = next(
+            (
+                con.name
+                for con in model.constraints
+                if con.kind.upper() == "PRIMARY KEY" and con.name
+            ),
+            "",
+        )
+        head = f"CONSTRAINT {dialect.quoted(named)} " if named else ""
         defs.append(
-            "  PRIMARY KEY (" + ", ".join(dialect.quoted(c) for c in pk) + ")"
+            f"  {head}PRIMARY KEY ("
+            + ", ".join(dialect.quoted(c) for c in pk)
+            + ")"
         )
     for con in model.constraints:
         if con.kind.upper() == "PRIMARY KEY":
@@ -570,7 +606,14 @@ def _index_sql(model: TableModel, index: IndexModel, dialect: Dialect) -> str:
     head = f"CREATE {unique}INDEX {named}ON {dialect.table_name(model)}"
     if index.method.strip() and dialect.index_method:
         head += f" USING {index.method.strip()}"
-    head += " (" + ", ".join(dialect.quoted(c) for c in index.columns) + ")"
+    entries = []
+    for position, column in enumerate(index.columns):
+        entry = dialect.quoted(column)
+        direction = index.direction(position)
+        if direction:
+            entry += f" {direction}"
+        entries.append(entry)
+    head += " (" + ", ".join(entries) + ")"
     if index.where.strip() and dialect.partial_indexes:
         head += f" WHERE {index.where.strip()}"
     return head
@@ -1010,6 +1053,7 @@ def to_dict(model: TableModel) -> dict:
                 "unique": i.unique,
                 "method": i.method,
                 "where": i.where,
+                "directions": list(i.directions),
             }
             for i in model.indexes
         ],
@@ -1062,6 +1106,7 @@ def from_dict(data: dict) -> TableModel:
                 unique=bool(i.get("unique", False)),
                 method=str(i.get("method", "")),
                 where=str(i.get("where", "")),
+                directions=tuple(i.get("directions", ())),
             )
             for i in data.get("indexes", [])
         ),

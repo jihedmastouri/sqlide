@@ -161,6 +161,7 @@ from sqlide.backend import identity
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import metrics, objects, registry
 from sqlide.backend.db.base import Connector
+from sqlide.backend.db.metadata import NodeRef
 from sqlide.backend.settings import store as settings_store
 from sqlide.frontend import identity as identity_ui
 from sqlide.frontend import tree_search
@@ -351,7 +352,8 @@ class Sidebar(Gtk.ScrolledWindow):
         on_drop_object: Callable[
             [ConnectionProfile, str, str, str], None
         ],  # (profile, kind, name, owning table)
-        on_new_object: Callable[[ConnectionProfile, str], None],
+        # (profile, kind, the node the menu was opened on)
+        on_new_object: Callable[[ConnectionProfile, str, NodeRef], None],
         on_mcp_server: Callable[[ConnectionProfile], None],
         on_manage_users: Callable[[ConnectionProfile], None],
         on_monitor: Callable[[ConnectionProfile], None],
@@ -1746,7 +1748,9 @@ class Sidebar(Gtk.ScrolledWindow):
     def _menu_new_object(self, _action, param) -> None:
         node = self._menu_node
         if node is not None and node.profile is not None:
-            self._on_new_object(node.profile, param.get_string())
+            self._on_new_object(
+                node.profile, param.get_string(), _node_ref(node)
+            )
 
     def _menu_refresh(self, *_args) -> None:
         if self._menu_node is not None:
@@ -2359,6 +2363,29 @@ def _has_schemas(profile: ConnectionProfile | None) -> bool:
         return registry.capabilities(profile.kind).schemas
     except Exception:  # an adapter the registry doesn't know
         return False
+
+
+def _node_ref(node: Node) -> NodeRef:
+    """The tree row as the provider's NodeRef — its own kind and name,
+    plus the database and schema the row sits in.
+
+    Rows below a schema carry it on their derived profile
+    (`schema_profile`), so the context a New ▸ Table needs is already
+    there and no walk back up the tree is required (CORE-24).
+    """
+    profile = node.profile
+    schema = node.label if node.kind == "schema" else (
+        profile.schema if profile else ""
+    )
+    return NodeRef(
+        kind=node.kind,
+        name=node.label,
+        database=profile.database if profile else "",
+        schema=schema or "",
+        category=node.category,
+        table=node.table,
+        system=node.system,
+    )
 
 
 def schema_profile(

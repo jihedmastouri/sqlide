@@ -2818,9 +2818,14 @@ class MainWindow(Adw.ApplicationWindow):
             self.ensure_connector, self.show_error, executed,
         )
 
-    def _new_object(self, profile: ConnectionProfile, kind: str) -> None:
+    def _new_object(
+        self,
+        profile: ConnectionProfile,
+        kind: str,
+        ref: NodeRef | None = None,
+    ) -> None:
         if kind == "table":
-            self.open_table_designer(profile)
+            self.open_table_designer(profile, ref)
             return
 
         # Everything else: a query console prefilled with the
@@ -2831,14 +2836,22 @@ class MainWindow(Adw.ApplicationWindow):
             lambda exc: self.show_error(str(exc)),
         )
 
-    def open_table_designer(self, profile: ConnectionProfile) -> None:
+    def open_table_designer(
+        self, profile: ConnectionProfile, ref: NodeRef | None = None
+    ) -> None:
         # Not deduplicated by tab_key: several designers on the same
         # connection are fine, like query consoles.
+        #
+        # `ref` is the sidebar node the designer was launched from, so
+        # a New ▸ Table on a schema row opens on that schema (CORE-24).
         tab = TableDesignerTab(
             profile,
             self.ensure_connector,
             self.show_error,
-            on_created=lambda table: self._table_created(profile, table),
+            on_created=lambda table, schema: self._table_created(
+                profile, table, schema
+            ),
+            ref=ref,
         )
         page = self._append_tab(
             tab,
@@ -2850,9 +2863,16 @@ class MainWindow(Adw.ApplicationWindow):
             page.get_title(), sql, profile.name, ok
         )
 
-    def _table_created(self, profile: ConnectionProfile, table: str) -> None:
+    def _table_created(
+        self, profile: ConnectionProfile, table: str, schema: str = ""
+    ) -> None:
         self._sidebar.reload_connection(profile.name)
-        self.open_table(profile, table)
+        # The new table is opened through the schema it was created in,
+        # so its data tab reads the table that was just made rather
+        # than a same-named one earlier on the search path.
+        self.open_table(
+            schema_profile(profile, schema) if schema else profile, table
+        )
 
     def open_mcp_server(
         self, profile: ConnectionProfile | None = None

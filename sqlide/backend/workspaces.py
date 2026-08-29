@@ -2,9 +2,10 @@
 
 A workspace groups 0..n connection profiles and remembers the tabs
 that were open in it (table tabs, query consoles including the
-console SQL text, and query builders including the whole built
-query), so reopening a workspace restores it as it was left. It also keeps a capped history of executed queries (successes
-and failures).
+console SQL text, query builders including the whole built
+query, and table designers including the whole designed table), so
+reopening a workspace restores it as it was left. It also keeps a
+capped history of executed queries (successes and failures).
 
 Each workspace is a directory of its own, workspaces/<id>/ under the
 config directory (backend/config.py), holding:
@@ -41,7 +42,7 @@ MAX_HISTORY = 200
 
 @dataclass
 class TabState:
-    kind: str  # "table" | "query" | "cli" | "definition" | "function" | "relations" | "querybuilder" | "indexes" | "users" | "monitor" | "pragmas" | "object"
+    kind: str  # "table" | "query" | "cli" | "definition" | "function" | "relations" | "querybuilder" | "designer" | "indexes" | "users" | "monitor" | "pragmas" | "object"
     connection: str  # ConnectionProfile.name within the workspace
     table: str = ""  # table/definition/function tabs: object name; querybuilder: base table
     sql: str = ""  # query tabs only
@@ -51,6 +52,16 @@ class TabState:
     # opens in an older build (base table only) and one written by an
     # older build still opens here.
     builder: str = ""
+    # Table designer tabs: the table being designed, as the versioned
+    # JSON of a backend/db/table_model.TableModel
+    # (table_model.dump_state). In alter mode the designer's *target*
+    # is what is saved: `table` names the table being altered and
+    # `designer_schema` / `designer_database` locate it, so restore can
+    # reload the current state from the catalog and diff against it
+    # again (CORE-28).
+    designer: str = ""
+    designer_schema: str = ""
+    designer_database: str = ""
     # Object info tabs: which node of the tree the tab was opened on.
     # `table` carries the object's own name, so these three are the
     # rest of its identity (see frontend/object_info.py).

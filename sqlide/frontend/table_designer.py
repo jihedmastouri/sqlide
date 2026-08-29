@@ -69,7 +69,17 @@ refused by the rows already there — a NOT NULL over nulls, a UNIQUE
 over duplicates — the dialog asks the server for the offending count
 first (`preflight`) instead of letting the server say no.
 
-Session-only: tab_state() returns None, the tab is not restored.
+The design survives the session (CORE-28): `tab_state()` hands the
+workspace the whole TableModel as versioned JSON (`dump_state`), and a
+tab built with that JSON rehydrates the form once the catalog is in —
+the same one-way shape the query builder took in CORE-19, over the same
+`TabState`. In alter mode the *target* is what is saved; the table as
+it currently is comes back from the provider on restore, so the diff is
+made against today's catalog rather than yesterday's. Anything the
+saved design refers to that the table no longer has — a rename whose
+source column is gone, a constraint or index over a column that has
+been dropped — is left out and counted in the status label beside the
+preview, never raised as an error: a workspace must always open.
 """
 
 from __future__ import annotations
@@ -80,6 +90,7 @@ from typing import Callable
 from gi.repository import Adw, Gdk, Gtk
 
 from sqlide.backend.connections import ConnectionProfile
+from sqlide.backend.workspaces import TabState
 from sqlide.backend.db import registry
 from sqlide.backend.db.base import Connector, TypeSpec
 from sqlide.backend.db.metadata import Capabilities, NodeRef
@@ -95,6 +106,8 @@ from sqlide.backend.db.table_model import (
     Statement,
     TableModel,
     dialect_for,
+    dump_state,
+    load_state,
     option_on,
     option_set,
     option_value,
@@ -1143,6 +1156,7 @@ class TableDesignerTab(Gtk.Box):
         on_created: Callable[[str, str], None],
         ref: NodeRef | None = None,
         table_ref: NodeRef | None = None,
+        designer: str = "",
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.profile = profile
@@ -1157,6 +1171,12 @@ class TableDesignerTab(Gtk.Box):
         # same code path over the same model (CORE-26).
         self._table_ref = table_ref
         self._current: TableModel | None = None
+        # The saved design this tab is being restored from, if any
+        # (TabState.designer, CORE-28). Rehydrated once the catalog has
+        # loaded, since only then do we know the type list to show it
+        # with and — in alter mode — what the table looks like today.
+        # Unreadable or from a future version reads as None.
+        self._restore: TableModel | None = load_state(designer)
         self._specs: list[TypeSpec] = []
         self._rows: list[_ColumnRow] = []
         self._constraint_rows: list[_ConstraintRow] = []
@@ -1273,11 +1293,18 @@ class TableDesignerTab(Gtk.Box):
         )
         caption.add_css_class("dim-label")
         caption.add_css_class("caption")
+        # What a restore had to leave behind, said here rather than in
+        # a dialog (CORE-28). Empty the rest of the time.
+        self._status = Gtk.Label(xalign=1, label="")
+        self._status.add_css_class("dim-label")
+        self._status.add_css_class("caption")
+        self._status.set_wrap(True)
         copy = Gtk.Button(icon_name="edit-copy-symbolic")
         copy.add_css_class("flat")
         describe(copy, _("Copy the generated statement"))
         copy.connect("clicked", lambda *_: self._copy_sql())
         preview_bar.append(caption)
+        preview_bar.append(self._status)
         preview_bar.append(copy)
         self._preview = SqlEditor(editable=False)
         preview_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -1352,16 +1379,40 @@ class TableDesignerTab(Gtk.Box):
                 row.set_specs(self._specs)
                 row.set_option_specs(self._column_option_specs)
             self._sync_dialect()
+            if self._restore is not None and self._restore.schema:
+                # A saved design names its own schema; it wins over the
+                # node the tab was originally launched from.
+                self._wanted_schema = self._restore.schema
             self._sync_schema_chooser()
             if self._current is not None:
                 self._populate(self._current)
+            if self._restore is not None:
+                self._restore_model()
             self._refresh()
 
         run_async(work, ready, lambda exc: self._show_error(str(exc)))
         self._refresh()
 
-    def tab_state(self) -> None:
-        return None  # session-only
+    def tab_state(self) -> TabState:
+        """What the workspace saves: the whole design as data, plus —
+        in alter mode — which table it is editing, so restore can load
+        that table from the catalog again and diff against it (CORE-28).
+        """
+        ref = self._table_ref
+        if self._restore is not None and self._connector is None:
+            # The catalog never arrived (offline restore): hand back
+            # what we were given rather than dropping the design.
+            model = self._restore
+        else:
+            model = self.model()
+        return TabState(
+            kind="designer",
+            connection=self.profile.name,
+            table=ref.name if ref is not None else "",
+            designer=dump_state(model),
+            designer_schema=ref.schema if ref is not None else "",
+            designer_database=ref.database if ref is not None else "",
+        )
 
     # Loading an existing table
 
@@ -1370,7 +1421,7 @@ class TableDesignerTab(Gtk.Box):
         """Whether this designer was opened on a table that exists."""
         return self._table_ref is not None
 
-    def _populate(self, model: TableModel) -> None:
+    def _populate(self, model: TableModel, *, pk_row: bool = False) -> None:
         """Show `model` in the form — the loaded table, as rows.
 
         Everything the model carries gets a row: a column row per
@@ -1395,8 +1446,10 @@ class TableDesignerTab(Gtk.Box):
                 self._add_row()
             names = self._column_names()
             for constraint in model.constraints:
-                if constraint.kind.upper() == "PRIMARY KEY" and (
-                    model.primary_key
+                if (
+                    not pk_row
+                    and constraint.kind.upper() == "PRIMARY KEY"
+                    and model.primary_key
                 ):
                     # Already shown by the columns' own checkboxes.
                     continue
@@ -1411,6 +1464,90 @@ class TableDesignerTab(Gtk.Box):
             self._syncing = False
         self._columns_to_pk()
         self._refresh()
+
+    # Restoring a saved design (CORE-28)
+
+    def _restore_model(self) -> None:
+        """Show the design this tab was restored with, dropping
+        whatever the table no longer supports.
+
+        A saved design is data about a catalog that has moved on since.
+        In alter mode `self._current` has just been reloaded from the
+        provider, so the saved target is checked against it: a column
+        renamed from one that is gone comes back as a plain new column,
+        and a constraint or an index over a column the design no longer
+        has is left out. Every drop is counted and reported in the
+        status label — losing an index must never cost the rest of the
+        design, and must never be an error dialog.
+        """
+        model, self._restore = self._restore, None
+        if model is None:
+            return
+        dropped = 0
+        names = {c.name.lower() for c in model.columns}
+        constraints = tuple(
+            c
+            for c in model.constraints
+            if all(name.lower() in names for name in c.columns)
+        )
+        indexes = tuple(
+            i
+            for i in model.indexes
+            if all(name.lower() in names for name in i.columns)
+        )
+        dropped += len(model.constraints) - len(constraints)
+        dropped += len(model.indexes) - len(indexes)
+        self._populate(
+            replace(model, constraints=constraints, indexes=indexes),
+            pk_row=True,
+        )
+        dropped += self._rebase_rows()
+        notes = []
+        if self.editing and self._current is None:
+            notes.append(
+                _("The table this design edits is gone; nothing is loaded.")
+            )
+        if dropped:
+            notes.append(
+                ngettext(
+                    "%d part of the saved design no longer applies and was"
+                    " dropped.",
+                    "%d parts of the saved design no longer apply and were"
+                    " dropped.",
+                    dropped,
+                )
+                % dropped
+            )
+        self._status.set_text(" ".join(notes))
+
+    def _rebase_rows(self) -> int:
+        """Point each restored column row back at the table as it is
+        now, and return how many edits that cost.
+
+        `_populate` fills every row's `loaded` with the *saved* column,
+        which would make the diff run against yesterday's catalog. Each
+        row is therefore rebound to the freshly loaded column it stands
+        for — the one it names, or the one it says it was renamed from.
+        A row that matches nothing is a column the design adds; a rename
+        whose source is gone loses the rename (and is counted) rather
+        than planning an ALTER on a column that is not there.
+        """
+        current = {
+            c.name.lower(): c
+            for c in (self._current.columns if self._current else ())
+        }
+        dropped = 0
+        for row in self._rows:
+            saved = row.loaded
+            if saved is None:
+                continue
+            match = current.get(saved.name.lower())
+            if match is None and saved.renamed_from:
+                match = current.get(saved.renamed_from.lower())
+                if match is None:
+                    dropped += 1
+            row.loaded = match
+        return dropped
 
     # Schema
 

@@ -1947,6 +1947,26 @@ class MainWindow(Adw.ApplicationWindow):
                             table=tab.object_owner,
                             category=tab.object_category,
                         ))
+                elif tab.kind == "designer":
+                    # A saved design (CORE-28). With a table name it is
+                    # an alter session: the table is reloaded from the
+                    # catalog and the saved design diffed against it.
+                    if profile is not None:
+                        if tab.table:
+                            self.open_table_editor(
+                                profile,
+                                NodeRef(
+                                    kind="table",
+                                    name=tab.table,
+                                    schema=tab.designer_schema,
+                                    database=tab.designer_database,
+                                ),
+                                designer=tab.designer,
+                            )
+                        else:
+                            self.open_table_designer(
+                                profile, designer=tab.designer
+                            )
                 elif tab.kind == "querybuilder":
                     if profile is not None:
                         self.open_query_builder(
@@ -2838,7 +2858,10 @@ class MainWindow(Adw.ApplicationWindow):
         )
 
     def open_table_designer(
-        self, profile: ConnectionProfile, ref: NodeRef | None = None
+        self,
+        profile: ConnectionProfile,
+        ref: NodeRef | None = None,
+        designer: str = "",
     ) -> None:
         # Not deduplicated by tab_key: several designers on the same
         # connection are fine, like query consoles.
@@ -2853,6 +2876,7 @@ class MainWindow(Adw.ApplicationWindow):
                 profile, table, schema
             ),
             ref=ref,
+            designer=designer,
         )
         page = self._append_tab(
             tab,
@@ -2865,7 +2889,7 @@ class MainWindow(Adw.ApplicationWindow):
         )
 
     def open_table_editor(
-        self, profile: ConnectionProfile, ref: NodeRef
+        self, profile: ConnectionProfile, ref: NodeRef, designer: str = ""
     ) -> None:
         """The table designer on a table that already exists (CORE-26).
 
@@ -2884,6 +2908,7 @@ class MainWindow(Adw.ApplicationWindow):
                 profile, table, schema
             ),
             table_ref=ref,
+            designer=designer,
         )
         page = self._append_tab(
             tab,

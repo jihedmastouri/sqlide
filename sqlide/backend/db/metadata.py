@@ -74,6 +74,7 @@ from sqlide.backend.db.base import (
     PrivilegeInfo,
     RelationInfo,
     ResultSet,
+    TypeSpec,
     UserInfo,
 )
 
@@ -529,6 +530,39 @@ class MetadataProvider:
         menu (see Connector.column_type_specs), and the vocabulary
         column_kinds() classifies against."""
         return self.connector.column_types()
+
+    def column_type_specs(self) -> list[TypeSpec]:
+        """The types this dialect offers, as specs — the designer's
+        menu, with the arguments each type takes and the values to
+        prefill them with (CORE-24).
+
+        The one door for per-engine catalog knowledge: the designer
+        asks the provider, never the connector, so a dialect that
+        declares a type taking three arguments gets three entries in
+        the form without the frontend knowing the type exists.
+        """
+        return list(self.connector.column_type_specs())
+
+    def schemas(self, *, include_system: bool = False) -> list[str]:
+        """The schemas a new object can be created in, or `[]` where
+        schemas are not a level of their own (CORE-24).
+
+        Answered from the connection's CatalogCache (CORE-41) rather
+        than re-queried, and gated on the capability flag rather than
+        on the engine's name, so the caller can render a chooser from
+        a non-empty list and omit it from an empty one.
+        """
+        if not self.capabilities().schemas:
+            return []
+        names = _safe(
+            lambda: self.connector.catalog_schemas(
+                include_system=include_system
+            ),
+            [],
+        )
+        if include_system:
+            return list(names)
+        return [name for name in names if not self.is_system_schema(name)]
 
     # Extensions (PG-05). One listing, read through the registry in
     # db/extensions.py, so every question above this layer is asked

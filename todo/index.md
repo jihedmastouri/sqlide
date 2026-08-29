@@ -64,7 +64,7 @@
 | ID | Title | Depends on |
 |---|---|---|
 | CORE-23 | Table model and DDL renderer in the backend (done) | — |
-| CORE-24 | Designer reads the MetadataProvider (schemas, types, capabilities) | CORE-02, CORE-23 |
+| CORE-24 | Designer reads the MetadataProvider (schemas, types, capabilities) (done) | CORE-02, CORE-23 |
 | CORE-25 | Constraints and indexes in the designer | CORE-23 |
 | CORE-26 | Alter mode: one designer for create and alter, over a diff | CORE-23, CORE-24 |
 | CORE-27 | Engine-specific table and column options | CORE-23, CORE-24 |

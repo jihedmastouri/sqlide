@@ -486,3 +486,44 @@ def test_mysql_qualifies_nothing_by_schema() -> None:
     ref = NodeRef("table", "orders", database="sales", schema="sales")
     assert provider.qualified_name(ref) == "orders"
     assert provider.schema_of(ref) == ""
+
+
+# The designer's door onto the catalog (CORE-24).
+
+
+def test_type_specs_come_through_the_provider(sqlite_db) -> None:
+    """The designer asks the provider for its menu, so per-engine
+    catalog knowledge has one door rather than two."""
+    provider = registry.create_provider("sqlite", sqlite_db)
+    specs = provider.column_type_specs()
+    assert specs and specs == list(sqlite_db.column_type_specs())
+
+
+def test_schemas_are_empty_where_the_capability_is_off(sqlite_db) -> None:
+    provider = registry.create_provider("sqlite", sqlite_db)
+    assert not provider.capabilities().schemas
+    assert provider.schemas() == []
+
+
+def test_schemas_read_the_catalog_cache_and_drop_the_system_ones() -> None:
+    """PostgreSQL's listing, with the server's own schemas left out —
+    a new table is not created in pg_catalog."""
+    from sqlide.backend.db.postgres.metadata import PostgresMetadata
+
+    class _Fake:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def catalog_schemas(self, *, include_system: bool = False):
+            self.calls += 1
+            return ["public", "billing", "pg_catalog", "information_schema"]
+
+    connector = _Fake()
+    provider = PostgresMetadata(connector=connector)
+    assert provider.schemas() == ["public", "billing"]
+    assert provider.schemas(include_system=True) == [
+        "public", "billing", "pg_catalog", "information_schema"
+    ]
+    # Read through the connection's CatalogCache (CORE-41), never
+    # queried directly here.
+    assert connector.calls == 2

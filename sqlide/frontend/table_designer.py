@@ -3,11 +3,21 @@
 The one create flow that earns a form (everything else gets a dialect
 template in a query console). Each column is a two-line card: name,
 type and remove/reorder on top; primary key, NOT NULL and DEFAULT
-below. The type is picked from the adapter's own list
+below. The type is picked from the list the MetadataProvider gives
 (`column_type_specs`), and a type that takes arguments — VARCHAR's
 length, DECIMAL's precision and scale, ENUM's values — grows the
-entries for exactly those arguments, prefilled with a sane default.
-"Custom…" keeps free text available for anything the list misses.
+entries for exactly those arguments, however many it declares,
+prefilled with a sane default. "Custom…" keeps free text available for
+anything the list misses.
+
+Everything the tab knows about the target database comes through the
+provider (CORE-24): the type list, the capability flags, and the
+schemas. Where the `schemas` capability is on, the top bar gets a
+schema chooser filled from the provider and opened on the schema of
+the sidebar node the designer was launched from, and the chosen schema
+goes into `TableModel.schema` so the renderer qualifies the name. Where
+it is off — MySQL, SQLite — no chooser appears and the name stays
+bare. There is no engine name anywhere in this file.
 
 Below the columns, a live read-only preview of the generated statement,
 rebuilt on every keystroke from the tab's TableModel through
@@ -28,7 +38,9 @@ from typing import Callable
 from gi.repository import Gdk, Gtk
 
 from sqlide.backend.connections import ConnectionProfile
+from sqlide.backend.db import registry
 from sqlide.backend.db.base import Connector, TypeSpec
+from sqlide.backend.db.metadata import Capabilities, NodeRef
 from sqlide.backend.db.table_model import (
     ColumnDefault,
     ColumnModel,
@@ -43,10 +55,6 @@ from sqlide.i18n import _
 # Last entry of every type dropdown: free text, for the types no list
 # can enumerate (domains, extensions, arrays).
 _CUSTOM = "Custom…"
-
-# How many argument entries a row keeps around; no dialect type in the
-# list takes more (precision + scale is the widest).
-_MAX_PARAMS = 2
 
 
 class _ColumnRow(Gtk.ListBoxRow):
@@ -82,13 +90,11 @@ class _ColumnRow(Gtk.ListBoxRow):
         self._type.set_enable_search(True)
         describe(self._type, _("Column type"))
         self._type.connect("notify::selected", self._on_type_selected)
-        # One entry per argument the selected type takes; hidden for the
-        # types that take none.
-        self._params = []
-        for _index in range(_MAX_PARAMS):
-            entry = Gtk.Entry(width_chars=8, visible=False)
-            entry.connect("changed", lambda *_: on_changed())
-            self._params.append(entry)
+        # One entry per argument the selected type takes, built to fit
+        # the spec rather than to a fixed cap: a type declaring three
+        # or more arguments gets three or more entries (CORE-24).
+        self._params: list[Gtk.Entry] = []
+        self._param_box = Gtk.Box(spacing=6)
         self._custom = Gtk.Entry(
             placeholder_text="type", width_chars=16, visible=False
         )
@@ -106,7 +112,7 @@ class _ColumnRow(Gtk.ListBoxRow):
         describe(remove, _("Remove this column"))
         remove.connect("clicked", lambda *_: on_remove(self))
         for child in (
-            self.name, self._type, *self._params, self._custom,
+            self.name, self._type, self._param_box, self._custom,
             up, down, remove,
         ):
             top.append(child)
@@ -176,10 +182,18 @@ class _ColumnRow(Gtk.ListBoxRow):
         self._custom.set_visible(spec is None)
         params = spec.params if spec is not None else ()
         defaults = spec.defaults if spec is not None else ()
+        # Grow or shrink the row to the arity the spec declares. No
+        # cap: DECIMAL(p, s) is not the widest type an engine can
+        # offer, and a wider one used to be pushed into "Custom…".
+        while len(self._params) < len(params):
+            entry = Gtk.Entry(width_chars=8)
+            entry.connect("changed", lambda *_: self._on_changed())
+            self._params.append(entry)
+            self._param_box.append(entry)
+        while len(self._params) > len(params):
+            entry = self._params.pop()
+            self._param_box.remove(entry)
         for i, entry in enumerate(self._params):
-            entry.set_visible(i < len(params))
-            if i >= len(params):
-                continue
             entry.set_placeholder_text(params[i])
             entry.set_tooltip_text(f"{params[i]} for {spec.name}")
             if reset_params:
@@ -224,7 +238,7 @@ class _ColumnRow(Gtk.ListBoxRow):
             primary_key=self.pk.get_active(),
             nullable=not self.not_null.get_active(),
             # The entry is free-text SQL the user vouches for, exactly
-            # as it always was; a typed default picker is CORE-24's.
+            # as it always was; a typed default picker is still to come.
             default=(
                 ColumnDefault("expression", default)
                 if default
@@ -239,7 +253,8 @@ class TableDesignerTab(Gtk.Box):
         profile: ConnectionProfile,
         ensure_connector: Callable[[ConnectionProfile], Connector],
         show_error: Callable[[str], None],
-        on_created: Callable[[str], None],
+        on_created: Callable[[str, str], None],
+        ref: NodeRef | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.profile = profile
@@ -250,6 +265,16 @@ class TableDesignerTab(Gtk.Box):
         self._connector: Connector | None = None
         self._specs: list[TypeSpec] = []
         self._rows: list[_ColumnRow] = []
+        # The node the designer was launched from, so a table created
+        # off a schema row lands in that schema (CORE-24). Capabilities
+        # and the schema list arrive with the catalog load below; until
+        # then the chooser stays hidden rather than guessing.
+        self._ref = ref
+        self._caps = Capabilities()
+        self._schemas: list[str] = []
+        self._wanted_schema = (
+            (ref.name if ref.kind == "schema" else ref.schema) if ref else ""
+        ) or profile.schema or ""
 
         bar = Gtk.Box(
             spacing=6,
@@ -258,6 +283,19 @@ class TableDesignerTab(Gtk.Box):
             margin_start=6,
             margin_end=6,
         )
+        # Shown only where the provider says schemas are a level of
+        # their own; on MySQL and SQLite the chooser never appears.
+        self._schema_label = Gtk.Label(label=_("Schema"), visible=False)
+        self._schema_label.add_css_class("dim-label")
+        self._schema = Gtk.DropDown(
+            model=Gtk.StringList.new([]), visible=False
+        )
+        self._schema.set_expression(
+            Gtk.PropertyExpression.new(Gtk.StringObject, None, "string")
+        )
+        self._schema.set_enable_search(True)
+        describe(self._schema, _("Schema the table is created in"))
+        self._schema.connect("notify::selected", lambda *_: self._refresh())
         name_label = Gtk.Label(label=_("Table"))
         name_label.add_css_class("dim-label")
         self._table_name = Gtk.Entry(
@@ -269,6 +307,8 @@ class TableDesignerTab(Gtk.Box):
         self._create = Gtk.Button(label=_("Create"))
         self._create.add_css_class("suggested-action")
         self._create.connect("clicked", self._on_create_clicked)
+        bar.append(self._schema_label)
+        bar.append(self._schema)
         bar.append(name_label)
         bar.append(self._table_name)
         bar.append(add)
@@ -317,13 +357,26 @@ class TableDesignerTab(Gtk.Box):
         self._add_row()
 
         def work():
+            # Everything the designer knows about the target database
+            # comes through the provider (CORE-24): the type list, the
+            # capability flags that decide whether a schema is a thing
+            # here, and the schemas themselves (from the connection's
+            # catalog cache, not a fresh query). The connector is kept
+            # only to render and to run the statement.
             connector = self._ensure(self.profile)
-            return connector, connector.column_type_specs()
+            provider = registry.create_provider(self.profile.kind, connector)
+            return (
+                connector,
+                provider.column_type_specs(),
+                provider.capabilities(),
+                provider.schemas(),
+            )
 
         def ready(loaded) -> None:
-            self._connector, self._specs = loaded
+            self._connector, self._specs, self._caps, self._schemas = loaded
             for row in self._rows:
                 row.set_specs(self._specs)
+            self._sync_schema_chooser()
             self._refresh()
 
         run_async(work, ready, lambda exc: self._show_error(str(exc)))
@@ -331,6 +384,37 @@ class TableDesignerTab(Gtk.Box):
 
     def tab_state(self) -> None:
         return None  # session-only
+
+    # Schema
+
+    def _sync_schema_chooser(self) -> None:
+        """Fill and show the chooser where the engine has schemas.
+
+        Gated on the capability flag, never on the engine's name: an
+        engine without schemas has no list and gets no chooser, and the
+        table name goes into the statement bare exactly as before.
+        """
+        show = bool(self._caps.schemas and self._schemas)
+        self._schema_label.set_visible(show)
+        self._schema.set_visible(show)
+        if not show:
+            return
+        names = list(self._schemas)
+        wanted = self._wanted_schema
+        if wanted and wanted not in names:
+            # The launching node's schema wins even when it is one the
+            # listing leaves out (a system schema, say).
+            names.insert(0, wanted)
+        self._schema.set_model(Gtk.StringList.new(names))
+        self._schema.set_selected(names.index(wanted) if wanted in names else 0)
+
+    def schema(self) -> str:
+        """The schema the table is being created in — "" where the
+        engine has none, which is what leaves the name unqualified."""
+        if not self._schema.get_visible():
+            return ""
+        item = self._schema.get_selected_item()
+        return item.get_string() if item is not None else ""
 
     # Columns
 
@@ -398,6 +482,7 @@ class TableDesignerTab(Gtk.Box):
         and later a saved design (CORE-28) — is a function of it."""
         return TableModel(
             name=self._table_name.get_text().strip(),
+            schema=self.schema(),
             columns=tuple(c for c in (row.column() for row in self._rows) if c),
         )
 
@@ -444,10 +529,12 @@ class TableDesignerTab(Gtk.Box):
     def _execute(self, sql: str) -> None:
         table = self._table_name.get_text().strip()
 
+        schema = self.schema()
+
         def done(_result) -> None:
             if self.on_ran is not None:
                 self.on_ran(sql, True)
-            self._on_created(table)
+            self._on_created(table, schema)
 
         def failed(exc: Exception) -> None:
             self._show_error(str(exc))

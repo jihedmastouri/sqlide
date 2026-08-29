@@ -1,6 +1,6 @@
 ## CORE-24 — Designer reads the MetadataProvider (schemas, types, capabilities)
 
-- **Status:** todo
+- **Status:** Done
 - **Depends on:** CORE-02, CORE-23
 - **From:** RS-02 (see `docs/table-creator-research.md`)
 
@@ -37,9 +37,9 @@ provider, including which schema the table is being created in.
 
 ### Acceptance criteria
 
-- [ ] On PostgreSQL, creating from a schema node creates the table in
+- [x] On PostgreSQL, creating from a schema node creates the table in
       that schema, and the preview shows the qualified name.
-- [ ] The schema chooser is absent on MySQL and SQLite.
-- [ ] The designer makes no direct `connector.*` catalog calls.
-- [ ] A type declaring three or more parameters renders correctly,
+- [x] The schema chooser is absent on MySQL and SQLite.
+- [x] The designer makes no direct `connector.*` catalog calls.
+- [x] A type declaring three or more parameters renders correctly,
       covered by a test.

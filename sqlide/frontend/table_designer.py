@@ -41,8 +41,20 @@ the confirmation dialog lists — is a script: the CREATE TABLE and a
 CREATE INDEX for each index. While the form is incomplete
 the preview says *what* is missing and Create is insensitive with the
 same reason — never a generic "something is wrong". Create shows every
-statement in an UpdatePreviewDialog before anything runs; on success
-the window reloads the sidebar and opens the new table's data tab.
+statement in a PlanPreviewDialog before anything runs; on success
+the window reloads the sidebar and opens the table's data tab.
+
+The same designer edits a table that already exists (CORE-26). Opened
+with a `table_ref`, it loads that table through the MetadataProvider
+(`TableModel.from_provider`) and shows it as rows; the button says
+**Apply**, and what it applies is `plan(loaded, edited)` — the same
+call a create makes with `None` for the loaded model. So a rename, a
+type change and a dropped column are diffs, not a second feature, and
+the dialog groups the plan by how dangerous each statement is with the
+destructive group first and Apply unfocused. Where a statement can be
+refused by the rows already there — a NOT NULL over nulls, a UNIQUE
+over duplicates — the dialog asks the server for the offending count
+first (`preflight`) instead of letting the server say no.
 
 Session-only: tab_state() returns None, the tab is not restored.
 """
@@ -51,7 +63,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from gi.repository import Gdk, Gtk
+from gi.repository import Adw, Gdk, Gtk
 
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db import registry
@@ -59,17 +71,20 @@ from sqlide.backend.db.base import Connector, TypeSpec
 from sqlide.backend.db.metadata import Capabilities, NodeRef
 from sqlide.backend.db.table_model import (
     CASCADE_ACTIONS,
+    CLASSIFICATIONS,
     ColumnDefault,
     ColumnModel,
     ConstraintModel,
     GENERIC,
     IndexModel,
+    Statement,
     TableModel,
     dialect_for,
     plan,
+    preflight,
     render_create,
+    worst,
 )
-from sqlide.frontend.data_grid import UpdatePreviewDialog
 from sqlide.frontend.sql_editor import SqlEditor
 from sqlide.frontend.util import describe, run_async
 from sqlide.i18n import _
@@ -78,6 +93,156 @@ from sqlide.i18n import _
 # can enumerate (domains, extensions, arrays).
 _CUSTOM = "Custom…"
 
+
+#: How each classification reads in the plan dialog, worst first. The
+#: notes the planner attaches are untranslated by design (it is the
+#: backend); the headings are this side of the line, so they go
+#: through gettext here.
+_GROUPS = (
+    ("destructive", "Loses data"),
+    ("may_fail", "May be refused by the rows already there"),
+    ("rewrite", "Rewrites the table"),
+    ("safe", "Safe"),
+)
+
+
+class PlanPreviewDialog(Adw.Dialog):
+    """The plan, grouped by how dangerous it is, before it runs.
+
+    The old preview was a flat list of SQL and left it to the reader to
+    notice that one of the statements dropped a column. This one leads
+    with the dangerous groups — destructive first, then what the
+    existing rows can refuse, then what rewrites the table — and each
+    statement carries the planner's one-line note. Apply is never the
+    focused widget: Cancel is, so a reflexive Enter cancels rather than
+    migrates (CORE-26).
+
+    `checks` are the pre-flight counts: cheap questions asked of the
+    server while the dialog is open, so a NOT NULL that would be
+    refused says *how many* rows refuse it instead of failing later
+    with a one-line server error.
+    """
+
+    def __init__(
+        self,
+        statements: list[Statement],
+        on_execute: Callable[[], None],
+        caption: str = "",
+        run_checks: Callable[[Callable[[list[str]], None]], None] | None = None,
+    ) -> None:
+        super().__init__(
+            title=_("Review Plan ({count})").format(count=len(statements)),
+            content_width=720,
+            content_height=560,
+        )
+        self._on_execute = on_execute
+        header = Adw.HeaderBar()
+        header.set_show_start_title_buttons(False)
+        header.set_show_end_title_buttons(False)
+        cancel = Gtk.Button(label=_("Cancel"))
+        cancel.connect("clicked", lambda *_a: self.close())
+        apply_button = Gtk.Button(label=_("Apply"))
+        apply_button.add_css_class(
+            "destructive-action"
+            if worst(statements) in ("destructive", "may_fail")
+            else "suggested-action"
+        )
+        apply_button.connect("clicked", self._on_apply)
+        # Not the default and not focused: the dangerous button is the
+        # one you have to aim at.
+        apply_button.set_can_focus(True)
+        header.pack_start(cancel)
+        header.pack_end(apply_button)
+
+        body = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=12,
+            margin_top=12,
+            margin_bottom=12,
+            margin_start=12,
+            margin_end=12,
+        )
+        self._checks = Gtk.Label(xalign=0, wrap=True, visible=False)
+        self._checks.add_css_class("dim-label")
+        body.append(self._checks)
+        for classification, heading in _GROUPS:
+            group = [
+                statement
+                for statement in statements
+                if statement.classification == classification
+            ]
+            if not group:
+                continue
+            body.append(self._group(classification, heading, group))
+        scroller = Gtk.ScrolledWindow(child=body, vexpand=True)
+
+        note = Gtk.Label(
+            label=caption
+            or _("The statements run in order, top to bottom."),
+            xalign=0,
+            wrap=True,
+            margin_start=12,
+            margin_end=12,
+            margin_bottom=12,
+        )
+        note.add_css_class("dim-label")
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content.append(scroller)
+        content.append(note)
+        view = Adw.ToolbarView()
+        view.add_top_bar(header)
+        view.set_content(content)
+        self.set_child(view)
+        self.set_focus(cancel)
+
+        if run_checks is not None:
+            self._checks.set_visible(True)
+            self._checks.set_text(_("Checking the existing rows…"))
+            run_checks(self._checked)
+
+    def _group(
+        self, classification: str, heading: str, group: list[Statement]
+    ) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        title = Gtk.Label(
+            label=f"{_(heading)} ({len(group)})", xalign=0
+        )
+        title.add_css_class("heading")
+        if classification in ("destructive", "may_fail"):
+            title.add_css_class("error")
+        box.append(title)
+        for statement in group:
+            if statement.note:
+                note = Gtk.Label(label=_(statement.note), xalign=0, wrap=True)
+                note.add_css_class("dim-label")
+                note.add_css_class("caption")
+                box.append(note)
+            text = Gtk.TextView(
+                editable=False,
+                monospace=True,
+                cursor_visible=False,
+                wrap_mode=Gtk.WrapMode.WORD_CHAR,
+                left_margin=8,
+                right_margin=8,
+                top_margin=4,
+                bottom_margin=8,
+            )
+            text.get_buffer().set_text(statement.sql.rstrip(";") + ";")
+            box.append(text)
+        return box
+
+    def _checked(self, lines: list[str]) -> None:
+        self._checks.set_text(
+            "\n".join(lines)
+            if lines
+            else _("The existing rows satisfy every new constraint.")
+        )
+        if lines:
+            self._checks.add_css_class("error")
+
+    def _on_apply(self, *_args) -> None:
+        self.close()
+        self._on_execute()
 
 class _ColumnRow(Gtk.ListBoxRow):
     """One column of the future table."""
@@ -96,6 +261,10 @@ class _ColumnRow(Gtk.ListBoxRow):
         # has to reach the constraints view (CORE-25).
         self._on_pk = on_pk or on_changed
         self._specs: list[TypeSpec] = []
+        # The column as the catalog handed it over, for a row that came
+        # from an existing table. It is what a rename is measured
+        # against (CORE-26); None for a column being invented here.
+        self.loaded: ColumnModel | None = None
 
         outer = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
@@ -253,6 +422,38 @@ class _ColumnRow(Gtk.ListBoxRow):
         blank row at the bottom is not an error."""
         return not self.name_text() and not self.default_text()
 
+    def set_column(self, column: ColumnModel) -> None:
+        """Fill the row from a column of an existing table.
+
+        The type goes in as the catalog spells it: a `character
+        varying(40)` that matches no entry in the type list lands in
+        "Custom…" verbatim, which is exactly what keeps loading a table
+        and applying it back unchanged from planning anything.
+        """
+        self.loaded = column
+        self.name.set_text(column.name)
+        self.set_specs(self._specs)  # re-pick the type list for this type
+        self._select_type(column.type)
+        self.pk.set_active(column.primary_key)
+        self.not_null.set_active(not column.nullable)
+        self.default.set_text(
+            column.default.value if column.default.present else ""
+        )
+
+    def _select_type(self, type_text: str) -> None:
+        index = next(
+            (
+                i
+                for i, spec in enumerate(self._specs)
+                if spec.name.lower() == type_text.strip().lower()
+            ),
+            len(self._specs),
+        )
+        self._type.set_selected(index)
+        if index == len(self._specs):
+            self._custom.set_text(type_text)
+        self._sync_type_fields(reset_params=False)
+
     def column(self) -> ColumnModel | None:
         """The row as a ColumnModel, or None while the name is empty."""
         if not self.name_text():
@@ -269,6 +470,15 @@ class _ColumnRow(Gtk.ListBoxRow):
                 ColumnDefault("expression", default)
                 if default
                 else ColumnDefault()
+            ),
+            # Only when it actually moved: a column that kept its name
+            # carries nothing, so nothing downstream has to special-case
+            # "renamed to itself".
+            renamed_from=(
+                self.loaded.name
+                if self.loaded is not None
+                and self.loaded.name.lower() != self.name_text().lower()
+                else ""
             ),
         )
 
@@ -322,10 +532,20 @@ class _ColumnChooser(Gtk.MenuButton):
             "DESC" if name in self._desc else "" for name in self._chosen
         )
 
-    def set_columns(self, names: list[str]) -> None:
-        """Choose exactly `names` (used to mirror the per-column
-        primary-key checkboxes into the constraints view)."""
+    def set_columns(
+        self, names: list[str], directions: tuple[str, ...] = ()
+    ) -> None:
+        """Choose exactly `names`, in that order — used to mirror the
+        per-column primary-key checkboxes into the constraints view,
+        and to fill the row from a table loaded for editing
+        (CORE-26). `directions` is positional, like IndexModel's."""
         self._chosen = [n for n in names]
+        self._desc = {
+            name
+            for position, name in enumerate(self._chosen)
+            if position < len(directions)
+            and directions[position].strip().upper() == "DESC"
+        }
         self._rebuild()
         self._relabel()
 
@@ -545,6 +765,39 @@ class _ConstraintRow(Gtk.ListBoxRow):
         item = self._ref_table.get_selected_item()
         return item.get_string() if item is not None else ""
 
+    def set_constraint(self, con: ConstraintModel) -> None:
+        """Fill the row from a constraint of an existing table."""
+        self.set_kind(con.kind.upper())
+        self.name.set_text(con.name)
+        self.columns.set_columns(list(con.columns))
+        self._expression.set_text(con.expression)
+        qualified = (
+            f"{con.ref_schema}.{con.ref_table}"
+            if con.ref_schema
+            else con.ref_table
+        )
+        if qualified:
+            names = self._ref_tables_of()
+            if qualified not in names:
+                # A key pointing somewhere the source listing missed is
+                # still a key: offer it rather than dropping it.
+                names = [qualified, *names]
+            self._ref_table.set_model(Gtk.StringList.new(names))
+            self._ref_table.set_selected(names.index(qualified))
+            self._ref_cols.set_columns(list(con.ref_columns))
+        self._set_action(self._on_delete, con.on_delete)
+        self._set_action(self._on_update, con.on_update)
+        self._sync_kind_fields()
+
+    @staticmethod
+    def _set_action(drop: Gtk.DropDown, action: str) -> None:
+        action = action.strip().upper()
+        drop.set_selected(
+            CASCADE_ACTIONS.index(action) + 1
+            if action in CASCADE_ACTIONS
+            else 0
+        )
+
     def set_available(self, names: list[str]) -> None:
         self.columns.set_available(names)
 
@@ -646,6 +899,14 @@ class _IndexRow(Gtk.ListBoxRow):
         self._where_label.set_visible(partial)
         self._where.set_visible(partial)
 
+    def set_index(self, index: IndexModel) -> None:
+        """Fill the row from an index of an existing table."""
+        self.name.set_text(index.name)
+        self.columns.set_columns(list(index.columns), index.directions)
+        self.unique.set_active(index.unique)
+        self._method.set_text(index.method)
+        self._where.set_text(index.where)
+
     def set_available(self, names: list[str]) -> None:
         self.columns.set_available(names)
 
@@ -681,6 +942,7 @@ class TableDesignerTab(Gtk.Box):
         show_error: Callable[[str], None],
         on_created: Callable[[str, str], None],
         ref: NodeRef | None = None,
+        table_ref: NodeRef | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.profile = profile
@@ -689,6 +951,12 @@ class TableDesignerTab(Gtk.Box):
         self._on_created = on_created
         self.on_ran: Callable[[str, bool], None] | None = None
         self._connector: Connector | None = None
+        # The table being edited, and the model it was loaded with.
+        # `None` is a new table, and then `plan()` gets `None` as its
+        # current state and yields a CREATE — create and alter are the
+        # same code path over the same model (CORE-26).
+        self._table_ref = table_ref
+        self._current: TableModel | None = None
         self._specs: list[TypeSpec] = []
         self._rows: list[_ColumnRow] = []
         self._constraint_rows: list[_ConstraintRow] = []
@@ -706,8 +974,11 @@ class TableDesignerTab(Gtk.Box):
         self._ref = ref
         self._caps = Capabilities()
         self._schemas: list[str] = []
+        source = table_ref or ref
         self._wanted_schema = (
-            (ref.name if ref.kind == "schema" else ref.schema) if ref else ""
+            (source.name if source.kind == "schema" else source.schema)
+            if source
+            else ""
         ) or profile.schema or ""
 
         bar = Gtk.Box(
@@ -743,7 +1014,9 @@ class TableDesignerTab(Gtk.Box):
         switcher = Gtk.StackSwitcher(stack=self._stack)
         self._add = Gtk.Button(label=_("Add Column"))
         self._add.connect("clicked", lambda *_: self._add_current())
-        self._create = Gtk.Button(label=_("Create"))
+        self._create = Gtk.Button(
+            label=_("Apply") if table_ref is not None else _("Create")
+        )
         self._create.add_css_class("suggested-action")
         self._create.connect("clicked", self._on_create_clicked)
         bar.append(self._schema_label)
@@ -829,6 +1102,14 @@ class TableDesignerTab(Gtk.Box):
                 # about, so the target list is the provider's, not a
                 # free-text entry (CORE-24).
                 provider.list_sources(),
+                # An existing table comes in through the provider, not
+                # through a catalog query of the designer's own: the
+                # same columns, indexes and keys the sidebar reads.
+                (
+                    TableModel.from_provider(provider, self._table_ref)
+                    if self._table_ref is not None
+                    else None
+                ),
             )
 
         def ready(loaded) -> None:
@@ -838,12 +1119,15 @@ class TableDesignerTab(Gtk.Box):
                 self._caps,
                 self._schemas,
                 self._sources,
+                self._current,
             ) = loaded
             self._dialect = dialect_for(self._connector)
             for row in self._rows:
                 row.set_specs(self._specs)
             self._sync_dialect()
             self._sync_schema_chooser()
+            if self._current is not None:
+                self._populate(self._current)
             self._refresh()
 
         run_async(work, ready, lambda exc: self._show_error(str(exc)))
@@ -851,6 +1135,54 @@ class TableDesignerTab(Gtk.Box):
 
     def tab_state(self) -> None:
         return None  # session-only
+
+    # Loading an existing table
+
+    @property
+    def editing(self) -> bool:
+        """Whether this designer was opened on a table that exists."""
+        return self._table_ref is not None
+
+    def _populate(self, model: TableModel) -> None:
+        """Show `model` in the form — the loaded table, as rows.
+
+        Everything the model carries gets a row: a column row per
+        column, a constraint row per constraint, an index row per
+        index. What comes back out of the form is compared against this
+        same model, so opening a table and pressing Apply without
+        touching anything plans nothing at all.
+        """
+        self._syncing = True
+        try:
+            self._table_name.set_text(model.name)
+            for row in list(self._rows):
+                self._rows.remove(row)
+                self._list.remove(row)
+            for column in model.columns:
+                row = self._new_column_row()
+                self._rows.append(row)
+                self._list.append(row)
+                row.set_column(column)
+            if not self._rows:
+                self._add_row()
+            names = self._column_names()
+            for constraint in model.constraints:
+                if constraint.kind.upper() == "PRIMARY KEY" and (
+                    model.primary_key
+                ):
+                    # Already shown by the columns' own checkboxes.
+                    continue
+                row = self._add_constraint()
+                row.set_available(names)
+                row.set_constraint(constraint)
+            for index in model.indexes:
+                row = self._add_index()
+                row.set_available(names)
+                row.set_index(index)
+        finally:
+            self._syncing = False
+        self._columns_to_pk()
+        self._refresh()
 
     # Schema
 
@@ -1040,14 +1372,17 @@ class TableDesignerTab(Gtk.Box):
 
     # Columns
 
-    def _add_row(self, focus: bool = False) -> None:
-        row = _ColumnRow(
+    def _new_column_row(self) -> _ColumnRow:
+        return _ColumnRow(
             self._specs,
             self._refresh,
             self._remove_row,
             self._move_row,
             self._pk_toggled,
         )
+
+    def _add_row(self, focus: bool = False) -> None:
+        row = self._new_column_row()
         self._rows.append(row)
         self._list.append(row)
         if focus:
@@ -1127,6 +1462,11 @@ class TableDesignerTab(Gtk.Box):
                 return problem
         return ""
 
+    def _nothing_to_do(self) -> bool:
+        """An edited table whose form still describes what is already
+        there: the plan is empty, and there is nothing to apply."""
+        return self.editing and not self._problem() and not self.statements()
+
     def model(self) -> TableModel:
         """The form as a TableModel. The one thing the widget produces;
         everything downstream — the preview, the statement that runs,
@@ -1155,6 +1495,15 @@ class TableDesignerTab(Gtk.Box):
             return ""
         return render_create(self.model(), self._connector)
 
+    def statements(self) -> list[Statement]:
+        """The plan: the classified statements that turn the table as
+        it is into the table the form describes. For a new table
+        `self._current` is None and that is one CREATE — create and
+        alter differ only in what is passed here (CORE-26)."""
+        if self._problem():
+            return []
+        return plan(self._current, self.model(), self._connector)
+
     def _statements(self) -> list[str]:
         """Everything the designer will run, in order: the CREATE, then
         the CREATE INDEX for each index and whatever else the engine
@@ -1163,10 +1512,7 @@ class TableDesignerTab(Gtk.Box):
         script, not one statement."""
         if self._problem():
             return []
-        return [
-            statement.sql
-            for statement in plan(None, self.model(), self._connector)
-        ]
+        return [statement.sql for statement in self.statements()]
 
     def _refresh(self) -> None:
         # Constraints and indexes cover columns, so every view follows
@@ -1177,13 +1523,21 @@ class TableDesignerTab(Gtk.Box):
         for row in self._index_rows:
             row.set_available(names)
         problem = self._problem()
-        self._create.set_sensitive(not problem)
+        idle = self._nothing_to_do()
+        self._create.set_sensitive(not problem and not idle)
         self._create.set_tooltip_text(
             problem
-            or "Show the generated statements for review, then run them"
+            or (
+                "No changes yet — the form still describes the table as "
+                "it is"
+                if idle
+                else "Show the plan for review, then run it"
+            )
         )
         if problem:
             self._preview.set_text(f"-- {problem}")
+        elif idle:
+            self._preview.set_text("-- No changes.")
         else:
             self._preview.set_text(
                 ";\n\n".join(self._statements()) + ";"
@@ -1199,21 +1553,56 @@ class TableDesignerTab(Gtk.Box):
         if problem:
             self._show_error(problem)
             return
-        statements = self._statements()
+        if self._nothing_to_do():
+            self._show_error("No changes to apply")
+            return
+        statements = self.statements()
         count = len(statements)
-        UpdatePreviewDialog(
-            [sql + ";" for sql in statements],
-            lambda: self._execute(statements),
+        checks = (
+            self._run_preflight
+            if self.editing and preflight(
+                self._current, self.model(), self._connector
+            )
+            else None
+        )
+        PlanPreviewDialog(
+            statements,
+            lambda: self._execute([s.sql for s in statements]),
             caption=(
-                "Runs one CREATE TABLE statement on "
-                f"“{self.profile.name}”."
-                if count == 1
-                else f"Runs {count} statements on “{self.profile.name}” — "
-                "the table and its indexes."
+                f"Runs {count} statement{'' if count == 1 else 's'} on "
+                f"“{self.profile.name}”, in order."
             ),
-            width=720,
-            height=520,
+            run_checks=checks,
         ).present(self)
+
+    def _run_preflight(self, deliver: Callable[[list[str]], None]) -> None:
+        """Ask the server the cheap questions a risky statement raises,
+        while the dialog is open: how many rows are null under a new
+        NOT NULL, how many groups are duplicated under a new UNIQUE.
+
+        A count of zero is not reported — the interesting answer is the
+        one that says the change will be refused, and by how much. A
+        check that will not run (a permission, a view) is dropped
+        rather than turned into an error: it was an offer, not a
+        precondition.
+        """
+        checks = preflight(self._current, self.model(), self._connector)
+
+        def work():
+            connector = self._ensure(self.profile)
+            lines = []
+            for check in checks:
+                try:
+                    result = connector.execute(check.sql)
+                    rows = getattr(result, "rows", None) or []
+                    count = int(rows[0][0]) if rows and rows[0] else 0
+                except Exception:
+                    continue
+                if count:
+                    lines.append(f"{count} {check.label}.")
+            return lines
+
+        run_async(work, deliver, lambda exc: deliver([]))
 
     def _execute(self, statements: list[str]) -> None:
         table = self._table_name.get_text().strip()
@@ -1229,6 +1618,12 @@ class TableDesignerTab(Gtk.Box):
         def done(_result) -> None:
             if self.on_ran is not None:
                 self.on_ran(script, True)
+            if self.editing:
+                # The form is now what the table is: re-read it, so the
+                # next edit diffs against the applied state rather than
+                # against the one it started from.
+                self._current = self.model()
+                self._refresh()
             self._on_created(table, schema)
 
         def failed(exc: Exception) -> None:

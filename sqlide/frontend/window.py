@@ -459,6 +459,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_new_query=self.new_query,
             on_open_cli=self.open_cli,
             on_open_definition=self.open_definition,
+            on_edit_table=self.open_table_editor,
             on_open_function=self.open_function,
             on_relation_graph=self.open_relation_graph,
             on_view_indexes=self.open_indexes,
@@ -2862,6 +2863,45 @@ class MainWindow(Adw.ApplicationWindow):
         tab.on_ran = lambda sql, ok: self._query_ran(
             page.get_title(), sql, profile.name, ok
         )
+
+    def open_table_editor(
+        self, profile: ConnectionProfile, ref: NodeRef
+    ) -> None:
+        """The table designer on a table that already exists (CORE-26).
+
+        The same tab as New ▸ Table — it loads the table through the
+        provider and applies the diff — so there is one designer, not
+        one for creating and one for altering.
+        """
+        key = ("designer", profile.name, ref.schema, ref.name)
+        if self._focus_tab(key):
+            return
+        tab = TableDesignerTab(
+            profile,
+            self.ensure_connector,
+            self.show_error,
+            on_created=lambda table, schema: self._table_altered(
+                profile, table, schema
+            ),
+            table_ref=ref,
+        )
+        page = self._append_tab(
+            tab,
+            key,
+            f"{ref.name} · designer",
+            f"Table designer for {ref.name} on {profile.name}",
+        )
+        tab.on_ran = lambda sql, ok: self._query_ran(
+            page.get_title(), sql, profile.name, ok
+        )
+
+    def _table_altered(
+        self, profile: ConnectionProfile, table: str, schema: str = ""
+    ) -> None:
+        """An applied ALTER: the catalog moved, so the sidebar reloads —
+        but the designer stays open on the table it just changed rather
+        than a data tab stealing the focus."""
+        self._sidebar.reload_connection(profile.name)
 
     def _table_created(
         self, profile: ConnectionProfile, table: str, schema: str = ""

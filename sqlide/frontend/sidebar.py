@@ -345,6 +345,9 @@ class Sidebar(Gtk.ScrolledWindow):
         on_new_query: Callable[..., None],  # (profile, sql="")
         on_open_cli: Callable[[ConnectionProfile], None],
         on_open_definition: Callable[[ConnectionProfile, str], None],
+        # (profile, the table's NodeRef): the designer, opened on a
+        # table that already exists (CORE-26).
+        on_edit_table: Callable[[ConnectionProfile, NodeRef], None],
         on_open_function: Callable[[ConnectionProfile, str], None],
         on_relation_graph: Callable[[ConnectionProfile], None],
         on_view_indexes: Callable[[ConnectionProfile], None],
@@ -415,6 +418,7 @@ class Sidebar(Gtk.ScrolledWindow):
         self._on_new_query = on_new_query
         self._on_open_cli = on_open_cli
         self._on_open_definition = on_open_definition
+        self._on_edit_table = on_edit_table
         self._on_open_function = on_open_function
         self._on_relation_graph = on_relation_graph
         self._on_view_indexes = on_view_indexes
@@ -519,6 +523,7 @@ class Sidebar(Gtk.ScrolledWindow):
             ("query-console", self._menu_query_console),
             ("cli-console", self._menu_cli_console),
             ("definition", self._menu_definition),
+            ("edit-table", self._menu_edit_table),
             ("edit-function", self._menu_edit_function),
             ("relation-graph", self._menu_relation_graph),
             ("view-indexes", self._menu_view_indexes),
@@ -1434,6 +1439,10 @@ class Sidebar(Gtk.ScrolledWindow):
             menu.append("View Data", "schema.view-data")
             menu.append("Object Info", "schema.object-info")
             menu.append("Query Console", "schema.query-console")
+            if node.kind == "table":
+                # The designer, on this table: columns, constraints and
+                # indexes as a form, applied as a diff (CORE-26).
+                menu.append("Edit Table…", "schema.edit-table")
             menu.append("Table Definition", "schema.definition")
             menu.append("Query Builder", "schema.query-builder")
             # A view is not something rows can be inserted into here,
@@ -1688,6 +1697,11 @@ class Sidebar(Gtk.ScrolledWindow):
         node = self._menu_node
         if node is not None and node.profile is not None:
             self._on_open_cli(node.profile)
+
+    def _menu_edit_table(self, *_args) -> None:
+        node = self._menu_node
+        if node is not None and node.kind == "table" and node.profile:
+            self._on_edit_table(node.profile, _node_ref(node))
 
     def _menu_definition(self, *_args) -> None:
         node = self._menu_node

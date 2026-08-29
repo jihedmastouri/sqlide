@@ -17,6 +17,7 @@ import json
 import sqlite3
 
 import pytest
+from gi.repository import Gtk
 
 from sqlide.backend.connections import ConnectionProfile
 from sqlide.backend.db.base import FilterCondition, SortSpec
@@ -572,3 +573,210 @@ def test_the_whole_summarised_query_survives_the_workspace(
     assert back._having_rows[0].condition().column == "n"
     assert back._sort_rows[0].spec() == SortSpec("n", descending=True)
     assert _flat_sql(back) == _flat_sql(tab)
+
+
+# --- Layout, column search and grouped filters (CORE-22) ---------------
+
+
+def test_a_nested_group_renders_with_its_own_parentheses(sqlite_tab) -> None:
+    """`a AND (b OR c)` — the shape the old left-folding panel could
+    not say at all."""
+    tab, _connector = sqlite_tab
+    tab._add_filter_row().set_condition(
+        FilterCondition(column="user_id", op=">", value="1")
+    )
+    inner = tab._filters.add_group()
+    inner.set_conjunction("OR")
+    inner.add_row().set_condition(
+        FilterCondition(column="id", op="=", value="2")
+    )
+    inner.add_row().set_condition(
+        FilterCondition(column="id", op="=", value="3")
+    )
+    assert 'WHERE "user_id" > ? AND ("id" = ? OR "id" = ?)' in _flat_sql(tab)
+    # The preview inlines the same statement, so what is shown is what
+    # runs.
+    assert (
+        'WHERE "user_id" > \'1\' AND ("id" = \'2\' OR "id" = \'3\')'
+        in _flat(tab.build_sql())
+    )
+    # And the values are still bound, not pasted in.
+    assert render(tab.query_model(), dialect=tab._dialect()).params == [
+        "1",
+        "2",
+        "3",
+    ]
+
+
+def test_a_negated_group_renders_as_not(sqlite_tab) -> None:
+    tab, _connector = sqlite_tab
+    tab._filters._negated.set_active(True)
+    tab._add_filter_row().set_condition(
+        FilterCondition(column="id", op="=", value="1")
+    )
+    assert 'WHERE NOT ("id" = ?)' in _flat_sql(tab)
+
+
+def test_a_grouped_filter_survives_the_workspace(sqlite_tab) -> None:
+    tab, connector = sqlite_tab
+    tab._add_filter_row().set_condition(
+        FilterCondition(column="user_id", op=">", value="1")
+    )
+    inner = tab._filters.add_group()
+    inner.set_conjunction("OR")
+    inner.add_row().set_condition(
+        FilterCondition(column="id", op="=", value="2")
+    )
+    inner.add_row().set_condition(
+        FilterCondition(column="id", op="=", value="3")
+    )
+    back = _restored(tab, connector, tab.tab_state())
+    assert len(back._filters.groups()) == 1
+    assert [r.condition().value for r in back._filter_rows] == ["1", "2", "3"]
+    assert _flat_sql(back) == _flat_sql(tab)
+
+
+def test_a_filter_on_a_dropped_column_does_not_cost_the_group(
+    sqlite_tab,
+) -> None:
+    """The saved group comes back minus the condition that no longer
+    resolves — losing one line must not lose the rest."""
+    tab, connector = sqlite_tab
+    tab._add_filter_row().set_condition(
+        FilterCondition(column="user_id", op=">", value="1")
+    )
+    inner = tab._filters.add_group()
+    inner.add_row().set_condition(
+        FilterCondition(column="id", op="=", value="2")
+    )
+    state = tab.tab_state()
+    connector.execute("ALTER TABLE orders DROP COLUMN user_id")
+    back = _restored(tab, connector, state)
+    assert [r.condition().value for r in back._filter_rows] == ["2"]
+    assert "no longer exist" in back._status.get_text()
+
+
+def test_a_deeper_saved_tree_is_restored_even_though_it_cannot_be_built(
+    sqlite_tab,
+) -> None:
+    """Refusing to show a query the renderer handles fine would be the
+    worse failure, so restore ignores the build-depth cap."""
+    from dataclasses import replace
+
+    from sqlide.backend.db.query_model import (
+        Column,
+        Condition,
+        FilterGroup,
+        dump_state,
+    )
+
+    tab, connector = sqlite_tab
+    leaf = Condition(column=Column(name="id"), op="=", value="1")
+    tree = leaf
+    for _ in range(builder_module.MAX_FILTER_DEPTH + 2):
+        tree = FilterGroup(items=(tree,), conjunction="OR")
+    model = replace(tab.query_model(), where=tree)
+    state = tab.tab_state()
+    back = _restored(
+        tab, connector, replace(state, builder=dump_state(model))
+    )
+    assert [r.condition().column for r in back._filter_rows] == ["id"]
+    assert "no longer exist" not in back._status.get_text()
+
+
+def _search(tab, text: str) -> None:
+    """Type into the column search. GtkSearchEntry debounces its
+    `search-changed`, and no main loop runs here to let the timer
+    fire, so the handler is called the way the signal would."""
+    tab._column_search.set_text(text)
+    tab._filter_column_checks()
+
+
+def _group_alias(group) -> str:
+    return group.get_first_child().get_first_child().get_label()
+
+
+def test_the_column_checklist_is_grouped_per_source(joins_tab) -> None:
+    tab, _connector = joins_tab
+    _join_to(tab, "parts")
+    assert [_group_alias(g) for g in tab._column_groups] == ["staff", "parts"]
+
+
+def test_searching_narrows_the_checklist_to_the_matches(joins_tab) -> None:
+    tab, _connector = joins_tab
+    _join_to(tab, "parts")
+    _search(tab, "name")
+    shown = [
+        check.get_label()
+        for group in tab._column_groups
+        for check in group.checks
+        if (check.get_parent() or check).get_visible()
+    ]
+    assert shown == ["staff.name"]
+    # The source with no match hides itself rather than sitting empty.
+    assert [g.get_visible() for g in tab._column_groups] == [True, False]
+    _search(tab, "")
+    assert all(g.get_visible() for g in tab._column_groups)
+
+
+def test_a_search_that_matches_nothing_says_so(sqlite_tab) -> None:
+    tab, _connector = sqlite_tab
+    _search(tab, "zzz")
+    assert tab._columns_empty.get_visible()
+    _search(tab, "id")
+    assert not tab._columns_empty.get_visible()
+
+
+def test_select_all_ticks_one_source_and_only_what_is_shown(
+    joins_tab,
+) -> None:
+    tab, _connector = joins_tab
+    _join_to(tab, "parts")
+    parts = tab._column_groups[1]
+    tab._set_group_checked(parts, True)
+    assert tab._checked == {"parts.tenant", "parts.code", "parts.label"}
+    tab._set_group_checked(parts, False)
+    assert tab._checked == set()
+    # With a search in place, "All" means the columns you can see.
+    _search(tab, "label")
+    tab._set_group_checked(parts, True)
+    assert tab._checked == {"parts.label"}
+
+
+def test_the_sql_preview_is_selectable_and_copyable(sqlite_tab) -> None:
+    tab, _connector = sqlite_tab
+    buffer = tab._sql_view.get_buffer()
+    assert not tab._sql_view.get_editable()
+    buffer.select_range(buffer.get_start_iter(), buffer.get_end_iter())
+    start, end = buffer.get_selection_bounds()
+    assert buffer.get_text(start, end, False) == tab.build_sql()
+
+
+def test_the_preview_is_not_inside_the_scrolling_sections(
+    joins_tab,
+) -> None:
+    """Five joins and eight filters must not push the SQL out of view.
+
+    The old layout put every control, preview included, in one capped
+    scroller; here the preview is a sibling of that scroller, so no
+    amount of content can move it.
+    """
+    tab, _connector = joins_tab
+    for _ in range(5):
+        _join_to(tab, "parts")
+    for _ in range(8):
+        tab._add_filter_row()
+    assert len(tab._join_rows) == 5 and len(tab._filter_rows) == 8
+
+    def scroller_of(widget):
+        while widget is not None:
+            if isinstance(widget, Gtk.ScrolledWindow):
+                return widget
+            widget = widget.get_parent()
+        return None
+
+    sections = scroller_of(tab._joins_box)
+    assert sections is not None
+    # The preview has a scroller of its own; what matters is that it is
+    # not the one the sections live in.
+    assert scroller_of(tab._sql_view) is not sections

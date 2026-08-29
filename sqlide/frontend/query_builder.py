@@ -52,6 +52,26 @@ filter row over the summary entries, and the sort picker offers them
 too, so an aggregate result stays sortable — by its alias where the
 dialect takes one, by the expression where it does not.
 
+The layout is what makes all that usable at once (CORE-22). The
+sections — joins, columns, summarise, filters, group by, having, sort
+— are named and collapsible, and they scroll; the SQL preview and the
+Run / Open in Console actions do not, living outside that scroller so
+five joins and eight filters cannot push the thing you are checking
+off the screen. The preview stays read-only but is selectable and has
+a Copy button, and the console handoff says in its tooltip that it is
+one way: nothing here parses SQL back.
+
+The column checklist is grouped per source, under the alias, with a
+search entry across all of them and select-all / select-none per
+group — over whatever the search is currently showing, so "All" means
+the columns you can see. And filters are a tree rather than a list: a
+group owns one conjunction and holds conditions and nested groups, so
+`a AND (b OR c)` is expressible and comes out parenthesised, which the
+old strictly left-folding panel could not do at all. HAVING is the
+same widget over the summary entries. Building stops at
+MAX_FILTER_DEPTH; restoring does not, since a deeper saved tree is one
+the renderer handles perfectly well.
+
 Because the model is data, the tab persists it: `tab_state` writes the
 whole query into the workspace and a restored tab rehydrates it once
 the catalog is in, dropping any join, column, filter or sort whose

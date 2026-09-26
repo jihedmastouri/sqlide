@@ -1,15 +1,18 @@
 ---
+import { url } from "../lib/url";
+
 const GITHUB_URL = "https://github.com/jihedmastouri/sqlide";
 const year = new Date().getFullYear();
 ---
 
 <footer class="site-footer">
   <div class="wrap">
-    <span>&copy; {year} sqlide. Source available on <a href={GITHUB_URL}>GitHub</a>.</span>
-    <span>
-      <a href="/docs/">Documentation</a>
-      &nbsp;·&nbsp;
-      <a href={`${GITHUB_URL}/issues`}>Report an issue</a>
-    </span>
+    <span>&copy; {year} sqlide</span>
+    <nav>
+      <a href={url("/docs/")}>Docs</a>
+      <a href={url("/docs/installation/")}>Installation</a>
+      <a href={GITHUB_URL}>GitHub</a>
+      <a href={`${GITHUB_URL}/issues`}>Issues</a>
+    </nav>
   </div>
 </footer>

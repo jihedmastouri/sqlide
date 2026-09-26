@@ -9,6 +9,8 @@ interface Props {
   currentSlug: string;
 }
 
+import { url } from "../lib/url";
+
 const { docs, currentSlug } = Astro.props;
 ---
 
@@ -19,7 +21,7 @@ const { docs, currentSlug } = Astro.props;
       docs.map((d) => (
         <li>
           <a
-            href={d.slug === "" ? "/docs/" : `/docs/${d.slug}/`}
+            href={url(d.slug === "" ? "/docs/" : `/docs/${d.slug}/`)}
             aria-current={d.slug === currentSlug ? "page" : undefined}
           >
             {d.title}

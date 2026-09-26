@@ -32,7 +32,6 @@ The first of these that applies wins:
 ```
 <config>/
 ├── settings.toml            # app and UI preferences
-├── notes.toml               # free-form notes (side panel -> Notes)
 ├── table_templates/         # saved table shapes (one .toml per template)
 ├── dashboards/              # dashboards (one .toml per dashboard)
 ├── snippets.json            # saved SQL snippets (content, not config)
@@ -69,9 +68,7 @@ Two things are deliberately not TOML:
 
 ## Editing while the app runs
 
-`notes.toml` is watched too: a note added or edited on disk shows up in
-the side panel's Notes page without a restart. So is every file under
-`dashboards/`: edit a dashboard's layout by hand and the open tab lays
+Every file under `dashboards/` is watched: edit a dashboard's layout by hand and the open tab lays
 itself out again.
 
 `settings.toml` is watched: save it and the running app re-reads it and
@@ -131,7 +128,7 @@ key with a value outside its set is reported and falls back.
 | `time_zone` | `"local"` \| `"utc"` \| `"server"` | `"local"` | Which zone a database session reports timestamps in. `"server"` takes whatever the server is set to. |
 | `sql_keyword_case` | `"upper"` \| `"lower"` \| `"follow"` | `"upper"` | The case completion inserts a SQL keyword in. `"follow"` matches the prefix you typed — all lower case gives `select`, a leading capital gives `SELECT` — and falls back to upper case when nothing is typed yet. Keywords only: table, column and schema names keep the case the catalog reports, since a server may treat it as significant. |
 | `sidebar_width` | integer | `280` | Width of the connections sidebar, in pixels. Clamped to 180–600; drag its inner edge to change it, double-click that edge to reset. |
-| `side_panel_width` | integer | `340` | Width of the right side panel (Properties, Info, Notes, History…), in pixels. Clamped to 260–900; drag its inner edge to change it. |
+| `side_panel_width` | integer | `340` | Width of the right side panel (Files, Info), in pixels. Clamped to 260–900; drag its inner edge to change it. |
 | `monitor_interval` | integer 1–60 | `2` | Seconds between samples in the [monitoring](/docs/monitoring/) dashboard. The dashboard's own control writes here; storage keeps its separate 60-second timer. |
 | `lsp_enabled` | boolean | `true` | Master switch for completion language servers. |
 | `show_system_schemas` | boolean | `true` | Keep `information_schema` and the server's own catalog in the object tree. Shown dimmed and after the user's schemas; off hides them entirely. |
@@ -231,41 +228,6 @@ Digit grouping and month names come from the machine's own locale
 data. On a system where that locale is not built — common in a
 container — sqlide keeps neutral formatting; the translations
 themselves still work, since gettext does not need the locale.
-
-## `notes.toml`
-
-The notes shown in the side panel's **Notes** page: free-form Markdown
-attached to a connection, a table, or nothing in particular. One
-`[[note]]` table each, so a note is a few lines to diff and a file
-worth committing.
-
-| Key | Type | Meaning |
-| --- | --- | --- |
-| `id` | string | Stable id, generated when the note is written. Leave it alone; a missing one gets a fresh id on load. |
-| `title` | string | The row's title. An empty one becomes `"Untitled"`. |
-| `body` | string | The note itself, in **Markdown** — headings, bold/italic, lists, fenced code blocks. The editor's toolbar only inserts those markers; nothing renders the body, so what you write is what the file holds. |
-| `scope` | `"global"` \| `"connection"` \| `"table"` | What the note is about. An unknown scope is reported and read as `"global"`. |
-| `connection` | string | The connection profile's name, for `"connection"` and `"table"` notes. |
-| `table` | string | The table (or `schema.table`), for `"table"` notes. |
-| `created`, `updated` | ISO-8601 string | Written by the app; `updated` orders the list, newest first. |
-
-A note whose connection is not in the workspace any more is **kept and
-badged "orphaned"** — never dropped — so deleting a connection, or
-opening the config on a machine that has fewer of them, cannot lose
-what you wrote.
-
-```toml
-# ~/.config/sqlide/notes.toml
-[[note]]
-id = "0f3c…"
-title = "Retention"
-body = "## orders\n\nRows older than 90 days are archived nightly."
-scope = "table"
-connection = "analytics-primary"
-table = "public.orders"
-created = "2026-08-26T10:04:00"
-updated = "2026-08-26T10:04:00"
-```
 
 ## `table_templates/*.toml`
 

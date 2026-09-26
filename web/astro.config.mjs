@@ -1,5 +1,12 @@
 import { defineConfig } from "astro/config";
 
-// Set `site` to the deployed URL once one exists (needed for sitemap/RSS
-// if those are added later).
-export default defineConfig({});
+// Deploy target. Both are set by the Pages workflow:
+//
+//   SITE=https://<user>.github.io  BASE=/sqlide/  npm run build
+//
+// and both fall back to a root-hosted site for `npm run dev`.
+export default defineConfig({
+  site: process.env.SITE ?? "https://jihedmastouri.github.io",
+  base: process.env.BASE ?? "/",
+  trailingSlash: "always",
+});

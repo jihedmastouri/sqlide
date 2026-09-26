@@ -39,9 +39,9 @@ stays **SQLite**; browse to `demo.db`, click **Test connection**, then
 
 ## 4. Browse the schema and edit data
 
-Click the connection in the sidebar to expand it, then double-click a
-table, e.g. `customers`, to open it in a grid tab. A single click only
-selects and expands; double-click (or Enter, or **Open** on the row's
+Click the arrow at the left of the connection row in the sidebar to
+expand it, then double-click a table, e.g. `customers`, to open it in a
+grid tab. A single click only selects; the arrow expands; double-click (or Enter, or **Open** on the row's
 right-click menu) is what opens something, and **Open (Window)** on
 that menu puts it straight into a window of its own. Click into a cell, edit it, and press Enter —
 the change is written as a primary-key `UPDATE`.

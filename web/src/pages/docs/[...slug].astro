@@ -1,6 +1,7 @@
 ---
 import { getCollection, render } from "astro:content";
 import BaseLayout from "../../layouts/BaseLayout.astro";
+import { url } from "../../lib/url";
 import DocsSidebar from "../../components/DocsSidebar.astro";
 
 export async function getStaticPaths() {
@@ -29,7 +30,8 @@ const currentIndex = sorted.findIndex((e) => e.id === entry.id);
 const prev = currentIndex > 0 ? sorted[currentIndex - 1] : undefined;
 const next = currentIndex < sorted.length - 1 ? sorted[currentIndex + 1] : undefined;
 
-const linkFor = (e: (typeof sorted)[number]) => (e.id === "index" ? "/docs/" : `/docs/${e.id}/`);
+const linkFor = (e: (typeof sorted)[number]) =>
+  url(e.id === "index" ? "/docs/" : `/docs/${e.id}/`);
 ---
 
 <BaseLayout title={`${entry.data.title} — sqlide docs`} description={entry.data.description}>
@@ -39,24 +41,24 @@ const linkFor = (e: (typeof sorted)[number]) => (e.id === "index" ? "/docs/" : `
       <h1>{entry.data.title}</h1>
       {entry.data.description && <p class="description">{entry.data.description}</p>}
       <Content />
-      <div class="docs-pager">
-        <div>
+      <nav class="docs-pager">
+        <div class="prev">
           {prev && (
             <a href={linkFor(prev)}>
-              <span class="dir">&larr; Previous</span>
+              <span class="dir">Previous</span>
               {prev.data.title}
             </a>
           )}
         </div>
-        <div style="text-align: right;">
+        <div class="next">
           {next && (
             <a href={linkFor(next)}>
-              <span class="dir">Next &rarr;</span>
+              <span class="dir">Next</span>
               {next.data.title}
             </a>
           )}
         </div>
-      </div>
+      </nav>
     </article>
   </div>
 </BaseLayout>

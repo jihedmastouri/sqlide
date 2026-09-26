@@ -132,7 +132,6 @@ exists but materially narrower than DBeaver's; **no** = absent.
 | Split editors side by side | yes | **yes** | Nested `Gtk.Paned` panes, Split button |
 | Detach a tab into its own window | yes | **yes** | Drag off the tab bar, or Shift-open from anywhere |
 | Session restore | yes | **yes** | Tabs, console SQL and selected tab restored per workspace |
-| Notes attached to an object | no | **yes** | `backend/notes.py`, Markdown, scoped to a connection or table |
 | Keyboard shortcut remapping | yes | **yes** | `frontend/keymap.py`, `keymap` in settings.toml |
 
 ## What DBeaver does better, honestly
@@ -260,7 +259,7 @@ same.
 - **Config is text and belongs in git.** TOML per workspace plus a
   documented XML transfer format, versus DBeaver's opaque project
   metadata and credentials store.
-- **Notes and MCP.** Neither exists in DBeaver. The MCP server being
+- **MCP.** It does not exist in DBeaver. The MCP server being
   read-only *by construction* (`backend/mcp/guard.py`) rather than by
   setting is the kind of choice worth keeping.
 - **Startup and footprint.** A GTK4 app against three drivers, versus

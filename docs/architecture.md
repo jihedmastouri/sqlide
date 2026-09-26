@@ -156,6 +156,31 @@ tabular section with no summary and no DDL to lose. Nothing here
 touches the right side panel, which keeps following the active tab
 (CORE-47).
 
+The two roots of the tree are the exception to "a properties screen is
+a page of attributes". What is asked of a connection, or of a database,
+is how big it is and how it is doing, so `db/overview.py` gives their
+descriptor an `Overview` alongside the summary: counts for the tiles
+across the top, and live meters — connections against `max_connections`,
+cache hit ratio, size on disk, uptime — for the row of bars under them.
+Every query in it is optional and wrapped: a meter the server will not
+answer is absent rather than blank, and an engine with no server behind
+it (SQLite) has no live row at all. Those panels are drawn on the General
+page of the tab every object opens as.
+
+That tab is one screen for every kind (`SectionedBody`): a header — the
+object's icon, its name, a pill saying what it is, where it sits, and
+the actions (Open query, Refresh, and Settings on a connection) — a row
+of tabs carrying each section's row count, and a page each: General as
+a three-column property grid, every listing filling its page in the
+shared `ResultGrid` over a filter, a single-record section as its own
+property grid, and the definition with its copy button. A listing
+opened as a tab of its own (CORE-56) gets the same header and filter,
+so a folder and the table beside it are the same screen. What varies
+between kinds is only what the descriptor put in it: a table has no
+meters, a connection has no definition, and neither shows a page it
+cannot fill. The side panel is unchanged: it is too narrow for tiles,
+and shows the same descriptor as rows.
+
 One implementation per engine, in that engine's folder
 (`postgres/metadata.py`, …). PostgreSQL nests `connection → database →
 schema → object`, MySQL `connection → database → object`, SQLite
@@ -310,7 +335,6 @@ sqlide/
 │   ├── workspaces.py      # Workspace/TabState + per-workspace file store
 │   ├── settings.py        # global settings store (settings.toml)
 │   ├── saved.py           # saved snippets/queries
-│   ├── notes.py           # free-form notes (notes.toml)
 │   ├── dashboards.py      # dashboards: cells, layout, dashboards/*.toml
 │   ├── secrets.py         # connection passwords: system keyring or plain text
 │   ├── tiles.py           # map tiles: projection, disk cache, offline policy
@@ -335,6 +359,7 @@ sqlide/
 │       ├── extensions.py   # extension registry: features, types, DDL
 │       ├── monitoring.py   # which monitoring sources a connection may read
 │       ├── metrics.py      # sampling those sources: counters, sessions, sizes
+│       ├── overview.py     # a connection/database at a glance: counts, meters
 │       ├── sqlite/
 │       ├── mysql/
 │       ├── postgres/
@@ -346,7 +371,7 @@ sqlide/
     ├── window.py           # one workspace: split view, tabs, pop-outs, connectors
     ├── sidebar.py           # lazy schema tree (TreeListModel)
     ├── tree_search.py       # sidebar search: matching, scopes, highlights
-    ├── object_info.py       # info view for a node + the properties surface
+    ├── object_info.py       # properties: the tab (overview dashboard) + panel
     ├── users_tab.py         # accounts + privileges (review-then-run DDL)
     ├── permission_editor.py  # one principal: object tree + privilege grid
     ├── monitor_tab.py       # live dashboard: sessions, throughput, storage
@@ -354,9 +379,8 @@ sqlide/
     ├── backup_destinations.py  # destination list + per-kind editor
     ├── backup_oneoff.py     # one-off backup dialog (every connection kind)
     ├── backup_restore.py    # pick artifact -> pick target -> confirm -> run
-    ├── notes_panel.py       # side panel Notes page + Markdown editor
     ├── extension_dialog.py  # install/update/drop an extension, confirmed
-    ├── side_panel.py        # right panel: Properties, Info, Notes, History…
+    ├── side_panel.py        # right panel: Files | Info (Properties, Record…)
     ├── data_grid.py         # ResultGrid + TableTab (Data | Chart | Map)
     ├── map_view.py          # geometries drawn on OpenStreetMap tiles
     ├── chart_canvas.py      # the cairo renderer: axes, marks, hit-testing

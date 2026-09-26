@@ -42,5 +42,18 @@ database and run some SQL, that's the whole pitch.
 - **Keyring-backed passwords** — connection passwords stored in the
   system keyring when one is available, instead of plain JSON.
 
+## The two guides
+
+- **[User Guide](/docs/user-guide/)** — the complete guide to using
+  sqlide: installing, connecting, browsing, editing, querying, charting,
+  backing up, and the settings and shortcuts behind all of it.
+  Per-engine pages: [SQLite](/docs/user-guide/sqlite/),
+  [MySQL](/docs/user-guide/mysql/),
+  [PostgreSQL](/docs/user-guide/postgres/),
+  [JDBC](/docs/user-guide/jdbc/).
+- **[Developer Guide](/docs/developer-guide/)** — for contributors:
+  how the backend and frontend are split, the invariants that hold it
+  together, the development workflow, and recipes for common changes.
+
 See [Installation](/docs/installation/) to get it running, or jump straight
 to [Getting Started](/docs/getting-started/) for a walkthrough.

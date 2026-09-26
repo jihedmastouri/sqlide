@@ -1,9 +1,0 @@
-- [x] Move Split View to be a button in the top left near the open left side panel.
-- [x] Move export/import workspace to prefrence
-- [x] If no color is set for connection or workspace hide the color border
-- [x] Remove dark/light selector from the dropdown settings leave them in prefrence
-- [x] The editor text size should in the dropdown settings in the editor. not the global dropdown
-- [x] hide the search bar in the right sidebar only show it when user click on search
-- [x] left align tab names
-- [x] make it possible to resize the right side panel
-- [x] left side bar should have workspace icon and settings icon on top and then search, add connection make it elleganet any wat

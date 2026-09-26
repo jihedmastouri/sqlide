@@ -148,10 +148,12 @@ def test_a_table_tab_has_no_properties_toggle(window) -> None:
     assert not hasattr(tab, "show_properties")
     assert tab._stack.get_child_by_name("properties") is None
     assert tab._stack.get_visible_child_name() == "data"
-    # The switch offers Data and Record (CORE-42); with no geometry in
-    # the result there is still no Map side to switch to.
+    # With no geometry in the result there is no Map side to switch to,
+    # and Record is not a side of the tab at all any more: it is a page
+    # of the side panel over this tab's own record view (CORE-42).
     assert not tab._map_toggle.get_visible()
-    assert tab._record_toggle.get_visible()
+    assert not hasattr(tab, "_record_toggle")
+    assert tab.record_view is not None
 
 
 # The panel follows the active tab
@@ -215,7 +217,7 @@ def test_a_deep_link_lands_in_an_open_properties_window(window) -> None:
     ref = objects.ObjectRef(kind="table", name="orders")
     view = win.open_properties_tab(profile, ref)
     win.open_table_section(profile, "orders", "indexes")
-    assert view._body._sections["indexes"].has_css_class("section-target")
+    assert view._body._stack.get_visible_child_name() == "indexes"
 
 
 # Detached windows
@@ -223,7 +225,7 @@ def test_a_deep_link_lands_in_an_open_properties_window(window) -> None:
 
 def test_properties_open_in_a_window_of_their_own(window) -> None:
     from sqlide.backend.db import objects
-    from sqlide.frontend.object_info import PropertiesView
+    from sqlide.frontend.object_info import PropertiesTab
 
     win, profile, _store = window
     ref = objects.ObjectRef(kind="table", name="orders")
@@ -232,7 +234,7 @@ def test_properties_open_in_a_window_of_their_own(window) -> None:
     assert len(popouts) == 1
     page = popouts[0].pane.view.get_nth_page(0)
     view = page.get_child()
-    assert isinstance(view, PropertiesView)
+    assert isinstance(view, PropertiesTab)
     assert view.ref.name == "orders"
 
 
@@ -479,16 +481,25 @@ def test_a_tab_and_the_panel_agree_on_the_same_object(window) -> None:
     ref = objects.ObjectRef(kind="index", name="orders_sku", table="orders")
     win.open_object(profile, ref)
     tab = win._tab_for(
-        ("object", profile.name, "index", "orders_sku", "orders")
+        ("properties", profile.name, "index", "orders_sku", "orders")
     )
-    panel = win.open_properties_tab(profile, ref)
+    # Asking for properties lands on that same tab, never a second one
+    # (there is one properties screen).
+    assert win.open_properties_tab(profile, ref) is tab
+    panel = win._make_properties_view(profile, ref)
     panel.ensure_loaded()
-    assert set(tab._body._sections) == set(panel._body._sections)
-    # …differing only by host: the tab is wide and headed, the panel is
-    # the narrow one and never routes a listing to a grid (CORE-56).
+    # The tab pages the sections it was given; the panel scrolls them.
+    # Every named section the panel scrolls to is a page of the tab
+    # (the tab also pages the sections the descriptor left unslugged).
+    assert set(panel._body._sections) <= set(tab._body.sections)
+    # …differing only by host: the tab is wide, headed and sectioned,
+    # the panel is the narrow scroll and never routes a listing to a
+    # grid (CORE-56).
     assert tab.HOST.show_header and not panel.HOST.show_header
     assert panel.HOST.compact and not tab.HOST.compact
+    assert tab.HOST.sectioned and not panel.HOST.sectioned
     assert tab.HOST.grid_listing and not panel.HOST.grid_listing
+
 
 
 def test_the_panel_host_drops_grants_for_a_principal(window) -> None:
@@ -496,7 +507,7 @@ def test_the_panel_host_drops_grants_for_a_principal(window) -> None:
     Permissions section in a tab and loses it in the panel — and an
     object that carries grants keeps it in both."""
     from sqlide.backend.db import objects
-    from sqlide.frontend.object_info import ObjectInfoTab, PropertiesView
+    from sqlide.frontend.object_info import PropertiesTab, PropertiesView
 
     win, profile, _store = window
     info = objects.ObjectInfo(
@@ -518,8 +529,41 @@ def test_the_panel_host_drops_grants_for_a_principal(window) -> None:
     panel.set_target(profile, objects.ObjectRef(kind="table", name="orders"))
     assert [t.slug for t in panel._for_host(info).tables] == ["permissions"]
 
-    tab = ObjectInfoTab(
+    tab = PropertiesTab(
         profile, objects.ObjectRef(kind="user", name="alice"),
         win.ensure_connector, win.show_error, win.open_object,
     )
     assert [t.slug for t in tab._for_host(info).tables] == ["permissions"]
+
+
+# Which side of a table tab is showing is a control on the bottom bar
+
+
+def test_a_table_tab_has_no_switch_strip_above_the_grid(window) -> None:
+    """The Data | Chart | Map toggle lives on the tab's bottom bar with
+    the rest of the controls, not in a strip of its own over the rows."""
+    win, profile, _store = window
+    tab = win.open_table(profile, "orders")
+    assert not hasattr(tab, "_switch_row")
+    assert tab.get_first_child() is tab._stack
+
+
+def test_the_grid_controls_go_away_on_the_chart_side(window) -> None:
+    win, profile, _store = window
+    tab = win.open_table(profile, "orders")
+    assert tab._filter_toggle.get_visible()
+
+    tab._chart_toggle.set_active(True)
+
+    assert tab._stack.get_visible_child_name() == "chart"
+    # Still reachable — switching back is the point of the bar.
+    assert tab._chart_toggle.get_visible()
+    for widget in tab._data_only:
+        assert not widget.get_visible()
+    assert not tab._save.get_visible()
+
+    tab._data_toggle.set_active(True)
+
+    assert tab._stack.get_visible_child_name() == "data"
+    for widget in tab._data_only:
+        assert widget.get_visible()

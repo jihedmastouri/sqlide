@@ -880,6 +880,21 @@ def test_list_schemas_can_include_the_system_ones(postgres):
     assert not [s for s in schemas if s.startswith(("pg_toast", "pg_temp"))]
 
 
+def test_a_system_schema_lists_its_relations_by_name(postgres):
+    """What the sidebar asks a schema row for. The search path is no
+    use here: pg_catalog and information_schema are never on its user
+    half, so a path-scoped listing hands back none of their relations
+    and the folders under those rows came up empty (PG-03)."""
+    _, db = postgres
+    for schema, relation in (
+        ("pg_catalog", "pg_class"),
+        ("information_schema", "columns"),
+    ):
+        names = {t.name for t in db.list_tables_in(schema)}
+        assert relation in names, schema
+        assert names.isdisjoint({t.name for t in db.list_tables()})
+
+
 def test_the_tree_sorts_system_schemas_last(postgres):
     """A database's schema rows: the user's first, the server's own
     after them and marked as such (PG-03)."""

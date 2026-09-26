@@ -122,61 +122,59 @@ def _node(bar, label: str = "", kind: str = "", **kwargs):
 # Clicking
 
 
-def _click(bar, row, presses: int = 1) -> None:
-    """One click on a row: the press, and the double-click interval
-    passing with nothing after it."""
-    item = _ListItem(row)
-    for press in range(1, presses + 1):
-        bar._row_pressed(None, press, 0.0, 0.0, item)
-    _wait_out_the_interval(bar)
+class _Gesture:
+    """Enough of a Gtk.GestureClick for the caret handler: it only ever
+    claims the sequence."""
+
+    def __init__(self) -> None:
+        self.claimed = False
+
+    def set_state(self, _state) -> None:
+        self.claimed = True
 
 
-def _wait_out_the_interval(bar) -> None:
-    """Let the held toggle land, without sleeping for a real 400ms."""
-    if bar._toggle_source:
-        from gi.repository import GLib
-
-        GLib.source_remove(bar._toggle_source)
-        bar._toggle_timeout()
+def _caret_click(bar, row) -> _Gesture:
+    """A click on the row's expansion caret — the only thing that
+    expands a row now that a plain click just selects."""
+    gesture = _Gesture()
+    bar._caret_pressed(gesture, 1, 0.0, 0.0, _ListItem(row))
+    return gesture
 
 
 def _double_click(bar, row) -> None:
-    """Both presses, then the activation GTK sends behind them."""
-    item = _ListItem(row)
-    bar._row_pressed(None, 1, 0.0, 0.0, item)
-    bar._row_pressed(None, 2, 0.0, 0.0, item)
+    """The activation GTK sends behind the second press."""
     bar._on_activate(bar._view, 0)
-    _wait_out_the_interval(bar)
 
 
-def test_a_single_click_expands_without_opening(sidebar) -> None:
+def test_the_caret_expands_without_opening(sidebar) -> None:
     bar, _profile, opened, _windowed = sidebar
     row = bar._tree.get_item(0)
     assert not row.get_expanded()
 
-    _click(bar, row)
+    gesture = _caret_click(bar, row)
 
     assert row.get_expanded()
+    assert gesture.claimed  # never bubbles into row activation
     assert opened == []
 
 
-def test_a_second_single_click_collapses_it_again(sidebar) -> None:
+def test_a_second_caret_click_collapses_it_again(sidebar) -> None:
     bar, _profile, opened, _windowed = sidebar
     row = bar._tree.get_item(0)
-    _click(bar, row)
-    _click(bar, row)
+    _caret_click(bar, row)
+    _caret_click(bar, row)
     assert not row.get_expanded()
     assert opened == []
 
 
-def test_the_first_press_does_not_toggle_on_its_own(sidebar) -> None:
-    """It is held until the double-click interval has passed, so a
-    double click never expands anything on the way through (CORE-58)."""
+def test_a_plain_click_does_not_expand(sidebar) -> None:
+    """Selecting a row is the ListView's own job and the only thing a
+    single click does: nothing expands under the pointer, and there is
+    no held toggle waiting on the double-click interval."""
     bar, _profile, _opened, _windowed = sidebar
     row = bar._tree.get_item(0)
-    bar._row_pressed(None, 1, 0.0, 0.0, _ListItem(row))
-    assert not row.get_expanded()  # nothing moved yet: no flicker to see
-    assert bar._toggle_source
+    assert not hasattr(bar, "_row_pressed")
+    assert not row.get_expanded()
 
 
 def test_a_double_click_leaves_a_collapsed_row_collapsed(sidebar) -> None:
@@ -193,7 +191,7 @@ def test_a_double_click_leaves_a_collapsed_row_collapsed(sidebar) -> None:
 def test_a_double_click_leaves_an_expanded_row_expanded(sidebar) -> None:
     bar, _profile, opened, _windowed = sidebar
     row = bar._tree.get_item(0)
-    _click(bar, row)
+    _caret_click(bar, row)
     assert row.get_expanded()
 
     _double_click(bar, row)
@@ -360,3 +358,66 @@ def test_opening_normally_still_makes_a_tab(window, gtk) -> None:
     win._append_tab(Gtk.Label(label="orders"), ("t", "shop", "o"), "o", "")
     assert win._panes[0].view.get_n_pages() == 1
     assert win._popouts == []
+
+
+# Sections that expand, and sections that do not
+
+
+def _section(bar, profile, slug: str):
+    return _node(
+        bar, slug.capitalize(), "section",
+        profile=profile, category=slug, table="orders",
+    )
+
+
+def test_a_section_holding_objects_offers_a_caret(sidebar) -> None:
+    from sqlide.frontend.sidebar import _can_expand
+
+    bar, profile, _opened, _windowed = sidebar
+    assert _can_expand(_section(bar, profile, "columns"))
+    assert _can_expand(_section(bar, profile, "indexes"))
+
+
+def test_a_section_that_is_only_a_heading_has_no_caret(sidebar) -> None:
+    """References, Constraints and the rest are Properties headings,
+    not folders: a caret over them would open onto nothing."""
+    from sqlide.frontend.sidebar import _can_expand
+
+    bar, profile, _opened, _windowed = sidebar
+    for slug in ("references", "constraints", "policies"):
+        node = _section(bar, profile, slug)
+        assert not _can_expand(node), slug
+        assert bar._create_children(node) is None
+
+
+def test_the_caret_handler_ignores_a_heading_section(sidebar) -> None:
+    bar, profile, _opened, _windowed = sidebar
+    row = bar._tree.get_item(0)
+    node = _section(bar, profile, "references")
+
+    class _Row:
+        def get_item(self):
+            return node
+
+        def get_expanded(self):
+            return False
+
+        def set_expanded(self, _value):
+            raise AssertionError("a heading section never expands")
+
+    gesture = _Gesture()
+    bar._caret_pressed(gesture, 1, 0.0, 0.0, _ListItem(_Row()))
+    assert not gesture.claimed
+    assert row is not None
+
+
+def test_view_data_is_gone_from_every_menu(sidebar) -> None:
+    """Open already opens a table's data; a second item for the same
+    thing is just a longer menu."""
+    bar, profile, _opened, _windowed = sidebar
+    for node in (
+        _node(bar, "orders", "table", profile=profile),
+        _node(bar, "orders_v", "view", profile=profile),
+        _section(bar, profile, "columns"),
+    ):
+        assert "View Data" not in _labels(bar._menu_for(node)), node.kind

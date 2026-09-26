@@ -213,12 +213,12 @@ def test_a_listing_tab_shows_the_grid_and_an_object_tab_does_not(
     sidebar, sqlite_db
 ) -> None:
     bar, profile, _opened = sidebar
-    from sqlide.frontend.object_info import ObjectInfoTab
+    from sqlide.frontend.object_info import PropertiesTab
 
     provider = registry.create_provider("sqlite", sqlite_db)
 
-    def tab(ref: objects.ObjectRef) -> ObjectInfoTab:
-        return ObjectInfoTab(
+    def tab(ref: objects.ObjectRef) -> PropertiesTab:
+        return PropertiesTab(
             profile, ref, lambda _p: sqlite_db, lambda _m: None,
             lambda *_args: None,
         )

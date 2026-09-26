@@ -68,7 +68,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
+from gi.repository import Adw, Gio, GLib, Gtk, Pango
 
 from sqlide.backend import charts
 from sqlide.backend import placeholders as sql_placeholders

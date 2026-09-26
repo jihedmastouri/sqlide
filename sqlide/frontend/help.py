@@ -35,7 +35,7 @@ _SECTIONS = (
         (
             "Click a table or view to open its data in a tab; the caret "
             "at the end of the row expands its columns instead.",
-            "Right-click a table or view for View Data, Query Console "
+            "Right-click a table or view for Query Console "
             "and Table Definition. The definition opens as a tab with a "
             "Text (DDL) and a Table (columns) mode; the right panel's "
             "DDL page mirrors the active table's CREATE statement.",

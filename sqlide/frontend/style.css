@@ -3,20 +3,27 @@
 /* Sidebar: compact rows in the schema tree (connection → category →
    object → columns); depth comes from the TreeExpander indentation.
 
-   The height is in em, not pixels, because it has to hold a line of
-   this row's text whatever size that text is (CORE-57). A fixed
-   28px was enough room at the default interface font and none at a
-   larger one: the row stopped growing while the label inside it kept
-   growing, the label's box outgrew the row's content box, and the
-   ListView clipped what stuck out — the top of a capital T, the tail
-   of a g. 2em of the row's own (0.92em) font is the same ~28px at the
-   default size, so nothing gets taller for the sake of it, and it
-   tracks the font from there. */
+   No font-size here, and that is the point. The rule used to shrink the
+   row to 0.92em, and the top pixel row of every capital was sheared off
+   — the crossbar of a T, the acute of an Á — no matter how tall the row
+   was made. It is not a clipping problem: the row's box, the label's
+   allocation and Pango's logical rect all have room to spare (measured:
+   a 41px row around 17px of text). At the default interface font 0.92em
+   resolves to 13.49px, and this font simply rasterises a pixel taller
+   than its reported ascent at that exact size. 13.33px (10pt) and
+   12.47px (0.85em) do not, so no "safer" factor fixes it either: which
+   sizes misbehave depends on the interface font the user has set, so
+   any em factor is a bug waiting for the next font size.
+
+   So the tree uses the interface font as-is and gets its compactness
+   from the height and padding instead. min-height is in em so it still
+   tracks that font (CORE-57): a fixed 28px was enough room at the
+   default and none at a larger one, where the row stopped growing while
+   the label inside it kept going. */
 listview.schema-tree > row {
   min-height: 2em;
   padding-top: 2px;
   padding-bottom: 2px;
-  font-size: 0.92em;
 }
 
 /* Data grid: breathing room inside cells (separator lines come from
@@ -282,4 +289,132 @@ entry.cli-entry {
    never insensitive, so they still expand and open (PG-03). */
 listview.schema-tree .system-row {
   opacity: 0.55;
+}
+
+/* ---------------------------------------------------------------
+   The overview a connection and a database open as (object_info.py's
+   OverviewBody). Everything here is that one screen: a header line, a
+   row of tabs under it, tiles of counts, cards of live numbers, and
+   the properties grid beneath them.
+   --------------------------------------------------------------- */
+
+/* The object's icon, in a tile of its own so the name has something
+   to sit against. */
+.overview-avatar {
+  min-width: 34px;
+  min-height: 34px;
+  border-radius: 10px;
+  border: 1px solid alpha(currentColor, 0.25);
+}
+
+/* "DATABASE", "CONNECTION": what the thing is, said once, quietly,
+   next to its name. */
+.kind-pill {
+  font-size: 0.75em;
+  font-weight: bold;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background-color: alpha(currentColor, 0.12);
+}
+
+/* The connected dot. Green because the tab only exists for a
+   connection sqlide has actually reached. */
+.status-dot {
+  color: @success_color;
+  font-size: 0.7em;
+}
+
+.overview-path {
+  font-family: monospace;
+  font-size: 0.9em;
+}
+
+/* The tab row: an underline under the one showing, rather than a
+   pressed toggle, so it reads as a place in the object and not as a
+   setting that is on. */
+.overview-tabs button.overview-tab {
+  border-radius: 0;
+  padding: 8px 4px;
+  margin: 0 8px 0 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  box-shadow: none;
+}
+
+.overview-tabs button.overview-tab:checked {
+  border-bottom-color: @accent_color;
+  font-weight: bold;
+}
+
+/* LIVE, PROPERTIES: the small capitals that separate the bands. */
+.section-caption {
+  font-size: 0.75em;
+  font-weight: bold;
+  letter-spacing: 0.12em;
+}
+
+.stat-tile,
+.meter-card {
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid alpha(currentColor, 0.14);
+  background-color: alpha(currentColor, 0.04);
+}
+
+.stat-label {
+  font-size: 0.75em;
+  font-weight: bold;
+  letter-spacing: 0.08em;
+}
+
+.stat-value {
+  font-size: 1.7em;
+  font-weight: bold;
+}
+
+.meter-value {
+  font-family: monospace;
+  font-size: 1.4em;
+  font-weight: bold;
+}
+
+/* The bar under a live number: thin, because it is a hint at the
+   ceiling and not the reading itself — the number above it is. */
+progressbar.meter-bar trough,
+progressbar.meter-bar progress {
+  min-height: 4px;
+  border-radius: 2px;
+}
+
+progressbar.meter-good progress {
+  background-color: @success_color;
+}
+
+progressbar.meter-warn progress {
+  background-color: @warning_color;
+}
+
+/* The properties block: up to three key/value pairs to a line, each
+   pair underlined rather than boxed, so a dozen attributes stay
+   scannable without becoming a dozen frames. The rule is on both
+   halves of the pair so it runs the whole width of the pair however
+   short the value is. */
+.property-key,
+.property-value {
+  padding: 10px 0;
+  border-bottom: 1px solid alpha(currentColor, 0.10);
+}
+
+.property-value {
+  font-family: monospace;
+}
+
+/* A count tile that is also the way into its listing: a button, but
+   one that has to look exactly like the tiles beside it. */
+button.stat-button {
+  padding: 0;
+  background: none;
+  border: none;
+  box-shadow: none;
 }

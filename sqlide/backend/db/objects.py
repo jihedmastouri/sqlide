@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from sqlide.backend.db import extensions
+from sqlide.backend.db import extensions, overview as ov
 from sqlide.backend.db.base import Connector, ConnectorError
 
 #: Category node name -> the object kind its rows hold. Mirrors the
@@ -278,6 +278,10 @@ class ObjectInfo:
     tables: list[DetailTable] = field(default_factory=list)
     ddl: str = ""
     note: str = ""  # shown when the catalog had nothing specific to say
+    #: The panels a connection and a database carry above their
+    #: properties — counts and live meters (db/overview.py). None for
+    #: every other kind, which is described by its attributes alone.
+    overview: "ov.Overview | None" = None
 
 
 def describe(
@@ -398,58 +402,219 @@ def _ddl(connector: Connector, name: str) -> str:
 
 
 def _connection(connector, kind, name, *, table, category, path, schema):
+    """A whole server: what it holds, how it is doing, and how sqlide
+    reached it.
+
+    A connection is not read as a list of attributes — the question it
+    answers is "how big is this and is it healthy" — so it carries an
+    `Overview` (db/overview.py) of counts and live meters above the
+    summary, and the summary itself is the connection's own facts:
+    driver, version, endpoint, account, SSL.
+    """
+    engine = ov.engine_of(connector)
     databases = _safe(connector.list_databases, [])
     schemas = _safe(connector.list_schemas, [])
     objects = _safe(connector.list_tables, []) if not databases else []
+    version = ov.server_version(engine, connector)
+    endpoint = ov.endpoint(connector)
+    user = ov.account(connector)
     summary = [
-        ("Databases", str(len(databases)) if databases else "1"),
+        ("Driver", engine or "—"),
+        ("Host", endpoint or "—"),
+        ("User", user or "—"),
+        ("Server version", version or "—"),
+        ("SSL", ov.ssl_state(connector)),
+        ("Default schema", _safe(connector.current_schema, "") or "—"),
         ("Creatable kinds", ", ".join(_safe(connector.ddl_kinds, ())) or "—"),
-        ("Accounts", "yes" if connector.supports_users else "no"),
-        ("Drops objects", "yes" if connector.supports_drop else "no"),
+        (
+            "Accounts / drops objects",
+            f"{_yes(connector.supports_users)} / "
+            f"{_yes(connector.supports_drop)}",
+        ),
     ]
+    # A tile for something this engine does not have would read as
+    # "none of them" rather than "no such thing", so a count the
+    # connector cannot answer is left out entirely.
+    counts = [ov.Count("Databases", str(len(databases) or 1), "databases")]
     if schemas:
-        summary.insert(1, ("Schemas", ", ".join(schemas)))
+        counts.append(ov.Count("Schemas", str(len(schemas))))
+    if connector.supports_users:
+        counts.append(
+            ov.Count("Roles", str(len(_safe(connector.list_users, []))))
+        )
+    installed = _safe(connector.list_extensions, [])
+    if installed:
+        counts.append(ov.Count("Extensions", str(len(installed))))
     tables = []
     if databases:
         tables.append(DetailTable(
             tabular=True,
+            slug="databases",
             title="Databases",
             columns=["Name"],
             rows=[(db,) for db in databases],
             links=[ObjectRef("database", db) for db in databases],
         ))
     else:
-        tables.append(_objects_table(objects))
+        tables.append(_objects_table(objects, connector, engine))
     return ObjectInfo(
         kind=kind, name=name, type_label=_label(kind),
         summary=summary, tables=tables,
+        overview=ov.Overview(
+            counts=tuple(counts),
+            meters=_safe(
+                lambda: ov.connection_meters(engine, connector), ()
+            ) or (),
+            endpoint=(
+                f"{user}@{endpoint}" if user and endpoint
+                else endpoint or engine
+            ),
+        ),
     )
+
+
+def _yes(flag: bool) -> str:
+    return "yes" if flag else "no"
 
 
 def _database(connector, kind, name, *, table, category, path, schema):
+    """One database: the same shape a connection has, counted and
+    measured for this database rather than the whole server."""
+    engine = ov.engine_of(connector)
     objects = _safe(connector.list_tables, [])
     views = [o for o in objects if o.kind == "view"]
-    summary = [
-        ("Tables", str(len(objects) - len(views))),
-        ("Views", str(len(views))),
-        ("Functions", str(len(_safe(connector.list_functions, [])))),
-        ("Indexes", str(len(_safe(connector.list_indexes, [])))),
+    # Where a schema and a database are one object (MySQL), the
+    # connector has no current *schema* to report and the database is
+    # the answer.
+    current = _safe(connector.current_schema, "") or _safe(
+        lambda: getattr(connector, "database", ""), ""
+    )
+    counts = [
+        ov.Count("Tables", str(len(objects) - len(views)), "objects"),
+        ov.Count("Views", str(len(views)), "objects"),
+        ov.Count("Functions", str(len(_safe(connector.list_functions, [])))),
+        ov.Count("Indexes", str(len(_safe(connector.list_indexes, [])))),
+        ov.Count("Triggers", str(len(_safe(connector.list_triggers, [])))),
     ]
-    schema = _safe(connector.current_schema, "")
-    if schema:
-        summary.append(("Current schema", schema))
+    # Sequences are a folder only on the engines that have them: an
+    # empty tile on SQLite would be a claim about nothing.
+    sequences = _safe(
+        lambda: connector.list_catalog("sequences", current), []
+    )
+    if sequences:
+        counts.insert(4, ov.Count("Sequences", str(len(sequences))))
+    version = ov.server_version(engine, connector)
+    summary = [
+        ("Engine", f"{engine} {version}".strip() or "—"),
+        ("Current schema", current or "—"),
+        ("Owner", _safe(lambda: _database_owner(connector, name), "") or "—"),
+        ("Encoding", _safe(
+            lambda: _database_encoding(engine, connector), ""
+        ) or "—"),
+        ("Collation", _safe(
+            lambda: _database_collation(engine, connector), ""
+        ) or "—"),
+        ("Connection", ov.endpoint(connector) or engine or "—"),
+        ("Creatable kinds", ", ".join(_safe(connector.ddl_kinds, ())) or "—"),
+        ("Read only", _yes(not _safe(lambda: connector.supports_drop, True))),
+    ]
     return ObjectInfo(
         kind=kind, name=name, type_label=_label(kind),
-        summary=summary, tables=[_objects_table(objects)],
+        summary=summary,
+        tables=[_objects_table(objects, connector, engine)],
+        overview=ov.Overview(
+            counts=tuple(counts),
+            meters=_safe(
+                lambda: ov.database_meters(engine, connector, name), ()
+            ) or (),
+            endpoint=" ▸ ".join(
+                part for part in (
+                    f"{engine} {version.split('.')[0]}".strip(), name
+                ) if part
+            ),
+        ),
     )
 
 
-def _objects_table(objects) -> DetailTable:
+_DB_OWNER = {
+    "postgres": (
+        "SELECT pg_get_userbyid(datdba) FROM pg_database "
+        "WHERE datname = current_database()"
+    ),
+}
+
+_DB_ENCODING = {
+    "postgres": (
+        "SELECT pg_encoding_to_char(encoding) FROM pg_database "
+        "WHERE datname = current_database()"
+    ),
+    "mysql": (
+        "SELECT default_character_set_name FROM information_schema.schemata "
+        "WHERE schema_name = database()"
+    ),
+    "sqlite": "PRAGMA encoding",
+}
+
+_DB_COLLATION = {
+    "postgres": (
+        "SELECT datcollate FROM pg_database "
+        "WHERE datname = current_database()"
+    ),
+    "mysql": (
+        "SELECT default_collation_name FROM information_schema.schemata "
+        "WHERE schema_name = database()"
+    ),
+}
+
+
+def _database_owner(connector, name: str) -> str:
+    sql = _DB_OWNER.get(ov.engine_of(connector), "")
+    return str(ov.scalar(connector, sql) or "") if sql else ""
+
+
+def _database_encoding(engine: str, connector) -> str:
+    sql = _DB_ENCODING.get(engine, "")
+    return str(ov.scalar(connector, sql) or "") if sql else ""
+
+
+def _database_collation(engine: str, connector) -> str:
+    sql = _DB_COLLATION.get(engine, "")
+    return str(ov.scalar(connector, sql) or "") if sql else ""
+
+
+def _objects_table(objects, connector=None, engine: str = "") -> DetailTable:
+    """The tables and views of a database, with what each one weighs.
+
+    Rows and size are the catalog's estimates, fetched for every table
+    in one query (db/overview.object_sizes) rather than per row: a
+    listing is worth an estimate, not a count(*) per table. A view, and
+    an engine that keeps no such catalog, shows an em dash.
+    """
+    sizes = (
+        ov.object_sizes(engine, connector)
+        if connector is not None and engine
+        else {}
+    )
+    columns = ["Name", "Kind"]
+    types: tuple[str, ...] = ("text", "text")
+    if sizes:
+        columns += ["Rows", "Size"]
+        types += ("count", "size")
+
+    def cells(o) -> tuple[str, ...]:
+        row = (o.name, o.kind)
+        if not sizes:
+            return row
+        rows, size = sizes.get(o.name, (None, None))
+        return row + (ov.format_count(rows), ov.format_size(size))
+
     return DetailTable(
         tabular=True,
+        slug="objects",
         title="Tables and views",
-        columns=["Name", "Kind"],
-        rows=[(o.name, o.kind) for o in objects],
+        columns=columns,
+        types=types,
+        rows=[cells(o) for o in objects],
         links=[ObjectRef(o.kind, o.name) for o in objects],
         empty_note="(no tables or views)",
     )

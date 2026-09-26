@@ -112,11 +112,10 @@ from sqlide.frontend.extension_dialog import present_extension_dialog
 from sqlide.frontend.backups_tab import BackupsTab
 from sqlide.frontend.mcp_tab import McpServerTab
 from sqlide.frontend.object_info import (
-    ObjectInfoTab,
     PropertiesSurfaces,
+    PropertiesTab,
     PropertiesView,
     properties_key,
-    tab_key,
 )
 from sqlide.frontend.query_builder import QueryBuilderTab
 from sqlide.frontend.query_console import QueryConsole
@@ -186,7 +185,7 @@ def _properties_target(child) -> tuple:
         return (None, None)
     if isinstance(child, PropertiesView):
         return (profile, child.ref)
-    if isinstance(child, ObjectInfoTab):
+    if isinstance(child, PropertiesTab):
         # A listing tab (CORE-56) is about one section of a table, and
         # the panel beside it is best pointed at that table: the
         # summary belongs to the object the listing came out of.
@@ -1428,9 +1427,9 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _update_active_panel(self) -> None:
         """Tell the side panel which tab is current: the This-panel
-        history scope, which pages to offer (context), the Info
-        content, and the saved-filter target. The status bar follows
-        the same switch."""
+        history scope, which pages to offer (context), the record view
+        to host, the properties target and the saved-filter target. The
+        status bar follows the same switch."""
         page = self._active_pane.view.get_selected_page()
         child = page.get_child() if page is not None else None
         self.refresh_status_bar()
@@ -1453,65 +1452,17 @@ class MainWindow(Adw.ApplicationWindow):
             )
         else:
             self._side_panel.set_filter_target("", [])
-        self._update_note_target(child)
+        self._side_panel.set_record(
+            child.record_view if isinstance(child, TableTab) else None
+        )
         self._side_panel.set_properties_target(*_properties_target(child))
         self.follow_in_sidebar(child)
-        if isinstance(child, (QueryConsole, CliConsole)):
-            self._set_console_info(child)
-        else:
-            self._refresh_side_ddl()
 
     def follow_in_sidebar(self, child) -> None:
         """Point the object tree at whatever the given tab is showing
         (CORE-55). One way only: the tree highlights, and never selects
         a tab back."""
         self._sidebar.follow_object(_follow_target(child))
-
-    def _update_note_target(self, child) -> None:
-        """Tell the side panel's Notes page which object the active tab
-        is about — a new note defaults to it — and which connections
-        the workspace still has, so a note about a removed one is
-        badged orphaned rather than dropped."""
-        connection = ""
-        table = ""
-        if isinstance(child, (TableTab, DefinitionTab)):
-            connection = child.profile.name
-            table = child.table
-        elif isinstance(child, (QueryConsole, CliConsole)):
-            connection = child.selected_connection()
-        self._side_panel.set_note_target(
-            connection,
-            table,
-            [profile.name for profile in self.workspace.connections],
-        )
-
-    def _set_console_info(self, console: QueryConsole | CliConsole) -> None:
-        """Fill the side panel's Info page with the console's
-        connection details."""
-        profile = self.workspace.find_connection(
-            console.selected_connection()
-        )
-        if profile is None:
-            self._side_panel.set_info(
-                "No connection", "This console has no connection selected."
-            )
-            return
-        parts = [f"Kind: {profile.kind}"]
-        if profile.file_path:
-            parts.append(f"File: {profile.file_path}")
-        if profile.kind not in ("sqlite", "jdbc"):
-            parts.append(f"Host: {profile.host}:{profile.port or 'default'}")
-        if profile.database:
-            parts.append(f"Database: {profile.database}")
-        if profile.user:
-            parts.append(f"User: {profile.user}")
-        if profile.jdbc_url:
-            parts.append(f"JDBC URL: {profile.jdbc_url}")
-        parts.append(
-            "Connected: "
-            + ("yes" if self.is_connected(profile.name) else "not yet")
-        )
-        self._side_panel.set_info(profile.name, "\n".join(parts))
 
     # Saved snippets, queries and filters (side panel callbacks)
 
@@ -1580,34 +1531,6 @@ class MainWindow(Adw.ApplicationWindow):
         self._side_panel.set_filter_target(
             tab.filter_key,
             self.workspace.saved_filters.get(tab.filter_key, []),
-        )
-
-    def _refresh_side_ddl(self) -> None:
-        """Fill the side panel's DDL page with the active table's
-        CREATE statement (fetched once per tab, cached on the tab)."""
-        page = self._active_pane.view.get_selected_page()
-        child = page.get_child() if page is not None else None
-        if not isinstance(child, (TableTab, DefinitionTab)):
-            self._side_panel.set_definition("", "")
-            return
-        table = child.table
-        cached = getattr(child, "side_ddl", None)
-        if cached is not None:
-            self._side_panel.set_definition(table, cached)
-            return
-        self._side_panel.set_definition("", "")
-        profile = child.profile
-
-        def done(ddl: str) -> None:
-            child.side_ddl = ddl or ""
-            current = self._active_pane.view.get_selected_page()
-            if current is not None and current.get_child() is child:
-                self._side_panel.set_definition(table, child.side_ddl)
-
-        run_async(
-            lambda: self.ensure_connector(profile).get_ddl(table),
-            done,
-            lambda _exc: None,  # tooltip-grade: fail silently
         )
 
     def _on_close_page(self, view, page: Adw.TabPage) -> bool:
@@ -2649,9 +2572,10 @@ class MainWindow(Adw.ApplicationWindow):
             detached.select_section(section)
             self._focus_tab(properties_key(profile, ref))
             return
-        self.open_properties(profile, ref, section)
+        self.open_properties_panel(profile, ref, section)
 
-    # Properties (CORE-47): the side panel, and windows torn off it
+    # Properties (CORE-47): the tab, the side panel beside data, and
+    # windows torn off it
 
     def _make_properties_view(
         self, profile: ConnectionProfile, ref: objects.ObjectRef
@@ -2671,11 +2595,27 @@ class MainWindow(Adw.ApplicationWindow):
         ref: objects.ObjectRef,
         section: str = "",
     ) -> None:
+        """Asking for an object's properties opens the properties tab.
+
+        The panel keeps showing properties beside a tab's data — that
+        is what it is for — but "Properties" as a request is a screen,
+        not a sidebar: the tab has the room for every section the
+        engine has, one page each.
+        """
+        self.open_properties_tab(profile, ref, section)
+
+    def open_properties_panel(
+        self,
+        profile: ConnectionProfile,
+        ref: objects.ObjectRef,
+        section: str = "",
+    ) -> None:
         """Show one object's properties in the right side panel.
 
-        The panel normally follows the active tab; asking for an
-        object explicitly points it there and reveals the panel, on a
-        named section when a deep link asked for one.
+        The panel normally follows the active tab; a deep link points
+        it at an object explicitly and reveals it, on a named section
+        — so a row under a table lands beside the data it is about
+        rather than taking the page away from it.
         """
         self._side_panel.set_properties_target(profile, ref)
         self._set_side_panel_shown(True)
@@ -2691,7 +2631,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         The same tear-out path a dragged tab and Open (Window) take
         (CORE-52): the surface is made as a tab and moved after. It is
-        its own PropertiesView, so it keeps showing this object however
+        its own properties tab, so it keeps showing this object however
         the tabs behind it change — and it outlives the tab it was
         opened from, since it holds nothing of that tab. Session-only:
         a properties window is a view of something the workspace
@@ -2706,38 +2646,21 @@ class MainWindow(Adw.ApplicationWindow):
         profile: ConnectionProfile,
         ref: objects.ObjectRef,
         section: str = "",
-    ) -> PropertiesView:
-        """A properties surface as a tab, deduplicated per object."""
-        key = properties_key(profile, ref)
-        existing = self._tab_for(key)
-        if existing is not None:
-            self._focus_tab(key)
-            if section:
-                existing.select_section(section)
-            return existing
-        view = PropertiesView(
-            self.ensure_connector,
-            self.show_error,
-            self.open_object,
-            profile=profile,
-            ref=ref,
-        )
-        label = objects.TYPE_LABELS.get(ref.kind, "object").lower()
-        self._append_tab(
-            view,
-            key,
-            f"{ref.name} · properties",
-            f"Properties of {label} {ref.name} on {profile.name}",
-        )
-        if section:
-            view.select_section(section)
-        return view
+    ) -> PropertiesTab:
+        """One object's properties as a tab, deduplicated per object.
+
+        The same tab `open_object` opens: there is one properties
+        screen, whether it was asked for by name or reached by opening
+        a node of the tree.
+        """
+        return self.open_object(profile, ref, section=section)
 
     def _menu_tab_properties(
         self, pane: _TabPane | None = None, window: bool = False
     ) -> None:
         """The tab menu's Properties items: the active (or right-
-        clicked) tab's object, in the panel or in a window."""
+        clicked) tab's object, as a properties tab or in a window of
+        its own."""
         target = self._target_tab(pane)
         if target is None:
             return
@@ -3135,17 +3058,19 @@ class MainWindow(Adw.ApplicationWindow):
         profile: ConnectionProfile,
         ref: objects.ObjectRef,
         path: str = "",
-    ) -> None:
-        """The read-only info view for one catalog object — any node of
-        the sidebar tree, and any row of a group listing inside one.
+        section: str = "",
+    ) -> "PropertiesTab | None":
+        """The properties tab for one catalog object — any node of the
+        sidebar tree, and any row of a group listing inside one.
 
         Deduplicated on (connection, kind, name, owning table): opening
         the same object again focuses the tab that is already showing
-        it rather than stacking copies of one read-only screen.
+        it rather than stacking copies of one read-only screen, and
+        `section` brings that tab's named page to the front (CORE-05).
         """
         if ref.kind == "principal":
             self.open_principal_permissions(profile, ref)
-            return
+            return None
         if ref.schema and ref.schema != profile.schema:
             # A link out of the schema being viewed — a foreign key
             # into another one (PG-01). Following it on this connection
@@ -3153,16 +3078,26 @@ class MainWindow(Adw.ApplicationWindow):
             # land on the wrong object, or on none, so the tab opens
             # through a connection pinned to the schema the link names.
             profile = schema_profile(profile, ref.schema)
-        key = tab_key(profile, ref)
-        if self._focus_tab(key):
-            return
-        tab = ObjectInfoTab(
+        key = properties_key(profile, ref)
+        existing = self._tab_for(key)
+        if existing is not None:
+            self._focus_tab(key)
+            if section:
+                existing.select_section(section)
+            return existing
+        tab = PropertiesTab(
             profile,
             ref,
             self.ensure_connector,
             self.show_error,
             self.open_object,
             path=path,
+            # The overview a connection and a database open as leads
+            # with the two things you came to do with one, so the tab
+            # is handed the window's own actions rather than growing
+            # its own console or connection dialog.
+            on_open_query=lambda p: self.new_query(p),
+            on_edit_connection=self._edit_connection,
         )
         label = objects.TYPE_LABELS.get(ref.kind, "object").lower()
         if ref.kind == "section" and ref.table:
@@ -3175,6 +3110,9 @@ class MainWindow(Adw.ApplicationWindow):
             title = f"{ref.name} · {label}"
             tooltip = f"{label.capitalize()} {ref.name} on {profile.name}"
         self._append_tab(tab, key, title, tooltip)
+        if section:
+            tab.select_section(section)
+        return tab
 
     def open_principal_permissions(
         self, profile: ConnectionProfile, ref: objects.ObjectRef

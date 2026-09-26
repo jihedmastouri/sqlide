@@ -59,26 +59,24 @@ of their own (Columns, Indexes, Triggers) also expand into them, and
 opening one of those rows opens that object's info view instead.
 
 Column rows show "name  type" with a PK marker and are informational.
-Rows lead with a per-kind icon (connections also get a connection
-status dot) and expandable rows end with a caret; the built-in
-expander arrow is hidden. A connection row also carries a + button:
+Rows lead with the expansion caret (on expandable rows) and a per-kind
+icon; connections also get a connection status dot. The built-in
+expander arrow is hidden and the caret drawn in its place, so it sits
+at the row's leading edge after the indentation. A connection row also carries a + button:
 left-clicking it opens the same "New ▸" list as the context menu —
 tables, views, indexes, triggers and, where the dialect has them,
 functions, procedures and events — so creating an object never
 depends on knowing that the row has a right-click menu.
 
-A single click selects a row and toggles its expansion — a leaf row
-just selects, and nothing opens (CORE-52). Because a double click
-delivers that press too, the toggle waits out the double-click
-interval and a second press cancels it (CORE-58): a double click (or
-Enter) opens the row and leaves expansion exactly as it was. Every
+A single click only selects a row; expanding is the caret's job or the
+right arrow key's. A double click (or Enter) opens the row and leaves
+expansion exactly as it was (CORE-58). Every
 kind opens something: a table/view opens a data tab, a function opens
 its definition in an editable tab, and everything else — categories,
 columns, indexes, triggers, events, and any kind added later — opens
-the read-only object info view (frontend/object_info.py, "Object Info"
-on every context menu). Opening something already open focuses its tab
-(CORE-01). The caret does the same toggle a click on the row does, at
-once and with no wait, since it can only mean expansion.
+the read-only object info view (frontend/object_info.py). Opening
+something already open focuses its tab (CORE-01). The caret toggles
+expansion and nothing else.
 
 Every menu of a row that opens something starts with Open and Open
 (Window); a row that opens nothing — a "Loading…" placeholder — has
@@ -91,8 +89,8 @@ panel pointed at that object, or the same surface torn off into its own
 window (CORE-47). A section row under a table targets its table on that
 section, which is what CORE-05's deep link now means.
 
-Right-clicking a table or view then offers View Data /
-Query Console / Table Definition; right-clicking a connection offers
+Right-clicking a table or view then offers Query Console /
+Table Definition; right-clicking a connection offers
 a new query console (new consoles otherwise come from the header-bar
 button), the connection's relation graph, an MCP Server tab
 preselecting that connection, a "New ▸" submenu of the adapter's
@@ -174,6 +172,22 @@ _EXPANDABLE = (
     "section",
 )
 
+
+def _can_expand(node) -> bool:
+    """Whether a row has children at all — what decides both the caret
+    and what the caret's click does.
+
+    Expandability is a kind question everywhere except sections: a
+    section whose members are objects (Columns, Indexes) expands, while
+    one that is only a Properties heading (References, Constraints,
+    Policies) is a leaf, and a caret over it would open onto nothing.
+    """
+    if node.kind not in _EXPANDABLE:
+        return False
+    if node.kind == "section":
+        return node.category in _SECTION_CHILD_KINDS
+    return True
+
 # Leading icon per row kind; kinds not listed (category, column, note)
 # show no icon.
 _KIND_ICONS = {
@@ -236,15 +250,6 @@ _LAZY_CATEGORIES = {
 # resolving it, so holding Ctrl+Tab through ten tabs walks one path,
 # not ten.
 _FOLLOW_DELAY = 180
-
-# A single click toggles a row's expansion (CORE-52), but a double
-# click delivers that first press too, so acting on it immediately made
-# opening an object also expand or collapse it (CORE-58). The toggle
-# waits out the double-click interval instead: if a second press lands,
-# it is a double click and the pending toggle is dropped before
-# anything moves. Falls back to GTK's own default when no Gtk.Settings
-# is available (no display, a test harness).
-_DOUBLE_CLICK_TIME = 400
 
 # Which folders an object of a given kind can be sitting in, in the
 # order they are worth looking in. A relation is a table or a view and
@@ -470,11 +475,6 @@ class Sidebar(Gtk.ScrolledWindow):
         # whose load the walk is waiting on, and the tree rows GTK has
         # bound — which is what "already on screen" means when deciding
         # whether the reveal may move the scroll.
-        # The expansion toggle a single click has asked for, still
-        # waiting to see whether a second press turns it into a double
-        # click (CORE-58): the timer and the row it would toggle.
-        self._toggle_source = 0
-        self._toggle_row: Gtk.TreeListRow | None = None
         self._follow_target: tuple[str, str, str] | None = None
         self._follow_source = 0
         self._follow_wait: tuple[Gio.ListStore, int] | None = None
@@ -532,8 +532,6 @@ class Sidebar(Gtk.ScrolledWindow):
             ("open-window", self._menu_open_window),
             ("properties", self._menu_properties),
             ("properties-window", self._menu_properties_window),
-            ("object-info", self._menu_object_info),
-            ("view-data", self._menu_view_data),
             ("view-section", self._menu_view_section),
             ("query-console", self._menu_query_console),
             ("cli-console", self._menu_cli_console),
@@ -896,14 +894,10 @@ class Sidebar(Gtk.ScrolledWindow):
     def _create_children(self, node: Node) -> Gio.ListStore | None:
         # Called both on expansion and by is_expandable probes: no I/O
         # here, just the cached store (see module docstring).
-        if node.kind not in _EXPANDABLE:
-            return None
-        if node.kind == "section" and (
-            node.category not in _SECTION_CHILD_KINDS
-        ):
-            # A section like Constraints or Policies has no rows of its
-            # own in the tree: it is a leaf that opens the Properties
-            # view on itself.
+        # A section like Constraints or Policies has no rows of its own
+        # in the tree: it is a leaf that opens the Properties view on
+        # itself, and _can_expand says so.
+        if not _can_expand(node):
             return None
         if node.store is None:
             node.store = Gio.ListStore(item_type=Node)
@@ -994,7 +988,7 @@ class Sidebar(Gtk.ScrolledWindow):
             self._load_children(row.get_item())
 
     def _load_children(self, node: Node) -> None:
-        if node.kind not in _EXPANDABLE or node.loaded or node.loading:
+        if not _can_expand(node) or node.loaded or node.loading:
             return
         if node.kind == "category" and node.category not in _LAZY_CATEGORIES:
             # Payload-filled (Tables/Views): nothing to fetch, the row
@@ -1036,6 +1030,7 @@ class Sidebar(Gtk.ScrolledWindow):
             # either.
             root = node.kind == "connection"
             wants_schemas = node.kind != "schema" and _has_schemas(node.profile)
+            schema_name = node.label if node.kind == "schema" else ""
 
             def work():
                 connector = self._connector(node.profile)
@@ -1060,9 +1055,19 @@ class Sidebar(Gtk.ScrolledWindow):
                 current_schema = (
                     connector.current_schema() if schemas else ""
                 )
+                if databases or schemas:
+                    relations = []
+                elif schema_name:
+                    # A schema row lists that schema by name rather than
+                    # through the search path: a system schema
+                    # (pg_catalog, information_schema) is never on the
+                    # user half of the path, so asking the path for its
+                    # relations comes back empty (PG-03).
+                    relations = connector.catalog_tables_in(schema_name)
+                else:
+                    relations = connector.catalog_tables()
                 return (
-                    [] if databases or schemas
-                    else connector.catalog_tables(),
+                    relations,
                     connector.ddl_kinds(),
                     connector.supports_drop,
                     databases,
@@ -1279,8 +1284,9 @@ class Sidebar(Gtk.ScrolledWindow):
         identity_bar = identity_ui.bar(identity.NONE)
         row_box.append(identity_bar)
         expander = Gtk.TreeExpander(hexpand=True)
-        # The caret lives at the end of the row instead (icons stay
-        # aligned at the left edge).
+        # The caret is drawn by hand as the row's leading child instead
+        # of by the expander, so it sits left of the icon and only
+        # expandable rows reserve room for it.
         expander.set_hide_expander(True)
         expander.set_indent_for_icon(False)
         expander.set_has_tooltip(True)
@@ -1324,17 +1330,10 @@ class Sidebar(Gtk.ScrolledWindow):
         caret_click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         caret_click.connect("pressed", self._caret_pressed, list_item)
         caret.add_controller(caret_click)
-        # A single left click toggles the row's expansion (CORE-52).
-        # Bubble phase and never claimed: the caret's own gesture (and
-        # the + button) get the press first, and the ListView still
-        # selects the row and still sees the double click behind it.
-        row_click = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
-        row_click.connect("pressed", self._row_pressed, list_item)
-        expander.add_controller(row_click)
         menu_click = Gtk.GestureClick(button=Gdk.BUTTON_SECONDARY)
         menu_click.connect("pressed", self._row_menu_pressed, list_item)
         expander.add_controller(menu_click)
-        for child in (dot, icon, label, pk, badge, detail, new_button, caret):
+        for child in (caret, dot, icon, label, pk, badge, detail, new_button):
             box.append(child)
         expander.set_child(box)
         row_box.append(expander)
@@ -1406,7 +1405,7 @@ class Sidebar(Gtk.ScrolledWindow):
         list_item.pk.set_visible(node.is_pk)
         _show_detail(list_item.detail, node.detail)
         list_item.caret.set_visible(
-            node.kind in _EXPANDABLE
+            _can_expand(node)
             and (not node.filtered or bool(node.store.get_n_items()))
         )
         _set_caret(list_item.caret, row.get_expanded())
@@ -1460,8 +1459,6 @@ class Sidebar(Gtk.ScrolledWindow):
         """The kind-specific half of a row's menu, under Open."""
         if node.kind in ("table", "view"):
             menu = Gio.Menu()
-            menu.append("View Data", "schema.view-data")
-            menu.append("Object Info", "schema.object-info")
             menu.append("Query Console", "schema.query-console")
             if node.kind == "table":
                 # The designer, on this table: columns, constraints and
@@ -1485,12 +1482,10 @@ class Sidebar(Gtk.ScrolledWindow):
         if node.kind == "section":
             menu = Gio.Menu()
             menu.append("Open in Properties", "schema.view-section")
-            menu.append("View Data", "schema.view-data")
             menu.append("Refresh", "schema.refresh")
             return menu
         if node.kind == "category":
             menu = Gio.Menu()
-            menu.append("Object Info", "schema.object-info")
             menu.append("Refresh", "schema.refresh")
             if node.category in ("tables", "views") and root is not None:
                 menu.append_submenu(
@@ -1501,7 +1496,6 @@ class Sidebar(Gtk.ScrolledWindow):
             return menu
         if node.kind in ("connection", "database", "schema"):
             menu = Gio.Menu()
-            menu.append("Object Info", "schema.object-info")
             menu.append("New Query Console", "schema.query-console")
             menu.append("New CLI Client", "schema.cli-console")
             menu.append("Relation Graph", "schema.relation-graph")
@@ -1551,7 +1545,6 @@ class Sidebar(Gtk.ScrolledWindow):
             return menu
         if node.kind == "function" and node.profile is not None:
             menu = Gio.Menu()
-            menu.append("Object Info", "schema.object-info")
             # A function is editable and droppable only where the
             # engine has stored functions at all. SQLite's are built
             # into the library or registered by the process: they list
@@ -1565,7 +1558,6 @@ class Sidebar(Gtk.ScrolledWindow):
             return menu
         if node.kind == "trigger" and node.profile is not None:
             menu = Gio.Menu()
-            menu.append("Object Info", "schema.object-info")
             menu.append("Edit Definition", "schema.edit-function")
             menu.append("Refresh", "schema.refresh")
             if can_drop:
@@ -1578,7 +1570,6 @@ class Sidebar(Gtk.ScrolledWindow):
             # rather than while the menu is being built — the dialog
             # says no, off the main loop, instead of the menu guessing.
             menu = Gio.Menu()
-            menu.append("Object Info", "schema.object-info")
             if node.category == "available_extensions":
                 menu.append("Install…", "schema.install-extension")
             else:
@@ -1589,7 +1580,6 @@ class Sidebar(Gtk.ScrolledWindow):
             return menu
         if node.kind in ("index", "event"):
             menu = Gio.Menu()
-            menu.append("Object Info", "schema.object-info")
             menu.append("Refresh", "schema.refresh")
             if can_drop:
                 menu.append("Drop…", "schema.drop-object")
@@ -1598,7 +1588,6 @@ class Sidebar(Gtk.ScrolledWindow):
             # Anything else the tree grows — a kind this menu has never
             # heard of — still opens its info view.
             menu = Gio.Menu()
-            menu.append("Object Info", "schema.object-info")
             menu.append("Refresh", "schema.refresh")
             return menu
         return None
@@ -1692,19 +1681,6 @@ class Sidebar(Gtk.ScrolledWindow):
         if target is None or callback is None:
             return
         callback(*target)
-
-    def _menu_object_info(self, *_args) -> None:
-        if self._menu_node is not None:
-            self.open_object_info(self._menu_node)
-
-    def _menu_view_data(self, *_args) -> None:
-        node = self._menu_node
-        if node is None or node.profile is None:
-            return
-        if node.kind in ("table", "view"):
-            self._on_open_table(node.profile, node.label)
-        elif node.kind == "section" and node.table:
-            self._on_open_table(node.profile, node.table)
 
     def _menu_view_section(self, *_args) -> None:
         node = self._menu_node
@@ -1963,59 +1939,10 @@ class Sidebar(Gtk.ScrolledWindow):
         row = list_item.get_item()
         if row is None:
             return
-        if row.get_item().kind in _EXPANDABLE:
+        if _can_expand(row.get_item()):
             # Claim so the press never bubbles into row activation.
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
             row.set_expanded(not row.get_expanded())
-
-    def _row_pressed(
-        self, _gesture, n_press: int, _x, _y, list_item: Gtk.ListItem
-    ) -> None:
-        """A left click on a row: select it (the ListView's own job, so
-        the press is never claimed) and toggle its expansion (CORE-52).
-        A leaf row only selects.
-
-        A double click delivers its first press here as well, so the
-        toggle is not applied yet — it is held for the double-click
-        interval (CORE-58). The second press cancels it, and what the
-        user sees is the object opening with the tree exactly where it
-        was. Holding costs expansion a fraction of a second; undoing the
-        toggle afterwards would cost a visible flicker instead.
-        """
-        self._cancel_toggle()
-        if n_press != 1:
-            return
-        row = list_item.get_item()
-        if row is None or row.get_item().kind not in _EXPANDABLE:
-            return
-        self._toggle_row = row
-        self._toggle_source = GLib.timeout_add(
-            self._double_click_time(), self._toggle_timeout
-        )
-
-    def _double_click_time(self) -> int:
-        """How long a second press may take to arrive, in
-        milliseconds — the desktop's own setting where there is one."""
-        settings = Gtk.Settings.get_default()
-        if settings is None:
-            return _DOUBLE_CLICK_TIME
-        return settings.get_property("gtk-double-click-time")
-
-    def _toggle_timeout(self) -> bool:
-        """No second press came: the click was a single one after all."""
-        self._toggle_source = 0
-        row, self._toggle_row = self._toggle_row, None
-        if row is not None:
-            row.set_expanded(not row.get_expanded())
-        return GLib.SOURCE_REMOVE
-
-    def _cancel_toggle(self) -> None:
-        """Drop the toggle a press asked for without applying it: the
-        second press of a double click, or a click somewhere else."""
-        if self._toggle_source:
-            GLib.source_remove(self._toggle_source)
-            self._toggle_source = 0
-        self._toggle_row = None
 
     def _on_activate(self, _view, position: int) -> None:
         """Double-click or Enter on a row. Every kind opens something:
@@ -2026,10 +1953,9 @@ class Sidebar(Gtk.ScrolledWindow):
 
         Activation only opens: expansion is left exactly as it was
         (CORE-58), so the tree does not move under the pointer at the
-        moment the object arrives. Expanding is the caret's job, a
-        single click's, or the right arrow key's.
+        moment the object arrives. Expanding is the caret's job or the
+        right arrow key's — a single click only selects.
         """
-        self._cancel_toggle()  # the press behind this one asked for a toggle
         row = self._view.get_model().get_item(position)
         self.open_node(row.get_item())
 
@@ -2045,6 +1971,16 @@ class Sidebar(Gtk.ScrolledWindow):
         stretch, so a burst of tab switches walks one path.
         """
         if not self._follow_enabled or self._filtering:
+            return
+        self.reveal_object(target)
+
+    def reveal_object(self, target: tuple[str, str, str] | None) -> None:
+        """The same reveal, asked for outright rather than by following
+        the active tab — the header bar's "Show in Sidebar" button. It
+        runs whether or not automatic following is switched on, which is
+        the point of having a button: the tree stays still until asked.
+        """
+        if self._filtering:
             return
         self._cancel_follow()
         self._follow_target = target

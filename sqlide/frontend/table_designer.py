@@ -96,7 +96,6 @@ from sqlide.backend.db.base import Connector, TypeSpec
 from sqlide.backend.db.metadata import Capabilities, NodeRef
 from sqlide.backend.db.table_model import (
     CASCADE_ACTIONS,
-    CLASSIFICATIONS,
     ColumnDefault,
     ColumnModel,
     ConstraintModel,

@@ -5,7 +5,9 @@ its own JSON file in the config directory (backend/config.py): these
 are SQL text people wrote, not configuration, so they stay JSON rather
 than moving to the TOML config files. Snippets are
 fragments meant to be inserted into the editor at the cursor, saved
-queries are complete statements meant to open in a console. The two
+queries — "scripts" in the side panel's Files tree — are complete
+statements meant to open in a console. Either can be pinned, which only
+sorts it to the top of its folder. The two
 module-level stores are the single instances; panels subscribe to
 show changes made from any window and must unsubscribe on teardown.
 
@@ -33,6 +35,10 @@ class SavedItem:
     # Empty for a snippet, for a query saved without its chart, and for
     # every file written before CORE-33 — those load unchanged.
     chart: str = ""
+    # Pinned items sort to the top of their folder in the side panel's
+    # Files tree. Absent from every file written before pinning existed,
+    # which load as unpinned like any other item.
+    pinned: bool = False
 
 
 class SavedStore:
@@ -70,6 +76,13 @@ class SavedStore:
         self.items.append(item)
         self._save()
         return item
+
+    def set_pinned(self, item: SavedItem, pinned: bool) -> None:
+        """Pin or unpin one item, notifying subscribers like any other
+        change so every window's Files tree reorders together."""
+        if item in self.items and item.pinned != pinned:
+            item.pinned = pinned
+            self._save()
 
     def remove(self, item: SavedItem) -> None:
         if item in self.items:

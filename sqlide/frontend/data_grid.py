@@ -58,11 +58,12 @@ ASCII dump with the byte length, a geometry's description — and edits
 made there go back through this grid's own on_edit, never a second
 write path.
 
-A table tab has a Record side for the same reason in the other
-direction: forty columns are read down a page, not across one.
+A table tab builds a record view for the same reason in the other
+direction — forty columns are read down a page, not across one — and
+hands it to the side panel rather than showing it in place of the grid.
 
-A table whose rows hold geometries grows a third side, Map, next to
-Data and Record (frontend/map_view.py): the loaded rows drawn on
+A table whose rows hold geometries grows a second side, Map, next to
+Data (frontend/map_view.py): the loaded rows drawn on
 OpenStreetMap tiles, with selection running both ways — clicking a
 feature selects its row, selecting a row highlights its feature.
 """
@@ -71,9 +72,6 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-import csv
-import io
-import json
 from dataclasses import dataclass, field
 from decimal import Decimal
 
@@ -2069,9 +2067,11 @@ class TableTab(Gtk.Box):
     follows whichever tab is active, and can be torn off into a window
     of their own. Opening a table shows its rows, full stop.
 
-    The Record side (CORE-42) is the focused row pivoted into a
+    The record view (CORE-42) is the focused row pivoted into a
     name/value list — the same values, the same editability, read down
-    the page instead of across it.
+    the page instead of across it. It is built here but shown in the
+    right side panel (`record_view`), so a row can be read down the page
+    without the grid it came from leaving the screen.
 
     The Map side (PG-04) is still a side of this tab, because it draws
     the rows that are loaded here; its toggle appears only once a load
@@ -2134,8 +2134,6 @@ class TableTab(Gtk.Box):
         # there when the user comes back from the map.
         self._stack = Gtk.Stack(vexpand=True)
         self._stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
-        self._switch_row = self._view_switch()
-        self.append(self._switch_row)
         self.append(self._stack)
         data = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self._stack.add_named(data, "data")
@@ -2161,15 +2159,18 @@ class TableTab(Gtk.Box):
             on_edge_reached=self._on_grid_edge_reached,
         )
         data.append(self._grid)
-        # The record side (CORE-42): the focused row read down the page
+        # The record view (CORE-42): the focused row read down the page
         # instead of across it. Built with the tab because it is one
         # list over the grid's own rows, not a second copy of them.
         if on_navigate is not None:
             self._grid.on_navigate = lambda target: on_navigate(
                 self.profile, target
             )
-        self._record = RecordView(self._grid)
-        self._stack.add_named(self._record, "record")
+        # Not a side of this tab any more: the window parents it into
+        # the side panel's Record page while this tab is the active one
+        # (see window._update_active_panel). Built here, and kept here,
+        # so it stays this tab's own view of this tab's rows.
+        self.record_view = RecordView(self._grid)
         # Scrolling to the bottom of the current page fetches the next
         # PAGE_SIZE rows and appends them, so browsing a big table reads
         # as one continuous scroll instead of manual paging. _base_offset
@@ -2194,7 +2195,14 @@ class TableTab(Gtk.Box):
         self._loaded_result_rows: list[tuple] = []
         self._map_column = ""
 
+        # One bar along the bottom of the tab, outside the stack: which
+        # side is showing (Data | Chart | Map) is a control like any
+        # other and belongs with them, not in a strip of its own above
+        # the rows. The controls that only make sense over a grid —
+        # paging, filter, sort, editing — hide while the chart or the
+        # map is up (see _on_view_toggled).
         bar = Gtk.ActionBar()
+        bar.pack_start(self._view_switch())
         self._prev = Gtk.Button(icon_name="go-previous-symbolic")
         describe(self._prev, _("Previous page"))
         self._prev.connect("clicked", self._on_prev)
@@ -2246,7 +2254,14 @@ class TableTab(Gtk.Box):
         bar.pack_end(self._edit_toggle)
         bar.pack_end(self._add_row)
         bar.pack_end(self._save)
-        data.append(bar)
+        self.append(bar)
+        # Everything on the bar that acts on the grid; hidden whole
+        # while another side of the tab is showing.
+        self._data_only = (
+            self._prev, self._page_label, self._next,
+            exporter, importer_button, refresh,
+            self._filter_toggle, self._sort_toggle, self._edit_toggle,
+        )
 
         self._grid.on_show_map = self._on_show_map_requested
         self._grid.on_row_selected = self._on_grid_row_selected
@@ -2311,26 +2326,22 @@ class TableTab(Gtk.Box):
         )
 
     def _view_switch(self) -> Gtk.Widget:
-        """The Data | Record | Map toggle at the top of a table tab.
+        """The Data | Chart | Map toggle at the start of the tab's
+        bottom bar.
 
-        Data and Record are always both there — every table has rows,
-        and every row can be read as a record. Map appears only once a
-        load finds geometry columns on a server that can make sense of
-        them. Linked toggles rather than a menu — which side is showing
-        should be readable without clicking anything.
+        Map appears only once a load finds geometry columns on a server
+        that can make sense of them. Linked toggles rather than a menu —
+        which side is showing should be readable without clicking
+        anything.
+
+        Record is not here: reading one row down the page is about the
+        focused row, not about which half of the tab is on screen, so it
+        lives in the side panel beside the grid instead of replacing it.
         """
-        row = Gtk.CenterBox(margin_top=6, margin_bottom=6)
         linked = Gtk.Box(spacing=0)
         linked.add_css_class("linked")
         self._data_toggle = Gtk.ToggleButton(label=_("Data"), active=True)
         describe(self._data_toggle, _("The table's rows"))
-        self._record_toggle = Gtk.ToggleButton(label=_("Record"))
-        describe(
-            self._record_toggle,
-            _("The focused row as a list of column names and values"),
-        )
-        self._record_toggle.set_group(self._data_toggle)
-        self._record_toggle.connect("toggled", self._on_view_toggled)
         self._chart_toggle = Gtk.ToggleButton(label=_("Chart"))
         describe(self._chart_toggle, _("The loaded rows, drawn"))
         self._chart_toggle.set_group(self._data_toggle)
@@ -2344,17 +2355,16 @@ class TableTab(Gtk.Box):
         self._data_toggle.connect("toggled", self._on_view_toggled)
         self._map_toggle.connect("toggled", self._on_view_toggled)
         linked.append(self._data_toggle)
-        linked.append(self._record_toggle)
         linked.append(self._chart_toggle)
         linked.append(self._map_toggle)
-        row.set_center_widget(linked)
-        return row
+        return linked
 
     def _on_view_toggled(self, button: Gtk.ToggleButton) -> None:
         # Grouped toggles fire the signal on the button that lost the
         # state as well; only the one that gained it is a switch.
         if not button.get_active():
             return
+        self._show_data_controls(button is self._data_toggle)
         if button is self._map_toggle:
             self._stack.set_visible_child_name("map")
             self._refresh_map()
@@ -2363,11 +2373,24 @@ class TableTab(Gtk.Box):
             self._refresh_chart()
             self._stack.set_visible_child_name("chart")
             return
-        if button is self._record_toggle:
-            self._record.show_row(self._grid.focused_row())
-            self._stack.set_visible_child_name("record")
-            return
         self._stack.set_visible_child_name("data")
+
+    def _show_data_controls(self, shown: bool) -> None:
+        """Hide the grid's own controls while another side of the tab
+        is up: paging and filtering a chart means nothing, and Save
+        would offer to write edits that are not on screen."""
+        for widget in self._data_only:
+            widget.set_visible(shown)
+        # These two carry their own visibility rules (a writable
+        # relation, unsaved edits), so they are only ever hidden here.
+        if not shown:
+            self._add_row.set_visible(False)
+            self._save.set_visible(False)
+        else:
+            self._add_row.set_visible(
+                self._edit_toggle.get_active() and not self.read_only
+            )
+            self._update_save_button()
 
     def show_map(self, column: str = "", row: int | None = None) -> None:
         """Switch this tab to the Map side, optionally on one column
@@ -2732,7 +2755,7 @@ class TableTab(Gtk.Box):
             # The map draws the rows the grid is showing, so keep them.
             self._loaded_result_rows = list(result.rows)
             # The record side reads the same rows; a load replaced them.
-            self._record.reset()
+            self.record_view.reset()
             self._grid.set_sort_state(
                 [(s.column, s.descending) for s in order_by]
             )
@@ -2748,7 +2771,9 @@ class TableTab(Gtk.Box):
                 self._edit_toggle.set_active(False)
             unlocked = editable and self._edit_toggle.get_active()
             self._grid.set_unlocked(unlocked)
-            self._add_row.set_visible(unlocked)
+            self._add_row.set_visible(
+                unlocked and self._data_toggle.get_active()
+            )
             count = len(result)
             self._loaded_rows = count
             self._cursor = result.cursor
@@ -3115,7 +3140,11 @@ class TableTab(Gtk.Box):
             )
             return
         self._grid.set_unlocked(toggle.get_active())
-        self._add_row.set_visible(toggle.get_active() and not self.read_only)
+        self._add_row.set_visible(
+            toggle.get_active()
+            and not self.read_only
+            and self._data_toggle.get_active()
+        )
 
     def _unlock_after_confirm(self) -> None:
         self._unlock_confirmed = True
@@ -3198,7 +3227,9 @@ class TableTab(Gtk.Box):
 
     def _update_save_button(self) -> None:
         count = self._pending_count()
-        self._save.set_visible(count > 0)
+        # Never on top of the chart or the map: the bar's grid controls
+        # belong to the Data side (see _show_data_controls).
+        self._save.set_visible(count > 0 and self._data_toggle.get_active())
         self._save.set_label(f"Save ({count})")
 
     def _pending_updates(self) -> list[RowOperation]:
